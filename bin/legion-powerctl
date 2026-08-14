@@ -1,0 +1,1504 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# shellcheck disable=SC2329
+
+set -Eeuo pipefail
+shopt -s extglob nullglob inherit_errexit
+umask 022
+
+readonly VERSION="0.3.0"
+readonly PROGRAM="${0##*/}"
+
+readonly ETC_DIR="${LEGION_POWERCTL_ETC_DIR:-/etc/legion-powerctl}"
+readonly CONFIG_FILE="${LEGION_POWERCTL_CONFIG_FILE:-${ETC_DIR}/config.conf}"
+readonly PROFILES_DIR="${LEGION_POWERCTL_PROFILES_DIR:-${ETC_DIR}/profiles.d}"
+readonly STATE_DIR="${LEGION_POWERCTL_STATE_DIR:-/run/legion-powerctl}"
+readonly SYSFS_CPU_ROOT="${LEGION_POWERCTL_SYSFS_CPU_ROOT:-/sys/devices/system/cpu}"
+readonly CPUINFO_PATH="${LEGION_POWERCTL_CPUINFO_PATH:-/proc/cpuinfo}"
+readonly DMI_ROOT="${LEGION_POWERCTL_DMI_ROOT:-/sys/class/dmi/id}"
+readonly EFIVARS_DIR="${LEGION_POWERCTL_EFIVARS_DIR:-/sys/firmware/efi/efivars}"
+readonly SMU_DEV="${LEGION_POWERCTL_SMU_DEV:-/dev/ryzen_smu_drv}"
+readonly LOCKDOWN_PATH="${LEGION_POWERCTL_LOCKDOWN_PATH:-/sys/kernel/security/lockdown}"
+readonly DEV_MEM_PATH="${LEGION_POWERCTL_DEV_MEM_PATH:-/dev/mem}"
+readonly MODULES_ROOT="${LEGION_POWERCTL_MODULES_ROOT:-/sys/module}"
+readonly GUI_LAUNCHER="${LEGION_POWERCTL_GUI_LAUNCHER:-/usr/bin/legion-powerctl-gui}"
+readonly POLKIT_POLICY="${LEGION_POWERCTL_POLKIT_POLICY:-/usr/share/polkit-1/actions/io.github.alexmacra.legion-powerctl.policy}"
+readonly PYTHON_BIN="${LEGION_POWERCTL_PYTHON_BIN:-python3}"
+readonly MIN_RYZENADJ_VERSION="${LEGION_POWERCTL_MIN_RYZENADJ_VERSION:-0.19.0}"
+readonly SERVICE_NAME="${LEGION_POWERCTL_SERVICE_NAME:-legion-powerctl.service}"
+readonly TESTING="${LEGION_POWERCTL_TESTING:-0}"
+readonly DRY_RUN_DEFAULT="${LEGION_POWERCTL_DRY_RUN:-0}"
+readonly MIN_POWER_W="${LEGION_POWERCTL_MIN_POWER_W:-5}"
+readonly MAX_POWER_W="${LEGION_POWERCTL_MAX_POWER_W:-200}"
+readonly MIN_TEMP_C="${LEGION_POWERCTL_MIN_TEMP_C:-50}"
+readonly MAX_TEMP_C="${LEGION_POWERCTL_MAX_TEMP_C:-100}"
+
+readonly -a PROFILE_KEYS=(
+    STAPM_W SLOW_W FAST_W TEMP_C
+    POWER_PROFILE MIN_FREQ_MHZ MAX_FREQ_MHZ BOOST EPP
+)
+
+declare -rA PROFILE_KEY_UNSET=(
+    [STAPM_W]="" [SLOW_W]="" [FAST_W]="" [TEMP_C]=""
+    [POWER_PROFILE]=unchanged [MIN_FREQ_MHZ]=unchanged [MAX_FREQ_MHZ]=unchanged
+    [BOOST]=unchanged [EPP]=unchanged
+)
+
+declare -rA CONFIGURE_FLAG_VAR=(
+    [--stapm]=STAPM_W [--slow]=SLOW_W [--fast]=FAST_W [--temp]=TEMP_C
+    [--power-profile]=POWER_PROFILE
+    [--min-mhz]=MIN_FREQ_MHZ [--max-mhz]=MAX_FREQ_MHZ
+    [--boost]=BOOST [--epp]=EPP [--description]=PROFILE_DESCRIPTION
+)
+
+readonly -a POWER_PROFILE_VALUES=(balanced performance power-saver unchanged)
+readonly -a BOOST_VALUES=(on off unchanged)
+readonly -a EPP_VALUES=(performance balance_performance balance_power power unchanged)
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    readonly C_BOLD=$'\033[1m'
+    readonly C_RED=$'\033[31m'
+    readonly C_YELLOW=$'\033[33m'
+    readonly C_GREEN=$'\033[32m'
+    readonly C_CYAN=$'\033[36m'
+    readonly C_RESET=$'\033[0m'
+else
+    readonly C_BOLD="" C_RED="" C_YELLOW="" C_GREEN="" C_CYAN="" C_RESET=""
+fi
+
+info()    { printf '%s%s%s\n' "$C_CYAN" "$*" "$C_RESET"; }
+success() { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
+warn()    { printf '%sWARNING:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+die()     { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF_USAGE'
+legion-powerctl - configurable Ryzen CPU limits for Lenovo Legion laptops
+
+Usage:
+  legion-powerctl apply [PROFILE] [--dry-run] [--boot]
+  legion-powerctl configure PROFILE [OPTIONS]
+  legion-powerctl wizard [PROFILE]
+  legion-powerctl select PROFILE [--apply]
+  legion-powerctl list
+  legion-powerctl show [PROFILE]
+  legion-powerctl delete PROFILE [--force]
+  legion-powerctl status [--json|--waybar]
+  legion-powerctl doctor
+  legion-powerctl enable [--force]
+  legion-powerctl disable
+  legion-powerctl restore-frequency [--boost on|off|unchanged]
+  legion-powerctl version
+
+Configure options:
+  --stapm W                 Sustained package-power limit, in watts
+  --slow W                  Slow/average PPT limit, in watts
+  --fast W                  Fast/short PPT limit, in watts
+  --temp C                  Tctl temperature ceiling, in Celsius
+  --power-profile NAME      balanced, performance, power-saver, unchanged
+  --min-mhz VALUE           Integer MHz, stock, or unchanged
+  --max-mhz VALUE           Integer MHz, stock, or unchanged
+  --boost VALUE             on, off, or unchanged
+  --epp VALUE               performance, balance_performance, balance_power,
+                            power, or unchanged
+  --description TEXT        Human-readable profile description
+  --select                  Make this the active boot profile
+  --apply                   Apply immediately after saving
+
+Examples:
+  sudo legion-powerctl configure balanced-plus \
+      --stapm 60 --slow 65 --fast 75 --temp 82 \
+      --power-profile balanced --min-mhz stock --max-mhz stock \
+      --boost on --select --apply
+
+  sudo legion-powerctl wizard quiet
+  sudo legion-powerctl apply balanced-plus
+  sudo systemctl restart legion-powerctl.service
+
+The systemd service is a one-shot boot service. It has no timer and does not
+remain running after the limits are applied.
+EOF_USAGE
+}
+
+require_root() {
+    if [[ "$TESTING" != "1" && $EUID -ne 0 ]]; then
+        die "This command changes system settings. Run it with sudo."
+    fi
+}
+
+in_list() {
+    local needle="$1" item
+    shift
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+is_uint() {
+    [[ "$1" =~ ^(0|[1-9][0-9]{0,9})$ ]]
+}
+
+valid_description() {
+    local LC_ALL=C
+    [[ "$1" != *[[:cntrl:]]* ]]
+}
+
+valid_profile_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+profile_path() {
+    valid_profile_name "$1" || die "Invalid profile name '$1'. Use letters, numbers, dot, underscore, or dash."
+    printf '%s/%s.conf' "$PROFILES_DIR" "$1"
+}
+
+ryzenadj_candidates() {
+    local IFS=: dir resolved
+    local -A seen=()
+    for dir in $PATH; do
+        [[ -n "$dir" && -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
+        resolved="$(readlink -f "$dir/ryzenadj" 2>/dev/null || printf '%s' "$dir/ryzenadj")"
+        [[ -n "${seen[$resolved]:-}" ]] && continue
+        seen[$resolved]=1
+        printf '%s\n' "$resolved"
+    done
+}
+
+resolve_ryzenadj() {
+    if [[ -n "${LEGION_POWERCTL_RYZENADJ_BIN:-}" ]]; then
+        printf '%s' "$LEGION_POWERCTL_RYZENADJ_BIN"
+        return
+    fi
+
+    local -a candidates=()
+    mapfile -t candidates < <(ryzenadj_candidates)
+    case "${#candidates[@]}" in
+        0) return ;;
+        1) printf '%s' "${candidates[0]}"; return ;;
+    esac
+
+    local best="" best_ver="" cand ver
+    for cand in "${candidates[@]}"; do
+        ver="$(ryzenadj_version "$cand")"
+        if [[ -z "$best" ]]; then
+            best="$cand"; best_ver="$ver"
+        elif [[ -n "$ver" ]] && { [[ -z "$best_ver" ]] || version_lt "$best_ver" "$ver"; }; then
+            best="$cand"; best_ver="$ver"
+        fi
+    done
+    printf '%s' "$best"
+}
+
+ryzenadj_version() {
+    local ryzenadj="$1"
+    "$ryzenadj" --help 2>/dev/null \
+        | sed -n 's/^[[:space:]]*Version:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
+        | head -n1 || true
+}
+
+version_lt() {
+    [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+}
+
+resolve_powerprofilesctl() {
+    if [[ -n "${LEGION_POWERCTL_POWERPROFILESCTL_BIN:-}" ]]; then
+        printf '%s' "$LEGION_POWERCTL_POWERPROFILESCTL_BIN"
+        return
+    fi
+    command -v powerprofilesctl 2>/dev/null || true
+}
+
+resolve_systemctl() {
+    if [[ -n "${LEGION_POWERCTL_SYSTEMCTL_BIN:-}" ]]; then
+        printf '%s' "$LEGION_POWERCTL_SYSTEMCTL_BIN"
+        return
+    fi
+    command -v systemctl 2>/dev/null || true
+}
+
+ensure_config_dirs() {
+    require_root
+    install -d -m 0755 "$ETC_DIR" "$PROFILES_DIR"
+}
+
+ACTIVE_PROFILE="balanced-plus"
+RYZENADJ_DRIFT=""
+load_global_config() {
+    ACTIVE_PROFILE="balanced-plus"
+    [[ -r "$CONFIG_FILE" ]] || return 0
+
+    local raw line key value lineno=0
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        ((lineno += 1))
+        line="$(trim "$raw")"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" == *=* ]] || die "$CONFIG_FILE:$lineno: expected KEY=VALUE"
+        key="$(trim "${line%%=*}")"
+        value="$(trim "${line#*=}")"
+        case "$key" in
+            ACTIVE_PROFILE) ACTIVE_PROFILE="$value" ;;
+            *) die "$CONFIG_FILE:$lineno: unknown key '$key'" ;;
+        esac
+    done < "$CONFIG_FILE"
+
+    valid_profile_name "$ACTIVE_PROFILE" || die "$CONFIG_FILE: invalid ACTIVE_PROFILE '$ACTIVE_PROFILE'"
+}
+
+set_profile_defaults() {
+    STAPM_W=60
+    SLOW_W=65
+    FAST_W=75
+    TEMP_C=82
+    POWER_PROFILE=balanced
+    MIN_FREQ_MHZ=unchanged
+    MAX_FREQ_MHZ=unchanged
+    BOOST=unchanged
+    EPP=unchanged
+    PROFILE_DESCRIPTION=""
+}
+
+load_profile() {
+    local name="$1"
+    local path
+    path="$(profile_path "$name")"
+    [[ -r "$path" ]] || die "Profile '$name' not found at $path"
+
+    local key
+    for key in "${PROFILE_KEYS[@]}"; do
+        printf -v "$key" '%s' "${PROFILE_KEY_UNSET[$key]}"
+    done
+    PROFILE_DESCRIPTION=""
+
+    local format=1
+
+    local raw line value lineno=0
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        ((lineno += 1))
+        line="$(trim "$raw")"
+        [[ "$line" == '# profile-format: 2' ]] && format=2
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" == *=* ]] || die "$path:$lineno: expected KEY=VALUE"
+        key="$(trim "${line%%=*}")"
+        value="$(trim "${line#*=}")"
+        if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+            value="${value:1:${#value}-2}"
+            if (( format == 2 )); then
+                value="${value//\\\"/\"}"
+                value="${value//\\\\/\\}"
+            fi
+        fi
+        if [[ "$key" == DESCRIPTION ]]; then
+            PROFILE_DESCRIPTION="$value"
+        elif in_list "$key" "${PROFILE_KEYS[@]}"; then
+            printf -v "$key" '%s' "$value"
+        else
+            die "$path:$lineno: unknown key '$key'"
+        fi
+    done < "$path"
+}
+
+try_load_profile() {
+    (load_profile "$1" && validate_profile) >/dev/null 2>&1 || return 1
+    load_profile "$1"
+}
+
+validate_frequency_value() {
+    local label="$1" value="$2"
+    case "$value" in
+        stock|unchanged) return 0 ;;
+    esac
+    is_uint "$value" || die "$label must be an integer MHz value, 'stock', or 'unchanged' (got '$value')."
+    (( value >= 100 && value <= 10000 )) || die "$label must be between 100 and 10000 MHz."
+}
+
+validate_profile() {
+    local label value
+    for label in STAPM_W SLOW_W FAST_W TEMP_C; do
+        value="${!label}"
+        is_uint "$value" || \
+            die "$label must be a positive integer of at most 10 digits (got '$value')."
+    done
+
+    (( STAPM_W >= MIN_POWER_W && STAPM_W <= MAX_POWER_W )) || \
+        die "STAPM_W must be between ${MIN_POWER_W} W and ${MAX_POWER_W} W."
+    (( SLOW_W >= MIN_POWER_W && SLOW_W <= MAX_POWER_W )) || \
+        die "SLOW_W must be between ${MIN_POWER_W} W and ${MAX_POWER_W} W."
+    (( FAST_W >= MIN_POWER_W && FAST_W <= MAX_POWER_W )) || \
+        die "FAST_W must be between ${MIN_POWER_W} W and ${MAX_POWER_W} W."
+    (( TEMP_C >= MIN_TEMP_C && TEMP_C <= MAX_TEMP_C )) || \
+        die "TEMP_C must be between ${MIN_TEMP_C} C and ${MAX_TEMP_C} C."
+    (( STAPM_W <= SLOW_W && SLOW_W <= FAST_W )) || \
+        die "Expected STAPM_W <= SLOW_W <= FAST_W; got ${STAPM_W}/${SLOW_W}/${FAST_W}."
+
+    in_list "$POWER_PROFILE" "${POWER_PROFILE_VALUES[@]}" || \
+        die "POWER_PROFILE must be balanced, performance, power-saver, or unchanged."
+
+    validate_frequency_value MIN_FREQ_MHZ "$MIN_FREQ_MHZ"
+    validate_frequency_value MAX_FREQ_MHZ "$MAX_FREQ_MHZ"
+    if is_uint "$MIN_FREQ_MHZ" && is_uint "$MAX_FREQ_MHZ"; then
+        (( MIN_FREQ_MHZ <= MAX_FREQ_MHZ )) || die "MIN_FREQ_MHZ cannot exceed MAX_FREQ_MHZ."
+    fi
+
+    in_list "$BOOST" "${BOOST_VALUES[@]}" || \
+        die "BOOST must be on, off, or unchanged."
+
+    in_list "$EPP" "${EPP_VALUES[@]}" || \
+        die "EPP must be performance, balance_performance, balance_power, power, or unchanged."
+
+    valid_description "$PROFILE_DESCRIPTION" || \
+        die "DESCRIPTION must be a single line without carriage returns."
+}
+
+TMP_WRITE=""
+remove_tmp_write() {
+    if [[ -n "$TMP_WRITE" ]]; then
+        rm -f -- "$TMP_WRITE"
+        TMP_WRITE=""
+    fi
+}
+trap remove_tmp_write EXIT
+
+write_global_config() {
+    local name="$1"
+    ensure_config_dirs
+    valid_profile_name "$name" || die "Invalid profile name '$name'."
+    TMP_WRITE="$(mktemp)"
+    printf '# Active profile selected by legion-powerctl\nACTIVE_PROFILE=%s\n' "$name" > "$TMP_WRITE"
+    install -m 0644 "$TMP_WRITE" "$CONFIG_FILE"
+    remove_tmp_write
+}
+
+write_profile() {
+    local name="$1" path description key
+    ensure_config_dirs
+    validate_profile
+    path="$(profile_path "$name")"
+    TMP_WRITE="$(mktemp)"
+    description="${PROFILE_DESCRIPTION//\\/\\\\}"
+    description="${description//\"/\\\"}"
+    {
+        printf '# legion-powerctl profile: %s\n' "$name"
+        printf '# profile-format: 2\n'
+        printf '# Power values are watts; RyzenAdj receives them as milliwatts.\n'
+        printf 'DESCRIPTION="%s"\n' "$description"
+        for key in "${PROFILE_KEYS[@]}"; do
+            printf '%s=%s\n' "$key" "${!key}"
+        done
+    } > "$TMP_WRITE"
+    install -m 0644 "$TMP_WRITE" "$path"
+    remove_tmp_write
+    success "Saved profile '$name' to $path"
+}
+
+print_profile() {
+    local name="$1"
+    load_profile "$name"
+    validate_profile
+    cat <<EOF_PROFILE
+Profile:         $name
+Description:     ${PROFILE_DESCRIPTION:-none}
+STAPM:           ${STAPM_W} W
+Slow PPT:        ${SLOW_W} W
+Fast PPT:        ${FAST_W} W
+Temperature:     ${TEMP_C} C
+Power profile:   $POWER_PROFILE
+Minimum freq:    $MIN_FREQ_MHZ
+Maximum freq:    $MAX_FREQ_MHZ
+Boost:           $BOOST
+EPP:             $EPP
+EOF_PROFILE
+}
+
+run_or_print() {
+    local dry_run="$1"
+    shift
+    if [[ "$dry_run" == "1" ]]; then
+        printf 'DRY RUN:'
+        printf ' %q' "$@"
+        printf '\n'
+        return 0
+    fi
+    "$@"
+}
+
+apply_power_profile() {
+    local dry_run="$1" ppctl
+    [[ "$POWER_PROFILE" == "unchanged" ]] && return 0
+    ppctl="$(resolve_powerprofilesctl)"
+    if [[ -z "$ppctl" || ! -x "$ppctl" ]]; then
+        warn "powerprofilesctl is unavailable; leaving the current Linux power profile unchanged."
+        return 0
+    fi
+
+    if ! run_or_print "$dry_run" "$ppctl" set "$POWER_PROFILE"; then
+        warn "Could not set power profile '$POWER_PROFILE'; continuing with CPU limits."
+    else
+        info "Linux power profile: $POWER_PROFILE"
+    fi
+}
+
+read_uint_file() {
+    local file="$1" value
+    [[ -r "$file" ]] || return 1
+    value="$(<"$file")"
+    is_uint "$value" || return 1
+    printf '%s' "$value"
+}
+
+hardware_min_khz() {
+    local policy="$1" value
+    value="$(read_uint_file "$policy/cpuinfo_min_freq" || true)"
+    [[ -n "$value" ]] || value="$(read_uint_file "$policy/scaling_min_freq" || true)"
+    [[ -n "$value" ]] || return 1
+    printf '%s' "$value"
+}
+
+hardware_max_khz() {
+    local policy="$1" value candidate
+    value="$(read_uint_file "$policy/cpuinfo_max_freq" || true)"
+    [[ -n "$value" ]] || value="$(read_uint_file "$policy/scaling_max_freq" || true)"
+    [[ -n "$value" ]] || return 1
+    candidate="$(read_uint_file "$policy/amd_pstate_max_freq" || true)"
+    if [[ -n "$candidate" ]] && (( candidate > value )); then
+        value="$candidate"
+    fi
+    printf '%s' "$value"
+}
+
+try_write_sysfs() {
+    local dry_run="$1" value="$2" file="$3"
+    if [[ "$dry_run" == "1" ]]; then
+        printf 'DRY RUN: write %q to %q\n' "$value" "$file"
+        return 0
+    fi
+    printf '%s\n' "$value" > "$file"
+}
+
+write_sysfs() {
+    local dry_run="$1" value="$2" file="$3"
+    if [[ "$dry_run" != "1" && ! -e "$file" ]]; then
+        die "CPU control file does not exist: $file"
+    fi
+    try_write_sysfs "$dry_run" "$value" "$file" || die "Could not write '$value' to $file"
+}
+
+apply_frequency_policy() {
+    local dry_run="$1" policy="$2"
+    local current_min current_max hw_min hw_max target_min target_max
+
+    current_min="$(read_uint_file "$policy/scaling_min_freq" || true)"
+    current_max="$(read_uint_file "$policy/scaling_max_freq" || true)"
+    hw_min="$(hardware_min_khz "$policy" || true)"
+    hw_max="$(hardware_max_khz "$policy" || true)"
+
+    target_min="$current_min"
+    target_max="$current_max"
+
+    case "$MIN_FREQ_MHZ" in
+        unchanged) ;;
+        stock)
+            [[ -n "$hw_min" ]] || die "Cannot determine stock minimum for ${policy##*/}."
+            target_min="$hw_min"
+            ;;
+        *) target_min=$((MIN_FREQ_MHZ * 1000)) ;;
+    esac
+
+    case "$MAX_FREQ_MHZ" in
+        unchanged) ;;
+        stock)
+            [[ -n "$hw_max" ]] || die "Cannot determine stock maximum for ${policy##*/}."
+            target_max="$hw_max"
+            ;;
+        *) target_max=$((MAX_FREQ_MHZ * 1000)) ;;
+    esac
+
+    [[ -n "$target_min" && -n "$target_max" ]] || die "Cannot read current CPU frequency limits for ${policy##*/}."
+    (( target_min <= target_max )) || die "Requested minimum exceeds maximum for ${policy##*/}."
+
+    if [[ -n "$hw_min" ]] && (( target_min < hw_min )); then
+        die "Requested minimum $((target_min / 1000)) MHz is below hardware minimum $((hw_min / 1000)) MHz."
+    fi
+    if [[ -n "$hw_max" ]] && (( target_max > hw_max )); then
+        die "Requested maximum $((target_max / 1000)) MHz exceeds hardware maximum $((hw_max / 1000)) MHz."
+    fi
+
+    if [[ -n "$current_max" ]] && (( target_max > current_max )); then
+        WIDENED_MAX_COUNT=$(( ${WIDENED_MAX_COUNT:-0} + 1 ))
+        if [[ -z "${WIDENED_MAX_FROM:-}" ]]; then
+            WIDENED_MAX_FROM="$current_max"
+            WIDENED_MAX_TO="$target_max"
+        fi
+    fi
+    if [[ -n "$current_min" ]] && (( target_min < current_min )); then
+        WIDENED_MIN_COUNT=$(( ${WIDENED_MIN_COUNT:-0} + 1 ))
+        if [[ -z "${WIDENED_MIN_FROM:-}" ]]; then
+            WIDENED_MIN_FROM="$current_min"
+            WIDENED_MIN_TO="$target_min"
+        fi
+    fi
+
+    if [[ -n "$current_min" ]] && (( target_max < current_min )); then
+        [[ "$MIN_FREQ_MHZ" == "unchanged" ]] || write_sysfs "$dry_run" "$target_min" "$policy/scaling_min_freq"
+        [[ "$MAX_FREQ_MHZ" == "unchanged" ]] || write_sysfs "$dry_run" "$target_max" "$policy/scaling_max_freq"
+    else
+        [[ "$MAX_FREQ_MHZ" == "unchanged" ]] || write_sysfs "$dry_run" "$target_max" "$policy/scaling_max_freq"
+        [[ "$MIN_FREQ_MHZ" == "unchanged" ]] || write_sysfs "$dry_run" "$target_min" "$policy/scaling_min_freq"
+    fi
+}
+
+apply_frequency_limits() {
+    local dry_run="$1"
+    [[ "$MIN_FREQ_MHZ" == "unchanged" && "$MAX_FREQ_MHZ" == "unchanged" ]] && return 0
+
+    local policies=("$SYSFS_CPU_ROOT"/cpufreq/policy*)
+    if (( ${#policies[@]} == 0 )); then
+        warn "No CPUFreq policy directories found; frequency settings were skipped."
+        return 0
+    fi
+
+    WIDENED_MAX_COUNT=0 WIDENED_MAX_FROM="" WIDENED_MAX_TO=""
+    WIDENED_MIN_COUNT=0 WIDENED_MIN_FROM="" WIDENED_MIN_TO=""
+
+    local policy
+    for policy in "${policies[@]}"; do
+        [[ -d "$policy" ]] || continue
+        apply_frequency_policy "$dry_run" "$policy"
+    done
+    info "CPU frequency policy: min=$MIN_FREQ_MHZ, max=$MAX_FREQ_MHZ"
+
+    if (( WIDENED_MAX_COUNT > 0 )); then
+        warn "MAX_FREQ_MHZ=$MAX_FREQ_MHZ raised the ceiling from $((WIDENED_MAX_FROM / 1000)) MHz to $((WIDENED_MAX_TO / 1000)) MHz on $WIDENED_MAX_COUNT policy(s); this widens the machine rather than capping it."
+    fi
+    if (( WIDENED_MIN_COUNT > 0 )); then
+        warn "MIN_FREQ_MHZ=$MIN_FREQ_MHZ lowered the floor from $((WIDENED_MIN_FROM / 1000)) MHz to $((WIDENED_MIN_TO / 1000)) MHz on $WIDENED_MIN_COUNT policy(s)."
+    fi
+}
+
+# The kernel accepts a per-policy boost write only while global boost is
+# enabled, so when the global control exists it is the only safe one to
+# write; the kernel then propagates it to every policy itself.
+boost_control_files() {
+    if [[ -e "$SYSFS_CPU_ROOT/cpufreq/boost" ]]; then
+        printf '%s\n' "$SYSFS_CPU_ROOT/cpufreq/boost"
+        return 0
+    fi
+    local files=() file
+    for file in "$SYSFS_CPU_ROOT"/cpufreq/policy*/boost \
+                "$SYSFS_CPU_ROOT"/cpufreq/policy*/cpb \
+                "$SYSFS_CPU_ROOT"/cpu[0-9]*/cpufreq/boost; do
+        [[ -e "$file" ]] && files+=("$file")
+    done
+    (( ${#files[@]} > 0 )) || return 1
+    printf '%s\n' "${files[@]}"
+}
+
+apply_boost() {
+    local dry_run="$1"
+    BOOST_APPLIED=""
+    [[ "$BOOST" == "unchanged" ]] && return 0
+    local value=1
+    [[ "$BOOST" == "off" ]] && value=0
+
+    local -a files=()
+    mapfile -t files < <(boost_control_files || true)
+    if (( ${#files[@]} == 0 )); then
+        BOOST_APPLIED=skipped
+        warn "No CPU boost control was exposed by the kernel; BOOST=$BOOST was skipped."
+        return 0
+    fi
+
+    local file rejected=""
+    for file in "${files[@]}"; do
+        try_write_sysfs "$dry_run" "$value" "$file" || rejected="$file"
+    done
+    if [[ -n "$rejected" ]]; then
+        BOOST_APPLIED=no
+        warn "The kernel rejected writing BOOST=$BOOST to $rejected; the rest of the profile still applies. Check 'dmesg' for 'Cannot disable BOOST' or 'Boost mode is not supported by this processor or SBIOS'. On CachyOS, power-profiles-daemon can toggle CPU boost itself when the power profile changes."
+        return 0
+    fi
+    BOOST_APPLIED=yes
+    info "CPU boost: $BOOST"
+}
+
+apply_epp() {
+    local dry_run="$1"
+    [[ "$EPP" == "unchanged" ]] && return 0
+    local policies=("$SYSFS_CPU_ROOT"/cpufreq/policy*)
+    local applied=0 policy file available
+    for policy in "${policies[@]}"; do
+        file="$policy/energy_performance_preference"
+        [[ -e "$file" ]] || continue
+        available="$(cat "$policy/energy_performance_available_preferences" 2>/dev/null || true)"
+        if [[ -n "$available" && " $available " != *" $EPP "* ]]; then
+            warn "${policy##*/} does not advertise EPP '$EPP'; skipped."
+            continue
+        fi
+        write_sysfs "$dry_run" "$EPP" "$file"
+        ((applied += 1))
+    done
+    if (( applied == 0 )); then
+        warn "No compatible EPP controls were found."
+    else
+        info "AMD P-State EPP: $EPP"
+    fi
+}
+
+ryzenadj_report_value() {
+    local report="$1" parameter="$2" value
+    value="$(awk -F'|' -v want="$parameter" '
+        {
+            for (i = 2; i <= NF; i++) {
+                field = $i
+                gsub(/^[ \t]+|[ \t]+$/, "", field)
+                if (field == want) {
+                    value = $(i - 1)
+                    gsub(/^[ \t]+|[ \t]+$/, "", value)
+                    print value
+                    exit
+                }
+            }
+        }' <<< "$report")"
+    [[ -n "$value" ]] || return 1
+    printf '%s' "$value"
+}
+
+values_match() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        if (a + 0 == 0 && a !~ /^[ \t]*[-+]?[0-9.]/) exit 1
+        d = a - b; if (d < 0) d = -d
+        exit (d <= 0.5) ? 0 : 1
+    }'
+}
+
+verify_ryzenadj_limits() {
+    local ryzenadj="$1" report parsed=0 spec label parameter want got joined
+    local -a drift=()
+    report="$("$ryzenadj" -i 2>&1)" || return 3
+
+    for spec in "STAPM:stapm-limit:$STAPM_W" \
+                "Slow PPT:slow-limit:$SLOW_W" \
+                "Fast PPT:fast-limit:$FAST_W" \
+                "Tctl:tctl-temp:$TEMP_C"; do
+        label="${spec%%:*}"
+        parameter="${spec#*:}"
+        parameter="${parameter%%:*}"
+        want="${spec##*:}"
+        got="$(ryzenadj_report_value "$report" "$parameter" 2>/dev/null || true)"
+        [[ -n "$got" ]] || continue
+        parsed=$((parsed + 1))
+        values_match "$got" "$want" || drift+=("$label wanted $want, reads $got")
+    done
+
+    (( parsed > 0 )) || return 2
+    (( ${#drift[@]} == 0 )) && return 0
+    joined="$(printf '%s; ' "${drift[@]}")"
+    printf '%s' "${joined%; }"
+    return 1
+}
+
+apply_ryzenadj() {
+    local dry_run="$1" ryzenadj
+    ryzenadj="$(resolve_ryzenadj)"
+    [[ -n "$ryzenadj" && -x "$ryzenadj" ]] || die "ryzenadj is not installed or executable. Install ryzenadj (AUR) first."
+
+    local cmd=(
+        "$ryzenadj"
+        "--stapm-limit=$((STAPM_W * 1000))"
+        "--slow-limit=$((SLOW_W * 1000))"
+        "--fast-limit=$((FAST_W * 1000))"
+        "--tctl-temp=$TEMP_C"
+    )
+
+    info "Applying RyzenAdj: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C"
+    run_or_print "$dry_run" "${cmd[@]}"
+    [[ "$dry_run" == "1" ]] && return 0
+
+    local drift rc=0
+    drift="$(verify_ryzenadj_limits "$ryzenadj")" || rc=$?
+    case "$rc" in
+        0)
+            RYZENADJ_VERIFIED=yes
+            info "RyzenAdj limits confirmed: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C"
+            ;;
+        1)
+            RYZENADJ_VERIFIED=no
+            RYZENADJ_DRIFT="$drift"
+            warn "RyzenAdj exited 0 but the limits did not take: $drift"
+            ;;
+        *) warn "Could not read the limits back from '$ryzenadj -i'; this apply is unverified." ;;
+    esac
+    return 0
+}
+
+write_state() {
+    local profile="$1" dry_run="$2" result="${3:-ok}" key
+    [[ "$dry_run" == "1" ]] && return 0
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+    {
+        printf 'PROFILE=%s\n' "$profile"
+        printf 'RESULT=%s\n' "$result"
+        printf 'VERIFIED=%s\n' "${RYZENADJ_VERIFIED:-unknown}"
+        printf 'BOOST_APPLIED=%s\n' "${BOOST_APPLIED:-unchanged}"
+        for key in "${PROFILE_KEYS[@]}"; do
+            printf '%s=%s\n' "$key" "${!key}"
+        done
+        printf 'APPLIED_AT=%s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
+    } > "$STATE_DIR/last-apply.env"
+}
+
+cmd_apply() {
+    local profile="" dry_run="$DRY_RUN_DEFAULT" boot=0
+    while (( $# > 0 )); do
+        case "$1" in
+            --dry-run) dry_run=1 ;;
+            --boot) boot=1 ;;
+            -h|--help) usage; return 0 ;;
+            --*) die "Unknown apply option: $1" ;;
+            *)
+                [[ -z "$profile" ]] || die "Only one profile may be supplied."
+                profile="$1"
+                ;;
+        esac
+        shift
+    done
+
+    [[ "$dry_run" == "1" ]] || require_root
+
+    if [[ -z "$profile" ]]; then
+        load_global_config
+        profile="$ACTIVE_PROFILE"
+    fi
+
+    load_profile "$profile"
+    validate_profile
+
+    local ryzenadj_preflight
+    ryzenadj_preflight="$(resolve_ryzenadj)"
+    [[ -n "$ryzenadj_preflight" && -x "$ryzenadj_preflight" ]] || \
+        die "ryzenadj is not installed or executable. Install ryzenadj (AUR) first."
+
+    (( boot == 1 )) && info "Boot apply: profile '$profile'"
+    if [[ "$dry_run" != "1" ]]; then
+        trap 'write_state "$profile" 0 partial
+              warn "Interrupted; the power state may be partially applied. Re-run apply."
+              exit 130' INT TERM
+    fi
+    RYZENADJ_DRIFT=""
+    RYZENADJ_VERIFIED=unknown
+    apply_power_profile "$dry_run"
+    apply_ryzenadj "$dry_run"
+    apply_boost "$dry_run"
+    apply_frequency_limits "$dry_run"
+    apply_epp "$dry_run"
+    trap - INT TERM
+    if [[ "$dry_run" == "1" ]]; then
+        write_state "$profile" "$dry_run" ok
+        success "Dry run complete; profile '$profile' was not applied."
+        return 0
+    fi
+    if [[ -n "$RYZENADJ_DRIFT" ]]; then
+        write_state "$profile" 0 partial
+        die "Profile '$profile' was not fully applied: $RYZENADJ_DRIFT. Run 'legion-powerctl doctor'."
+    fi
+    write_state "$profile" 0 ok
+    success "Profile '$profile' applied successfully."
+}
+
+cmd_configure() {
+    require_root
+    (( $# >= 1 )) || die "configure requires a profile name."
+    local name="$1"
+    shift
+    valid_profile_name "$name" || die "Invalid profile name '$name'."
+
+    local path select_profile=0 apply_now=0 var
+    path="$(profile_path "$name")"
+    if [[ -r "$path" ]]; then
+        load_profile "$name"
+    else
+        set_profile_defaults
+    fi
+
+    while (( $# > 0 )); do
+        case "$1" in
+            --select) select_profile=1 ;;
+            --apply) apply_now=1 ;;
+            -h|--help) usage; return 0 ;;
+            *)
+                var="${CONFIGURE_FLAG_VAR[$1]:-}"
+                [[ -n "$var" ]] || die "Unknown configure option: $1"
+                [[ $# -ge 2 ]] || die "$1 needs a value"
+                printf -v "$var" '%s' "$2"
+                shift
+                ;;
+        esac
+        shift
+    done
+
+    write_profile "$name"
+    if (( select_profile == 1 )); then
+        write_global_config "$name"
+        success "Selected '$name' as the active boot profile."
+    fi
+    if (( apply_now == 1 )); then
+        cmd_apply "$name"
+    fi
+}
+
+prompt_value() {
+    local prompt="$1" current="$2" validator="$3" value
+    while true; do
+        read -r -p "$prompt [$current]: " value || die "Cancelled."
+        value="${value:-$current}"
+        if "$validator" "$value"; then
+            printf '%s' "$value"
+            return 0
+        fi
+        warn "Invalid value '$value'."
+    done
+}
+
+validate_power_prompt() { is_uint "$1" && (( $1 >= MIN_POWER_W && $1 <= MAX_POWER_W )); }
+validate_temp_prompt() { is_uint "$1" && (( $1 >= MIN_TEMP_C && $1 <= MAX_TEMP_C )); }
+validate_pp_prompt() { in_list "$1" "${POWER_PROFILE_VALUES[@]}"; }
+validate_freq_prompt() {
+    [[ "$1" == stock || "$1" == unchanged ]] && return 0
+    is_uint "$1" && (( $1 >= 100 && $1 <= 10000 ))
+}
+validate_boost_prompt() { in_list "$1" "${BOOST_VALUES[@]}"; }
+validate_epp_prompt() { in_list "$1" "${EPP_VALUES[@]}"; }
+
+cmd_wizard() {
+    require_root
+    [[ -t 0 ]] || die "wizard needs an interactive terminal. Use 'configure' for scripting."
+    local name="${1:-custom}" path answer
+    valid_profile_name "$name" || die "Invalid profile name '$name'."
+    path="$(profile_path "$name")"
+    if [[ -r "$path" ]]; then
+        load_profile "$name"
+    else
+        set_profile_defaults
+    fi
+
+    printf '%s\n' "${C_BOLD}Configure profile: $name${C_RESET}"
+    printf '%s\n' "Power guardrails: ${MIN_POWER_W}-${MAX_POWER_W} W; temperature: ${MIN_TEMP_C}-${MAX_TEMP_C} C."
+    STAPM_W="$(prompt_value 'Sustained STAPM watts' "$STAPM_W" validate_power_prompt)"
+    SLOW_W="$(prompt_value 'Slow/average PPT watts' "$SLOW_W" validate_power_prompt)"
+    FAST_W="$(prompt_value 'Fast/short PPT watts' "$FAST_W" validate_power_prompt)"
+    TEMP_C="$(prompt_value 'Temperature ceiling C' "$TEMP_C" validate_temp_prompt)"
+    POWER_PROFILE="$(prompt_value 'Linux power profile' "$POWER_PROFILE" validate_pp_prompt)"
+    MIN_FREQ_MHZ="$(prompt_value 'Minimum frequency: stock/unchanged/MHz' "$MIN_FREQ_MHZ" validate_freq_prompt)"
+    MAX_FREQ_MHZ="$(prompt_value 'Maximum frequency: stock/unchanged/MHz' "$MAX_FREQ_MHZ" validate_freq_prompt)"
+    BOOST="$(prompt_value 'CPU boost: on/off/unchanged' "$BOOST" validate_boost_prompt)"
+    EPP="$(prompt_value 'EPP preference' "$EPP" validate_epp_prompt)"
+
+    validate_profile
+    write_profile "$name"
+
+    read -r -p "Select '$name' for boot? [Y/n]: " answer || die "Cancelled."
+    if [[ ! "$answer" =~ ^[Nn]$ ]]; then
+        write_global_config "$name"
+        success "Selected '$name'."
+    fi
+
+    read -r -p "Apply it now? [Y/n]: " answer || die "Cancelled."
+    if [[ ! "$answer" =~ ^[Nn]$ ]]; then
+        cmd_apply "$name"
+    fi
+}
+
+cmd_select() {
+    require_root
+    (( $# >= 1 )) || die "select requires a profile name."
+    local name="$1" apply_now=0
+    shift
+    [[ -r "$(profile_path "$name")" ]] || die "Profile '$name' does not exist."
+    while (( $# > 0 )); do
+        case "$1" in
+            --apply) apply_now=1 ;;
+            *) die "Unknown select option: $1" ;;
+        esac
+        shift
+    done
+    write_global_config "$name"
+    success "Selected '$name' as the active boot profile."
+    if (( apply_now == 1 )); then
+        cmd_apply "$name"
+    fi
+}
+
+cmd_list() {
+    load_global_config
+    local files=("$PROFILES_DIR"/*.conf)
+    if (( ${#files[@]} == 0 )); then
+        warn "No profiles found in $PROFILES_DIR"
+        return 0
+    fi
+    local file name marker
+    for file in "${files[@]}"; do
+        name="${file##*/}"
+        name="${name%.conf}"
+        marker=" "
+        [[ "$name" == "$ACTIVE_PROFILE" ]] && marker="*"
+        printf '%s %-24s %s\n' "$marker" "$name" "$file"
+    done
+}
+
+cmd_show() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then
+        load_global_config
+        name="$ACTIVE_PROFILE"
+    fi
+    print_profile "$name"
+}
+
+cmd_delete() {
+    require_root
+    (( $# >= 1 )) || die "delete requires a profile name."
+    local name="$1" force=0 path
+    shift
+    while (( $# > 0 )); do
+        case "$1" in
+            --force) force=1 ;;
+            *) die "Unknown delete option: $1" ;;
+        esac
+        shift
+    done
+    path="$(profile_path "$name")"
+    [[ -e "$path" ]] || die "Profile '$name' does not exist."
+    load_global_config
+    if [[ "$name" == "$ACTIVE_PROFILE" && $force -ne 1 ]]; then
+        die "'$name' is the active boot profile. Select another profile first or use --force."
+    fi
+    rm -f "$path"
+    success "Deleted profile '$name'."
+}
+
+collect_status() {
+    STATUS_RYZENADJ="$(resolve_ryzenadj)"
+    STATUS_PPCTL="$(resolve_powerprofilesctl)"
+    STATUS_SYSTEMCTL="$(resolve_systemctl)"
+    STATUS_POWER_PROFILE=""
+    STATUS_CPU_DRIVER=""
+    STATUS_CPU_EPP=""
+    STATUS_SERVICE_ENABLED=""
+    STATUS_SERVICE_ACTIVE=""
+    load_global_config
+
+    if [[ -n "$STATUS_PPCTL" && -x "$STATUS_PPCTL" ]]; then
+        STATUS_POWER_PROFILE="$("$STATUS_PPCTL" get 2>/dev/null || true)"
+    fi
+    local policy0="$SYSFS_CPU_ROOT/cpufreq/policy0"
+    [[ -r "$policy0/scaling_driver" ]] && STATUS_CPU_DRIVER="$(<"$policy0/scaling_driver")"
+    [[ -r "$policy0/energy_performance_preference" ]] && \
+        STATUS_CPU_EPP="$(<"$policy0/energy_performance_preference")"
+    if [[ -n "$STATUS_SYSTEMCTL" && -x "$STATUS_SYSTEMCTL" ]]; then
+        STATUS_SERVICE_ENABLED="$("$STATUS_SYSTEMCTL" is-enabled "$SERVICE_NAME" 2>/dev/null || true)"
+        STATUS_SERVICE_ACTIVE="$("$STATUS_SYSTEMCTL" is-active "$SERVICE_NAME" 2>/dev/null || true)"
+        [[ -n "$STATUS_SERVICE_ENABLED" ]] || STATUS_SERVICE_ENABLED="disabled"
+        [[ -n "$STATUS_SERVICE_ACTIVE" ]] || STATUS_SERVICE_ACTIVE="inactive"
+    fi
+}
+
+show_frequency_summary() {
+    local policies=("$SYSFS_CPU_ROOT"/cpufreq/policy*)
+    (( ${#policies[@]} > 0 )) || { printf 'CPU frequency:   unavailable\n'; return; }
+    local min_seen="" max_seen="" policy value
+    for policy in "${policies[@]}"; do
+        value="$(read_uint_file "$policy/scaling_min_freq" || true)"
+        if [[ -n "$value" && ( -z "$min_seen" || value -lt min_seen ) ]]; then min_seen="$value"; fi
+        value="$(read_uint_file "$policy/scaling_max_freq" || true)"
+        if [[ -n "$value" && ( -z "$max_seen" || value -gt max_seen ) ]]; then max_seen="$value"; fi
+    done
+    if [[ -n "$min_seen" && -n "$max_seen" ]]; then
+        printf 'CPU frequency:   %s-%s MHz allowed\n' "$((min_seen / 1000))" "$((max_seen / 1000))"
+    else
+        printf 'CPU frequency:   unreadable\n'
+    fi
+}
+
+json_escape() {
+    local LC_ALL=C
+    local s="$1"
+    if [[ "$s" == *[$'\x80'-$'\xff']* ]] && command -v iconv >/dev/null 2>&1; then
+        if ! printf '%s' "$s" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+            s="$(printf '%s' "$s" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)" || true
+        fi
+    fi
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    s="${s//[[:cntrl:]]/}"
+    printf '%s' "$s"
+}
+
+json_string_or_null() {
+    if [[ -n "$1" ]]; then
+        printf '"%s"' "$(json_escape "$1")"
+    else
+        printf 'null'
+    fi
+}
+
+profile_json() {
+    local name="$1" active="$2"
+    if ! try_load_profile "$name"; then
+        printf '{"name":"%s","active":%s,"valid":false}' "$(json_escape "$name")" "$active"
+        return 0
+    fi
+    printf '{"name":"%s","active":%s,"valid":true,"description":"%s"' \
+        "$(json_escape "$name")" "$active" "$(json_escape "$PROFILE_DESCRIPTION")"
+    printf ',"stapm_w":%s,"slow_w":%s,"fast_w":%s,"temp_c":%s' \
+        "$STAPM_W" "$SLOW_W" "$FAST_W" "$TEMP_C"
+    printf ',"power_profile":"%s","min_freq_mhz":"%s","max_freq_mhz":"%s","boost":"%s","epp":"%s"}' \
+        "$(json_escape "$POWER_PROFILE")" "$(json_escape "$MIN_FREQ_MHZ")" \
+        "$(json_escape "$MAX_FREQ_MHZ")" "$(json_escape "$BOOST")" "$(json_escape "$EPP")"
+}
+
+last_apply_json() {
+    local LC_ALL=C
+    local state_file="$STATE_DIR/last-apply.env"
+    if [[ ! -r "$state_file" ]]; then
+        printf 'null'
+        return 0
+    fi
+    local raw line key value first=1
+    printf '{'
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        line="$(trim "$raw")"
+        [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
+        key="$(trim "${line%%=*}")"
+        value="$(trim "${line#*=}")"
+        [[ "$key" =~ ^[A-Z_]+$ ]] || continue
+        (( first == 0 )) && printf ','
+        first=0
+        printf '"%s":"%s"' "$(json_escape "${key,,}")" "$(json_escape "$value")"
+    done < "$state_file"
+    printf '}'
+}
+
+cmd_status_json() {
+    collect_status
+
+    printf '{"schema_version":1,"version":"%s"' "$VERSION"
+    printf ',"active_profile":"%s"' "$(json_escape "$ACTIVE_PROFILE")"
+    printf ',"power_profile":%s' "$(json_string_or_null "$STATUS_POWER_PROFILE")"
+    printf ',"cpu_driver":%s' "$(json_string_or_null "$STATUS_CPU_DRIVER")"
+    printf ',"cpu_epp":%s' "$(json_string_or_null "$STATUS_CPU_EPP")"
+    printf ',"ryzenadj":%s' "$(json_string_or_null "$STATUS_RYZENADJ")"
+    if [[ -n "$STATUS_SERVICE_ENABLED" ]]; then
+        printf ',"service":{"enabled":"%s","active":"%s"}' \
+            "$(json_escape "$STATUS_SERVICE_ENABLED")" "$(json_escape "$STATUS_SERVICE_ACTIVE")"
+    else
+        printf ',"service":null'
+    fi
+    printf ',"last_apply":%s' "$(last_apply_json)"
+
+    printf ',"profiles":['
+    local files=("$PROFILES_DIR"/*.conf) file name active first=1
+    for file in "${files[@]}"; do
+        name="${file##*/}"
+        name="${name%.conf}"
+        active=false
+        [[ "$name" == "$ACTIVE_PROFILE" ]] && active=true
+        (( first == 0 )) && printf ','
+        first=0
+        profile_json "$name" "$active"
+    done
+    printf ']}\n'
+}
+
+cmd_status_waybar() {
+    load_global_config
+    local text="$ACTIVE_PROFILE" tooltip="legion-powerctl: $ACTIVE_PROFILE"
+    if try_load_profile "$ACTIVE_PROFILE"; then
+        text="${ACTIVE_PROFILE} ${STAPM_W}W ${TEMP_C}°C"
+        tooltip="${ACTIVE_PROFILE}: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C cap"
+    fi
+    printf '{"text":"%s","alt":"%s","class":"%s","tooltip":"%s"}\n' \
+        "$(json_escape "$text")" "$(json_escape "$ACTIVE_PROFILE")" \
+        "$(json_escape "$ACTIVE_PROFILE")" "$(json_escape "$tooltip")"
+}
+
+cmd_status() {
+    local mode=text
+    while (( $# > 0 )); do
+        case "$1" in
+            --json) mode=json ;;
+            --waybar) mode=waybar ;;
+            -h|--help) usage; return 0 ;;
+            *) die "Unknown status option: $1" ;;
+        esac
+        shift
+    done
+    if [[ "$mode" == "json" ]]; then
+        cmd_status_json
+        return 0
+    elif [[ "$mode" == "waybar" ]]; then
+        cmd_status_waybar
+        return 0
+    fi
+
+    collect_status
+
+    printf '%s\n' "${C_BOLD}legion-powerctl status${C_RESET}"
+    printf 'Version:         %s\n' "$VERSION"
+    printf 'Active profile:  %s\n' "$ACTIVE_PROFILE"
+    printf 'Power profile:   %s\n' "${STATUS_POWER_PROFILE:-unavailable}"
+    printf 'CPU driver:      %s\n' "${STATUS_CPU_DRIVER:-unavailable}"
+    printf 'CPU EPP:         %s\n' "${STATUS_CPU_EPP:-unavailable}"
+    printf 'RyzenAdj:        %s\n' "${STATUS_RYZENADJ:-not found}"
+    show_frequency_summary
+
+    if [[ -n "$STATUS_SERVICE_ENABLED" ]]; then
+        printf 'Boot service:    %s / %s\n' "$STATUS_SERVICE_ENABLED" "$STATUS_SERVICE_ACTIVE"
+    else
+        printf 'Boot service:    systemctl unavailable\n'
+    fi
+
+    if [[ -r "$STATE_DIR/last-apply.env" ]]; then
+        printf '\nLast successful apply:\n'
+        sed 's/^/  /' "$STATE_DIR/last-apply.env"
+    else
+        printf '\nLast successful apply: no runtime record (normal immediately after reboot if the service has not run).\n'
+    fi
+
+    printf '\nConfigured profile:\n'
+    if try_load_profile "$ACTIVE_PROFILE"; then
+        print_profile "$ACTIVE_PROFILE" | sed 's/^/  /'
+    else
+        printf '  No valid active profile: %s. Run '\''legion-powerctl doctor'\'' for the reason.\n' \
+            "$ACTIVE_PROFILE"
+    fi
+    printf '\nNote: some newer Ryzen families cannot report the active SMU limits through RyzenAdj --info.\n'
+}
+
+doctor_line() {
+    local status="$1" label="$2" detail="$3"
+    printf '%-5s %-24s %s\n' "$status" "$label" "$detail"
+}
+
+kernel_lockdown_state() {
+    local raw
+    [[ -r "$LOCKDOWN_PATH" ]] || return 1
+    raw="$(<"$LOCKDOWN_PATH")"
+    [[ "$raw" =~ \[([a-z]+)\] ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+
+secure_boot_enabled() {
+    local files=("$EFIVARS_DIR"/SecureBoot-*) byte
+    (( ${#files[@]} > 0 )) || return 1
+    [[ -r "${files[0]}" ]] || return 1
+    byte="$(od -An -tu1 -j4 -N1 "${files[0]}" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$byte" == "1" ]]
+}
+
+dmi_field() {
+    local LC_ALL=C value
+    value="$(cat "$DMI_ROOT/$1" 2>/dev/null || true)"
+    value="${value%%$'\n'*}"
+    case "${value,,}" in
+        ''|'to be filled by o.e.m.'|'default string'|'none'|'not applicable'| \
+        'system product name'|'not specified'|'o.e.m.'|'invalid') return 1 ;;
+    esac
+    printf '%s' "$value"
+}
+
+dmi_matches() {
+    local LC_ALL=C haystack="${1,,}" needle
+    shift
+    for needle in "$@"; do
+        [[ "$haystack" == *"$needle"* ]] || return 1
+    done
+}
+
+cmd_doctor() {
+    local failures=0 warnings=0 ryzenadj ppctl systemctl_bin vendor product cpu_vendor driver
+    local dmi_family dmi_version dmi_model dmi_label dmi_all
+    ryzenadj="$(resolve_ryzenadj)"
+    ppctl="$(resolve_powerprofilesctl)"
+    systemctl_bin="$(resolve_systemctl)"
+    vendor="$(dmi_field sys_vendor || true)"
+    product="$(dmi_field product_name || true)"
+    dmi_family="$(dmi_field product_family || true)"
+    dmi_version="$(dmi_field product_version || true)"
+    dmi_model="${dmi_version:-${dmi_family:-$product}}"
+    dmi_label="${vendor:-unknown} ${dmi_model:-unknown}"
+    [[ -n "$product" && "$product" != "$dmi_model" ]] && dmi_label="$dmi_label ($product)"
+    dmi_all="$vendor $product $dmi_family $dmi_version"
+    cpu_vendor="$(grep -m1 '^vendor_id' "$CPUINFO_PATH" 2>/dev/null | awk '{print $3}' || true)"
+    driver="$(cat "$SYSFS_CPU_ROOT/cpufreq/policy0/scaling_driver" 2>/dev/null || true)"
+
+    if [[ "$cpu_vendor" == "AuthenticAMD" ]]; then
+        doctor_line OK CPU "AMD processor detected"
+    else
+        doctor_line FAIL CPU "Expected AMD; detected '${cpu_vendor:-unknown}'"
+        ((failures += 1))
+    fi
+
+    if dmi_matches "$dmi_all" lenovo legion; then
+        doctor_line OK System "$dmi_label"
+    elif dmi_matches "$dmi_all" lenovo; then
+        doctor_line WARN System "$dmi_label - a Lenovo, but not identified as a Legion"
+        ((warnings += 1))
+    else
+        doctor_line WARN System "Not identified as a Lenovo Legion ($dmi_label)"
+        ((warnings += 1))
+    fi
+
+    if [[ -n "$ryzenadj" && -x "$ryzenadj" ]]; then
+        doctor_line OK RyzenAdj "$ryzenadj"
+        local ryzenadj_ver
+        ryzenadj_ver="$(ryzenadj_version "$ryzenadj")"
+        if [[ -z "$ryzenadj_ver" ]]; then
+            doctor_line WARN RyzenAdj-version "could not be determined; Fire Range/HX CPUs need ${MIN_RYZENADJ_VERSION} or newer"
+            ((warnings += 1))
+        elif version_lt "$ryzenadj_ver" "$MIN_RYZENADJ_VERSION"; then
+            doctor_line WARN RyzenAdj-version "$ryzenadj_ver is older than ${MIN_RYZENADJ_VERSION}; Fire Range/HX CPUs are unsupported before ${MIN_RYZENADJ_VERSION}"
+            ((warnings += 1))
+        else
+            doctor_line OK RyzenAdj-version "$ryzenadj_ver"
+        fi
+        local -a other_ryzenadj=()
+        if [[ -z "${LEGION_POWERCTL_RYZENADJ_BIN:-}" ]]; then
+            mapfile -t other_ryzenadj < <(ryzenadj_candidates | grep -Fxv -- "$ryzenadj" || true)
+        fi
+        if (( ${#other_ryzenadj[@]} > 0 )); then
+            doctor_line WARN RyzenAdj-shadow "PATH holds more than one ryzenadj; selected $ryzenadj (newest) over ${other_ryzenadj[*]}. Running 'ryzenadj' by hand still picks the first on PATH"
+            ((warnings += 1))
+        fi
+    else
+        doctor_line FAIL RyzenAdj "not found; install ryzenadj (AUR)"
+        ((failures += 1))
+    fi
+
+    local smu_backend=""
+    if [[ -e "$SMU_DEV" ]]; then
+        smu_backend="module"
+        doctor_line OK SMU-backend "$SMU_DEV available"
+    elif [[ -e "$DEV_MEM_PATH" ]]; then
+        smu_backend="devmem"
+        doctor_line WARN SMU-backend "no $SMU_DEV; RyzenAdj will try the $DEV_MEM_PATH fallback"
+        ((warnings += 1))
+    else
+        doctor_line FAIL SMU-backend "neither $SMU_DEV nor $DEV_MEM_PATH is available"
+        ((failures += 1))
+    fi
+
+    if [[ ! -e "$SMU_DEV" ]]; then
+        if [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
+            doctor_line WARN ryzen_smu "module is loaded but $SMU_DEV is absent; the module may not support this CPU, so 'ryzenadj -i' verification will report unverified"
+        else
+            doctor_line WARN ryzen_smu "module is not loaded; setting limits can still work over $DEV_MEM_PATH but reading them back often cannot, so applies report unverified - install ryzen_smu-dkms-git"
+        fi
+        ((warnings += 1))
+    fi
+
+    local lockdown
+    lockdown="$(kernel_lockdown_state || true)"
+    if [[ -z "$lockdown" ]]; then
+        doctor_line OK Kernel-lockdown "not reported by this kernel"
+    elif [[ "$lockdown" == "none" ]]; then
+        doctor_line OK Kernel-lockdown "none"
+    elif [[ "$smu_backend" == "module" ]]; then
+        doctor_line OK Kernel-lockdown "$lockdown; $SMU_DEV provides the SMU backend"
+    else
+        doctor_line WARN Kernel-lockdown "$lockdown - this blocks the $DEV_MEM_PATH fallback; install ryzen_smu-dkms-git"
+        ((warnings += 1))
+    fi
+
+    if secure_boot_enabled; then
+        if [[ "$smu_backend" == "module" ]]; then
+            doctor_line OK SecureBoot "enabled; $SMU_DEV provides the SMU backend"
+        else
+            doctor_line WARN SecureBoot "enabled - an out-of-tree ryzen_smu module needs its MOK key enrolled; see Kernel-lockdown above for whether $DEV_MEM_PATH is blocked"
+            ((warnings += 1))
+        fi
+    else
+        doctor_line OK SecureBoot "disabled or not applicable"
+    fi
+
+    if [[ -d "$MODULES_ROOT/legion_laptop" ]]; then
+        doctor_line WARN Conflicts "legion_laptop (LenovoLegionLinux) is loaded; two tools may write competing power settings"
+        ((warnings += 1))
+    fi
+    if [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]]; then
+        local conflict_unit conflict_state
+        for conflict_unit in tlp.service tuned.service auto-cpufreq.service; do
+            conflict_state="$("$systemctl_bin" is-active "$conflict_unit" 2>/dev/null || true)"
+            if [[ "$conflict_state" == "active" ]]; then
+                doctor_line WARN Conflicts "$conflict_unit is active and may overwrite CPUFreq/EPP settings on power events"
+                ((warnings += 1))
+            fi
+        done
+    fi
+
+    if [[ -n "$driver" ]]; then
+        doctor_line OK CPUFreq "$driver"
+    else
+        doctor_line WARN CPUFreq "driver unavailable"
+        ((warnings += 1))
+    fi
+    local -a boost_files=()
+    mapfile -t boost_files < <(boost_control_files || true)
+    if (( ${#boost_files[@]} > 0 )); then
+        local boost_value
+        boost_value="$(read_uint_file "${boost_files[0]}" || true)"
+        doctor_line OK Boost-control "${boost_files[0]} (value ${boost_value:-unreadable}, driver ${driver:-unknown})"
+    else
+        doctor_line WARN Boost-control "no boost control is exposed by ${driver:-this kernel}; profiles that set BOOST will skip it"
+        ((warnings += 1))
+    fi
+    if [[ -n "$ppctl" && -x "$ppctl" ]]; then
+        doctor_line OK powerprofilesctl "$ppctl"
+    else
+        doctor_line WARN powerprofilesctl "not installed; POWER_PROFILE will be skipped"
+        ((warnings += 1))
+    fi
+
+    if [[ ! -x "$GUI_LAUNCHER" ]]; then
+        doctor_line WARN GUI "not installed at $GUI_LAUNCHER; this is a CLI-only install"
+        ((warnings += 1))
+    elif ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        doctor_line WARN GUI "$GUI_LAUNCHER is installed but $PYTHON_BIN is missing"
+        ((warnings += 1))
+    elif ! "$PYTHON_BIN" -I -c 'import PySide6' >/dev/null 2>&1; then
+        doctor_line WARN GUI "$GUI_LAUNCHER is installed but PySide6 is not; install it (pacman -S pyside6)"
+        ((warnings += 1))
+    elif [[ ! -r "$POLKIT_POLICY" ]]; then
+        doctor_line WARN GUI "ready, but the polkit policy is missing; privileged actions fall back to a generic pkexec prompt every time"
+        ((warnings += 1))
+    else
+        doctor_line OK GUI "$GUI_LAUNCHER (PySide6 and polkit policy present)"
+    fi
+
+    load_global_config
+    local profile_error=""
+    if [[ ! -r "$(profile_path "$ACTIVE_PROFILE")" ]]; then
+        doctor_line FAIL Profile "active profile '$ACTIVE_PROFILE' is missing"
+        ((failures += 1))
+    elif profile_error="$( (load_profile "$ACTIVE_PROFILE" && validate_profile) 2>&1 >/dev/null )"; then
+        doctor_line OK Profile "$ACTIVE_PROFILE"
+    else
+        profile_error="$(sed -e $'s/\033\\[[0-9;]*m//g' -e 's/^ERROR: //' <<<"$profile_error")"
+        doctor_line FAIL Profile "'$ACTIVE_PROFILE' is invalid: ${profile_error:-unreadable profile file}"
+        ((failures += 1))
+    fi
+
+    if [[ -n "$ryzenadj" && -x "$ryzenadj" ]] && try_load_profile "$ACTIVE_PROFILE"; then
+        local drift_detail="" drift_rc=0
+        drift_detail="$(verify_ryzenadj_limits "$ryzenadj")" || drift_rc=$?
+        case "$drift_rc" in
+            0) doctor_line OK Limits "in force: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C" ;;
+            1)
+                doctor_line FAIL Limits "$drift_detail; re-run 'legion-powerctl apply'"
+                ((failures += 1))
+                ;;
+            2)
+                doctor_line WARN Limits "'$ryzenadj -i' returned nothing this version can read"
+                ((warnings += 1))
+                ;;
+        esac
+    fi
+
+    if [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]]; then
+        doctor_line OK systemd "$systemctl_bin"
+    else
+        doctor_line FAIL systemd "systemctl not found"
+        ((failures += 1))
+    fi
+
+    printf '\nDoctor result: %d failure(s), %d warning(s).\n' "$failures" "$warnings"
+    (( failures == 0 ))
+}
+
+cmd_enable() {
+    local force=0
+    while (( $# > 0 )); do
+        case "$1" in
+            --force) force=1 ;;
+            -h|--help) usage; return 0 ;;
+            *) die "Unknown enable option: $1" ;;
+        esac
+        shift
+    done
+
+    require_root
+    if (( force == 0 )); then
+        cmd_doctor || die "doctor reported failures. Fix them first, or rerun with 'legion-powerctl enable --force'."
+    fi
+
+    local systemctl_bin
+    systemctl_bin="$(resolve_systemctl)"
+    [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]] || die "systemctl not found."
+    "$systemctl_bin" daemon-reload
+    "$systemctl_bin" enable "$SERVICE_NAME"
+    "$systemctl_bin" restart "$SERVICE_NAME"
+    success "$SERVICE_NAME is enabled and the active profile was applied."
+}
+
+cmd_disable() {
+    require_root
+    local systemctl_bin
+    systemctl_bin="$(resolve_systemctl)"
+    [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]] || die "systemctl not found."
+    "$systemctl_bin" disable --now "$SERVICE_NAME"
+    success "$SERVICE_NAME is disabled. Existing SMU settings remain until firmware changes them or the machine reboots."
+}
+
+cmd_restore_frequency() {
+    require_root
+    local requested_boost=on
+    while (( $# > 0 )); do
+        case "$1" in
+            --boost) [[ $# -ge 2 ]] || die "--boost needs a value"; requested_boost="$2"; shift ;;
+            *) die "Unknown restore-frequency option: $1" ;;
+        esac
+        shift
+    done
+    in_list "$requested_boost" "${BOOST_VALUES[@]}" || die "--boost must be on, off, or unchanged."
+
+    MIN_FREQ_MHZ=stock
+    MAX_FREQ_MHZ=stock
+    BOOST="$requested_boost"
+    apply_boost 0
+    apply_frequency_limits 0
+    success "Stock CPU frequency range restored."
+}
+
+main() {
+    local command="${1:-help}"
+    if (( $# > 0 )); then shift; fi
+    case "${1:-}" in -h|--help) usage; return 0 ;; esac
+    case "$command" in
+        apply|reapply) cmd_apply "$@" ;;
+        configure|config) cmd_configure "$@" ;;
+        wizard|setup) cmd_wizard "$@" ;;
+        select) cmd_select "$@" ;;
+        list|profiles) cmd_list "$@" ;;
+        show) cmd_show "$@" ;;
+        delete|remove-profile) cmd_delete "$@" ;;
+        status) cmd_status "$@" ;;
+        doctor|check) cmd_doctor "$@" ;;
+        enable) cmd_enable "$@" ;;
+        disable) cmd_disable "$@" ;;
+        restore-frequency) cmd_restore_frequency "$@" ;;
+        version|--version|-V) printf '%s %s\n' "$PROGRAM" "$VERSION" ;;
+        help|--help|-h) usage ;;
+        *) die "Unknown command '$command'. Run '$PROGRAM help'." ;;
+    esac
+}
+
+main "$@"

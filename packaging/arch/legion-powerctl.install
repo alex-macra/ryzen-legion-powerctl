@@ -1,0 +1,28 @@
+post_install() {
+    cat <<'EOF'
+legion-powerctl writes volatile CPU SMU power limits through RyzenAdj.
+Use at your own risk. Not affiliated with Lenovo, AMD, or CachyOS;
+Legion is a trademark of Lenovo.
+
+The package itself enables nothing. Boot persistence comes from:
+
+    legion-powerctl doctor
+    sudo legion-powerctl enable    # runs doctor first; --force skips the gate
+
+(./install.sh runs this enable step for you unless --no-enable was given.)
+Fire Range / HX CPUs need ryzenadj 0.19.0 or newer.
+EOF
+}
+
+pre_remove() {
+    systemctl disable --now legion-powerctl.service >/dev/null 2>&1 || true
+}
+
+post_upgrade() {
+    cat <<'EOF'
+If you edited the bundled profiles, check for .pacnew files under
+/etc/legion-powerctl. Reapply the active profile with:
+
+    sudo legion-powerctl apply
+EOF
+}

@@ -1,0 +1,104 @@
+.TH LEGION-POWERCTL 8 "2026-08-07" "legion-powerctl 0.3.0" "System Administration"
+.SH NAME
+legion-powerctl \- configure Ryzen CPU power limits on Lenovo Legion laptops
+.SH SYNOPSIS
+.B legion-powerctl
+.RI COMMAND " [arguments]"
+.SH DESCRIPTION
+.B legion-powerctl
+validates named profiles, applies RyzenAdj package-power and temperature limits,
+and optionally controls powerprofilesctl, CPUFreq boundaries, boost, and AMD
+P-State EPP. Its systemd service is a one-shot unit that runs once at boot.
+.SH COMMANDS
+.TP
+.B apply [PROFILE] [--dry-run] [--boot]
+Apply a named profile or the selected active profile.
+.TP
+.B configure PROFILE [OPTIONS]
+Create or update a profile. Options include --stapm, --slow, --fast, --temp,
+--power-profile, --min-mhz, --max-mhz, --boost, --epp, --description,
+--select, and --apply.
+.TP
+.B wizard [PROFILE]
+Open an interactive profile editor.
+.TP
+.B select PROFILE [--apply]
+Select the profile used at boot.
+.TP
+.B list
+List profiles. The active profile is marked with an asterisk.
+.TP
+.B show [PROFILE]
+Show a profile, defaulting to the active profile.
+.TP
+.B delete PROFILE [--force]
+Delete a profile. The active profile is protected unless --force is used.
+.TP
+.B status [--json|--waybar]
+Show configuration, service state, CPU driver, frequency range, and the most
+recent successful apply record. With --json, print a single-line
+machine-readable document carrying a schema_version field (currently 1) plus
+every profile; the GUI and widgets consume this. With --waybar, print the JSON
+object a Waybar custom module expects (text, alt, class, tooltip).
+.TP
+.B doctor
+Run compatibility and installation checks, including RyzenAdj version,
+Secure Boot/kernel-lockdown state, and conflicting power-management tools.
+.TP
+.B enable [--force]
+Run doctor, then enable the boot service and apply the selected profile.
+Refuses when doctor reports failures unless --force is supplied.
+.TP
+.B disable
+Disable the boot service. Existing hardware state remains until firmware or a
+reboot changes it.
+.TP
+.B restore-frequency [--boost on|off|unchanged]
+Restore the hardware-reported CPUFreq minimum and maximum.
+.SH FILES
+.TP
+.I /etc/legion-powerctl/config.conf
+Selected active profile.
+.TP
+.I /etc/legion-powerctl/profiles.d/*.conf
+Profile definitions.
+.TP
+.I /usr/lib/systemd/system/legion-powerctl.service
+One-shot boot service.
+.TP
+.I /run/legion-powerctl/last-apply.env
+Volatile record of the last successful apply operation.
+.SH GRAPHICAL INTERFACE
+.B legion-powerctl-gui
+opens an unprivileged Qt control panel (requires the optional pyside6
+package). It reads state through 'status --json' and performs privileged
+actions through pkexec. The shipped policy defines one action per subcommand
+(io.github.alexmacra.legion-powerctl.configure, .apply, .select, .delete,
+.enable, .disable), each pinned with exec.argv1. Editing, applying, and
+selecting profiles use auth_admin_keep, which polkit retains for a few
+minutes; treat those three as one trust tier, because
+.B configure
+accepts --select and --apply and so reaches what the other two do. Deleting a
+profile and enabling or disabling the boot service always prompt, so a
+retained profile-editing authorization cannot be reused to remove a profile
+or to install boot persistence.
+.SH NOTES
+This project is not affiliated with Lenovo, AMD, or CachyOS. Legion is a
+trademark of Lenovo. Fire Range and other HX-series CPUs require RyzenAdj
+0.19.0 or newer.
+.PP
+RyzenAdj state is volatile. Boot persistence means reapplying the selected
+profile once during startup; it does not mean writing permanent firmware
+settings. Firmware profile changes and suspend/resume may overwrite limits on
+some laptops.
+.PP
+On newer Ryzen families, RyzenAdj may successfully apply settings even when
+its information or power-metric table is unavailable.
+.SH SAFETY
+Profile validation prevents malformed input but does not establish that a
+specific wattage or temperature is appropriate for every CPU or laptop.
+Monitor temperatures and test workloads incrementally.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR powerprofilesctl (1),
+.BR systemd.service (5)

@@ -1,0 +1,40 @@
+# Maintainer: Alex Macra <mail at alexmacra dot com>
+#
+# Local build: run ./install.sh from the repository root, or place the
+# 'make dist' tarball next to this PKGBUILD and run makepkg -si here.
+# The ryzenadj dependency is an AUR package makepkg cannot resolve by
+# itself - install it first (paru -S ryzenadj).
+# Before AUR submission: switch source= to the tagged release tarball
+# (commented below) and replace sha256sums with updpkgsums.
+pkgname=legion-powerctl
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='Configurable Ryzen CPU power and thermal limits for Lenovo Legion laptops'
+arch=('any')
+url='https://github.com/alex-macra/ryzen-legion-powerctl'
+license=('MIT')
+# python and hicolor-icon-theme cover the GUI module files and icons the
+# package ships; the heavyweight Qt runtime (pyside6) stays optional.
+depends=('bash' 'systemd' 'ryzenadj>=0.19.0' 'python' 'hicolor-icon-theme')
+optdepends=('power-profiles-daemon: apply Linux power profiles through powerprofilesctl'
+            'ryzen_smu-dkms-git: kernel SMU backend; required when Secure Boot blocks /dev/mem'
+            'pyside6: graphical control panel (legion-powerctl-gui)'
+            'polkit: authentication for privileged GUI and widget actions')
+backup=('etc/legion-powerctl/config.conf'
+        'etc/legion-powerctl/profiles.d/balanced-plus.conf'
+        'etc/legion-powerctl/profiles.d/quiet.conf'
+        'etc/legion-powerctl/profiles.d/performance-capped.conf')
+install=legion-powerctl.install
+source=("${pkgname}-${pkgver}.tar.gz")
+#source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    make -C "${srcdir}/${pkgname}-${pkgver}" \
+        DESTDIR="$pkgdir" \
+        PREFIX=/usr \
+        SYSCONFDIR=/etc \
+        install
+    install -Dm0644 "${srcdir}/${pkgname}-${pkgver}/LICENSE" \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

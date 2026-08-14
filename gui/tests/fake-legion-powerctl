@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Replies from fixtures and logs every invocation to $FAKE_CLI_LOG, so tests can
+# assert the exact argv.
+set -Eeuo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${FAKE_CLI_LOG:-}" ]]; then
+    printf '%s\n' "$*" >> "$FAKE_CLI_LOG"
+fi
+
+command="${1:-}"
+case "$command" in
+    status)
+        if [[ "${2:-}" == "--json" ]]; then
+            # A variant fixture (a mixed service state) without a second fake CLI.
+            cat "${FAKE_CLI_STATUS_FIXTURE:-$HERE/fixtures/status.json}"
+        else
+            echo "legion-powerctl status"
+        fi
+        ;;
+    doctor)
+        cat "$HERE/fixtures/doctor.txt"
+        ;;
+    apply)
+        if [[ "$*" == *--dry-run* ]]; then
+            printf 'DRY RUN: ryzenadj --stapm-limit=60000 --slow-limit=65000 --fast-limit=75000 --tctl-temp=82\n'
+        else
+            printf "Profile '%s' applied successfully.\n" "${2:-}"
+        fi
+        ;;
+    configure|select|delete|enable|disable)
+        printf 'ok: %s\n' "$command"
+        ;;
+    *)
+        printf 'fake CLI: unexpected command %s\n' "$*" >&2
+        exit 64
+        ;;
+esac

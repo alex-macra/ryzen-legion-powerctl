@@ -1,0 +1,77 @@
+name: Hardware compatibility report
+description: Report successful or unsuccessful behavior on a Lenovo Legion AMD model
+title: "[Compatibility] "
+labels: [compatibility]
+body:
+  - type: checkboxes
+    id: safety-checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I tested conservative values before increasing limits.
+          required: true
+        - label: I did not use an unofficial VBIOS or EC-writing tool as part of this report.
+          required: true
+  - type: input
+    id: laptop-model
+    attributes:
+      label: Laptop model
+      placeholder: Lenovo Legion Pro 7 16AFR10H
+    validations:
+      required: true
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU
+      placeholder: AMD Ryzen 9 9955HX3D
+    validations:
+      required: true
+  - type: input
+    id: distribution-kernel
+    attributes:
+      label: Distribution and kernel
+      placeholder: CachyOS; output of uname -r
+    validations:
+      required: true
+  - type: input
+    id: ryzenadj-version
+    attributes:
+      label: RyzenAdj package/version
+      placeholder: ryzenadj 0.19.0...
+    validations:
+      required: true
+  - type: textarea
+    id: profile
+    attributes:
+      label: Profile
+      description: Paste the profile with no private data.
+      render: ini
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic output
+      description: Paste `legion-powerctl doctor`, service status, and relevant journal lines.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: overwrite-events
+    attributes:
+      label: Events that overwrite the limits
+      multiple: true
+      options:
+        - None observed
+        - Reboot
+        - Suspend/resume
+        - Fn+Q profile change
+        - AC unplug/replug
+        - Other firmware action
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: Include temperatures, performance effect, and any instability.
+    validations:
+      required: true

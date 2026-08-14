@@ -1,0 +1,25 @@
+# Ruff configuration and nothing else. Deliberately no [project] or [build-system]
+# table: the GUI package is installed by globbing gui/legion_powerctl_gui/*.py from
+# the Makefile and the PKGBUILD, and a build backend here would create a second
+# install path that nothing tests and that would silently diverge from the packaged
+# one. Every shell file in this repo is linted; 1,800 lines of Python were not.
+
+[tool.ruff]
+line-length = 104
+# The oldest interpreter the GUI is expected to start on. Raising it lets ruff
+# rewrite code into syntax that would then fail to import there.
+target-version = "py39"
+extend-exclude = ["gui/tests/fixtures"]
+
+[tool.ruff.lint]
+# Correctness and hygiene, not style opinions: pycodestyle/pyflakes (E, F, W),
+# import order (I), bugbear's real traps (B), comprehension and pathlib misuse
+# (C4, PTH is deliberately absent - subprocess wants strings), and ruff's own
+# checks (RUF). No UP or SIM: both rewrite working code for taste, and a
+# behaviour-preserving change is worth more here than a shorter line.
+select = ["E", "F", "W", "I", "B", "C4", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# The offscreen tests import Qt symbols inside methods on purpose, so that the
+# module still imports when PySide6 is absent and the class is skipped.
+"gui/tests/*" = ["E402"]

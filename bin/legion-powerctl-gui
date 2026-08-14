@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
+set -Eeuo pipefail
+
+self="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+    self="$(realpath "$self")"
+fi
+bindir="$(cd -- "$(dirname -- "$self")" && pwd)"
+GUI_ROOT="${LEGION_POWERCTL_GUI_ROOT:-${bindir%/bin}/share/legion-powerctl/gui}"
+
+fail() {
+    local message="$1"
+    echo "ERROR: $message" >&2
+    if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+        if command -v kdialog >/dev/null 2>&1; then
+            kdialog --title 'Legion Power Control' --error "$message" >/dev/null 2>&1 || true
+        elif command -v zenity >/dev/null 2>&1; then
+            zenity --error --title='Legion Power Control' --text="$message" >/dev/null 2>&1 || true
+        elif command -v notify-send >/dev/null 2>&1; then
+            notify-send -u critical 'Legion Power Control' "$message" >/dev/null 2>&1 || true
+        fi
+    fi
+    exit 1
+}
+
+command -v python3 >/dev/null 2>&1 || fail "python3 is required for the GUI."
+python3 -I -c 'import PySide6' >/dev/null 2>&1 || \
+    fail "PySide6 is not installed. On Arch/CachyOS: sudo pacman -S pyside6"
+[[ -d "$GUI_ROOT/legion_powerctl_gui" ]] || \
+    fail "GUI module not found under $GUI_ROOT."
+
+if [[ -z "${LEGION_POWERCTL_GUI_CLI:-}" && -x "$bindir/legion-powerctl" ]]; then
+    export LEGION_POWERCTL_GUI_CLI="$bindir/legion-powerctl"
+fi
+
+export PYTHONPATH="${GUI_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONSAFEPATH=1
+export PYTHONDONTWRITEBYTECODE=1
+cd /
+exec python3 -m legion_powerctl_gui "$@"

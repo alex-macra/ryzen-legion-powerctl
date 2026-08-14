@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck fish
+      - name: Bash syntax
+        run: make syntax
+      - name: ShellCheck
+        # One file list, so CI cannot drift from what `make check` runs locally.
+        run: shellcheck $(make -s print-shell-sources)
+      - name: Integration tests
+        run: make test
+      - name: Version consistency
+        run: make verify-versions
+
+  gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Qt runtime libraries
+        # Explicit, not inherited from the runner image: an image change would
+        # otherwise turn the offscreen half of the suite into an errored setUpClass.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libxkbcommon0 libgl1 \
+            libdbus-1-3 libfontconfig1 libfreetype6
+          sudo apt-get install -y libglib2.0-0t64 || sudo apt-get install -y libglib2.0-0
+      - name: Install PySide6 and ruff
+        run: pip install PySide6 ruff
+      - name: Python lint
+        run: make lint-py
+      - name: GUI unit and offscreen tests
+        run: make test-gui
+      - name: The offscreen tests must not have been skipped
+        # `unittest` reports "OK" with every offscreen test skipped, and exits 0,
+        # when PySide6 is missing,
+        # so a broken Qt install would turn this whole job into a green no-op.
+        # `shell: bash` for pipefail: without it this pipeline's status is tee's, so
+        # only the grep below could fail the step. Harmless here because the previous
+        # step catches a real failure, and not harmless in the e2e job below.
+        shell: bash
+        run: |
+          PYTHONPATH=gui QT_QPA_PLATFORM=offscreen python3 -m unittest \
+            discover -s gui/tests 2>&1 | tee /tmp/gui.log
+          ! grep -q 'skipped=' /tmp/gui.log
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install the desktop stack the GUI is driven through
+        # Two interpreters, on purpose. PySide6 goes into the setup-python
+        # interpreter, which is the python3 first on PATH and therefore the one
+        # bin/legion-powerctl-gui execs. python3-pyatspi goes into the runner's own
+        # /usr/bin/python3, the only one that can have it: the driver runs there and
+        # so cannot import the application even by accident.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libopengl0 libxkbcommon0 libgl1 libdbus-1-3 \
+            libfontconfig1 libfreetype6 fonts-dejavu-core hicolor-icon-theme \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 \
+            libxrender1 libsm6 libice6 \
+            xvfb xauth x11-utils xdotool openbox dbus-x11 \
+            at-spi2-core python3-gi gir1.2-atspi-2.0 python3-pyatspi
+          sudo apt-get install -y libglib2.0-0t64 || sudo apt-get install -y libglib2.0-0
+      - name: Install PySide6
+        run: pip install PySide6
+      - name: End-to-end tests
+        shell: bash
+        run: make test-e2e 2>&1 | tee /tmp/e2e.log
+      - name: The end-to-end tests must not have been skipped
+        # The tier has no skips by construction - tests/e2e/run.sh preflights the
+        # session and refuses to start rather than skipping. This guards against
+        # someone adding the first @unittest.skipUnless and turning the job into a
+        # green no-op, exactly as the gui job guards the offscreen half.
+        run: '! grep -q "skipped=" /tmp/e2e.log'
+
+  arch-package:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build tools
+        run: pacman -Syu --noconfirm git namcap desktop-file-utils
+      - uses: actions/checkout@v7
+      - name: Build package
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          useradd -m builduser
+          builddir="$(mktemp -d)"
+          # Through the Makefile, like install.sh: a third copy of the version regex
+          # and the archive command is a third place for them to drift.
+          make dist DISTDIR="$builddir"
+          cp packaging/arch/PKGBUILD packaging/arch/legion-powerctl.install "$builddir/"
+          chown -R builduser "$builddir"
+          # --nodeps: the ryzenadj dependency lives in the AUR, not in CI.
+          su builduser -c "cd '$builddir' && makepkg --nodeps"
+          namcap "$builddir"/PKGBUILD 2>&1 | tee /tmp/namcap-pkgbuild.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ! grep -E ' E: ' /tmp/namcap-pkgbuild.log
+          # Check namcap's own exit code: a crash must not pass on an empty log.
+          namcap "$builddir"/*.pkg.tar.* 2>&1 | tee /tmp/namcap.log
+          test "${PIPESTATUS[0]}" -eq 0
+          ! grep -E ' E: ' /tmp/namcap.log
+      - name: Validate desktop entry and polkit policy
+        run: |
+          desktop-file-validate desktop/legion-powerctl.desktop
+          # policyconfig-1.dtd ships with polkit, not with libxml2.
+          pacman -S --noconfirm libxml2 polkit
+          xmllint --noout --nonet --dtdvalid \
+            /usr/share/polkit-1/policyconfig-1.dtd \
+            packaging/polkit/io.github.alexmacra.legion-powerctl.policy
+      - name: Verify systemd unit
+        run: |
+          pacman -S --noconfirm systemd
+          install -Dm0755 bin/legion-powerctl /usr/bin/legion-powerctl
+          systemd-analyze verify systemd/legion-powerctl.service

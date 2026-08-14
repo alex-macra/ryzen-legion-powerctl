@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Legion Power Control
+GenericName=Power Limit Manager
+Comment=Configure and apply Ryzen power limit profiles for Lenovo Legion laptops
+Exec=legion-powerctl-gui
+TryExec=legion-powerctl-gui
+Icon=legion-powerctl
+Terminal=false
+StartupWMClass=legion-powerctl
+Categories=Settings;HardwareSettings;
+Keywords=power;tdp;ryzen;stapm;ppt;legion;thermal;profile;
+StartupNotify=true

@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible installer, CLI, validation, or service problem
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction commands
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include laptop, CPU, distribution, kernel, Bash, systemd, and RyzenAdj versions.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste `legion-powerctl doctor`, `legion-powerctl status`, and relevant journal lines.
+      render: shell
+    validations:
+      required: true

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>legion-powerctl</vendor>
+  <vendor_url>https://github.com/alex-macra/ryzen-legion-powerctl</vendor_url>
+  <icon_name>legion-powerctl</icon_name>
+
+  <!-- One action per subcommand, pinned with exec.argv1; anything unlisted falls
+       back to org.freedesktop.policykit.exec, which always prompts.
+
+       configure/apply/select are ONE trust tier, not three: exec.argv1 pins only
+       argv[1], and configure accepts the select and apply flags. The isolation is
+       the tier below, where delete/enable/disable always prompt, so a retained
+       editing grant cannot destroy a profile or install boot persistence. -->
+
+  <!-- Retained tier: configure/apply/select. -->
+
+  <action id="io.github.alexmacra.legion-powerctl.configure">
+    <description>Create or update a Legion power limit profile</description>
+    <message>Authentication is required to write a CPU power limit profile</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">configure</annotate>
+  </action>
+
+  <action id="io.github.alexmacra.legion-powerctl.apply">
+    <description>Apply a Legion power limit profile</description>
+    <message>Authentication is required to change CPU power limits</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">apply</annotate>
+  </action>
+
+  <action id="io.github.alexmacra.legion-powerctl.select">
+    <description>Select the Legion power limit profile used at boot</description>
+    <message>Authentication is required to change the boot power profile</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">select</annotate>
+  </action>
+
+  <!-- Always-prompt tier: delete/enable/disable. -->
+
+  <action id="io.github.alexmacra.legion-powerctl.delete">
+    <description>Delete a Legion power limit profile</description>
+    <message>Authentication is required to delete a power limit profile</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">delete</annotate>
+  </action>
+
+  <action id="io.github.alexmacra.legion-powerctl.enable">
+    <description>Enable the Legion power limit boot service</description>
+    <message>Authentication is required to apply power limits at every boot</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">enable</annotate>
+  </action>
+
+  <action id="io.github.alexmacra.legion-powerctl.disable">
+    <description>Disable the Legion power limit boot service</description>
+    <message>Authentication is required to stop applying power limits at boot</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">disable</annotate>
+  </action>
+</policyconfig>

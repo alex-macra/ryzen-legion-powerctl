@@ -1,0 +1,13 @@
+*.pkg.tar.*
+*.tar.gz
+*.pyc
+__pycache__/
+/build/
+/dist/
+packaging/arch/pkg/
+packaging/arch/src/
+
+# Local notes, scratch, and tool directories. The blanket dot-directory rule
+# keeps local state out of the repository without enumerating it.
+.*/
+!.github/
