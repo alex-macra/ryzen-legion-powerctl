@@ -91,6 +91,7 @@ class DoctorReport:
     failures: int
     warnings: int
     exit_code: int
+    text: str = ""
 
 
 def parse_status(payload: str) -> Status:
@@ -165,7 +166,9 @@ def parse_doctor(text: str, exit_code: int) -> DoctorReport:
         failures = sum(1 for line in lines if line.status == "FAIL")
     if warnings is None:
         warnings = sum(1 for line in lines if line.status == "WARN")
-    return DoctorReport(lines=lines, failures=failures, warnings=warnings, exit_code=exit_code)
+    return DoctorReport(
+        lines=lines, failures=failures, warnings=warnings, exit_code=exit_code, text=text
+    )
 
 
 def profile_icon_name(power_profile: str) -> str:

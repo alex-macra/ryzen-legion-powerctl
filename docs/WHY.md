@@ -19,8 +19,8 @@ This tool does not raise GPU power limits, so any GPU benefit is indirect. The
 observations above come from one Lenovo Legion Pro 7 with a Ryzen 9 9955HX3D and are
 informal, not controlled benchmarks. Windows may have a similar trade-off, but
 neither the project nor this profile has been tested there. Treat `balanced-plus` as
-a starting point and measure it on your own hardware; [PROFILES.md](PROFILES.md)
-gives a before/after method.
+a starting point and measure it on your own hardware; [TUNING.md](TUNING.md) gives the
+method, and `legion-powerbench` runs it.
 
 ## Why RyzenAdj, when the kernel now exposes these knobs
 
@@ -38,6 +38,23 @@ accelerate that work.
 
 AMD's DPTCi driver, proposed on LKML in March 2026, targets the same knobs
 generically and may become a second native backend.
+
+## Measuring is in scope; controlling the GPU is not
+
+Reading the machine and changing it are different acts with different risk, and the
+project treats them differently.
+
+`legion-powerbench` reads temperature, package power, fan speed and GPU telemetry, and
+[TUNING.md](TUNING.md) documents the GPU controls that exist on this class of hardware,
+including `nvidia-smi -pl` and the `lenovo-wmi-gamezone` cTGP and PPAB attributes. None
+of that is a step toward writing them. It is there because a CPU number measured without
+the GPU beside it cannot be interpreted: the two share one envelope, and a CPU limit that
+helps a compile can cost frames in a game.
+
+The harness is also a separate binary rather than a `legion-powerctl` subcommand. The
+polkit policy pins `exec.path` to the CLI, so a long-running, load-generating subcommand
+would widen what a retained `auth_admin_keep` grant can reach. The harness samples
+unprivileged and asks the CLI for anything that needs privilege.
 
 ## What this will not become
 

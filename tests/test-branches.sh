@@ -779,17 +779,27 @@ case_doctor_reports_the_boost_control_it_found() {
         'doctor did not warn that BOOST profiles will be skipped on this kernel'
 }
 
-case_doctor_distinguishes_a_loaded_ryzen_smu_module_from_its_device_node() {
+case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check() {
     mkdir -p "$MODULES/ryzen_smu"
     local out
     out="$(run_cli doctor || true)"
-    assert_doctor_line WARN ryzen_smu 'module is loaded but' "$out" \
+    assert_doctor_line WARN SMU-backend 'is loaded but' "$out" \
         'doctor did not flag a loaded module whose device node is absent'
+
+    rm -rf "${MODULES:?}/ryzen_smu"
+    out="$(run_cli doctor || true)"
+    assert_doctor_line WARN SMU-backend 'no ryzen_smu module' "$out" \
+        'the not-loaded branch lost its distinct wording'
+    assert_contains 'install ryzen_smu-dkms-git' "$out" \
+        'the not-loaded branch lost its fix instruction'
 
     : > "$SMU_DEV"
     out="$(run_cli doctor || true)"
+    assert_doctor_line OK SMU-backend 'available' "$out" \
+        'the device node did not win over the module state'
+
     if grep -qE '^(OK|WARN|FAIL) +ryzen_smu ' <<<"$out"; then
-        printf 'FAIL: doctor reported on ryzen_smu although the device node exists:\n%s\n' "$out" >&2
+        printf 'FAIL: the standalone ryzen_smu row is back; its states belong to SMU-backend now:\n%s\n' "$out" >&2
         exit 1
     fi
 }
@@ -884,8 +894,8 @@ run_case case_an_unreadable_ryzenadj_table_is_unverified_not_fatal \
     'an unreadable ryzenadj table is unverified, not fatal'
 run_case case_doctor_reports_the_boost_control_it_found \
     'doctor reports the boost control it found'
-run_case case_doctor_distinguishes_a_loaded_ryzen_smu_module_from_its_device_node \
-    'doctor distinguishes a loaded ryzen_smu module from its device node'
+run_case case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check \
+    'doctor folds the ryzen_smu module state into the SMU-backend check'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"

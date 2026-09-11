@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 SHELL_SOURCES := bin/legion-powerctl bin/legion-powerctl-gui install.sh uninstall.sh \
-	tests/test.sh tests/test-branches.sh tests/lib.sh \
+	tools/legion-powerbench \
+	tests/test.sh tests/test-branches.sh tests/test-bench.sh tests/lib.sh \
 	tests/fixtures/make-fake-root.sh \
 	tests/e2e/run.sh tests/e2e/podman.sh \
 	gui/tests/fake-legion-powerctl gui/tests/fixtures/regenerate-doctor.sh \
@@ -66,6 +67,7 @@ install: install-files install-config
 
 install-files:
 	install -Dm0755 bin/legion-powerctl "$(DESTDIR)$(PREFIX)/bin/legion-powerctl"
+	install -Dm0755 tools/legion-powerbench "$(DESTDIR)$(PREFIX)/bin/legion-powerbench"
 	install -Dm0644 systemd/legion-powerctl.service "$(DESTDIR)$(SYSTEMDUNITDIR)/legion-powerctl.service"
 	install -Dm0644 completions/legion-powerctl.fish "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/legion-powerctl.fish"
 	install -Dm0644 completions/legion-powerctl.bash "$(DESTDIR)$(PREFIX)/share/bash-completion/completions/legion-powerctl"
@@ -99,6 +101,7 @@ uninstall: uninstall-files
 
 uninstall-files:
 	rm -f "$(DESTDIR)$(PREFIX)/bin/legion-powerctl"
+	rm -f "$(DESTDIR)$(PREFIX)/bin/legion-powerbench"
 	rm -f "$(DESTDIR)$(SYSTEMDUNITDIR)/legion-powerctl.service"
 	rm -f "$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/legion-powerctl.fish"
 	rm -f "$(DESTDIR)$(PREFIX)/share/bash-completion/completions/legion-powerctl"
@@ -118,6 +121,7 @@ syntax:
 test: syntax
 	bash tests/test.sh
 	bash tests/test-branches.sh
+	bash tests/test-bench.sh
 
 test-gui:
 	PYTHONPATH=gui QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s gui/tests -v

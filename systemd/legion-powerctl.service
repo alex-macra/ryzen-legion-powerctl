@@ -8,6 +8,11 @@ ConditionFileIsExecutable=/usr/bin/legion-powerctl
 Type=oneshot
 ExecStart=/usr/bin/legion-powerctl apply --boot
 RemainAfterExit=yes
+# The first boot apply records the firmware's own SMU limits here, before it
+# overwrites them. UMask is 0077, so the file is relaxed explicitly by the CLI:
+# 'baseline --show' is a read-only query and does not need root.
+StateDirectory=legion-powerctl
+StateDirectoryMode=0755
 TimeoutStartSec=30s
 # ProtectSystem stays "full", not "strict": this writes CPUFreq/EPP sysfs and
 # /run/legion-powerctl, and RyzenAdj needs /dev/mem or /dev/ryzen_smu_drv. Do not

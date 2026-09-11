@@ -68,6 +68,16 @@ back with `ryzenadj -i`. Without `ryzen_smu`, every apply may print the
 `this apply is unverified` warning even though the limits were set. Installing
 `ryzen_smu-dkms-git` is the reliable backend and is recommended on CachyOS.
 
+`./install.sh --install-ryzen-smu` installs it for you: it works out which headers
+package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so
+`linux-cachyos-headers` on a CachyOS kernel rather than a generic `linux-headers` that
+would not match), builds the AUR package, loads the module, and writes
+`/etc/modules-load.d/legion-powerctl.conf` so it comes back after a reboot. The module
+is optional, so nothing in that path can fail the install - every problem warns and
+carries on. Without the flag the installer offers it interactively when
+`/dev/ryzen_smu_drv` is missing, and stays silent when there is no terminal. With
+Secure Boot on you still have to enrol the module's MOK key yourself before it loads.
+
 What blocks the `/dev/mem` fallback is **kernel lockdown**, not Secure Boot directly.
 Fedora and Ubuntu kernels tie lockdown to Secure Boot; Arch-family kernels generally do
 not, so Secure Boot alone is usually fine on CachyOS. A kernel built with

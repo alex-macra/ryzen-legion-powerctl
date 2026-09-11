@@ -8,7 +8,7 @@ _legion_powerctl_complete() {
 
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W 'apply configure wizard select list show delete status
-            doctor enable disable restore-frequency version help' -- "$cur") )
+            doctor enable disable restore-frequency baseline version help' -- "$cur") )
         return
     fi
 
@@ -28,6 +28,7 @@ _legion_powerctl_complete() {
         delete|enable)     opts='--force' ;;
         status)            opts='--json --waybar' ;;
         restore-frequency) opts='--boost' ;;
+        baseline)          opts='--capture --show' ;;
         *)                 opts='' ;;
     esac
 

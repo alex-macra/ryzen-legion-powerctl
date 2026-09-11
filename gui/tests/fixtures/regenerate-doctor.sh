@@ -11,6 +11,9 @@ trap 'rm -rf "$TMP"' EXIT
 # shellcheck source=/dev/null
 source "$ROOT_DIR/tests/fixtures/make-fake-root.sh" "$TMP" >/dev/null
 
+# A second, older ryzenadj so the fixture exercises RyzenAdj-shadow. The check reports
+# OK once both candidates name a version, so this looks inert in the output; without it
+# the label disappears and test_doctor_fixture_covers_every_check_the_cli_can_emit fails.
 mkdir -p "$TMP/bin2"
 sed 's/0\.19\.0/0.18.0/' "$TMP/bin/ryzenadj" > "$TMP/bin2/ryzenadj"
 chmod +x "$TMP/bin2/ryzenadj"

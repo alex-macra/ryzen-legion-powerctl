@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_RYZENADJ=0
+INSTALL_RYZEN_SMU=0
 ENABLE_SERVICE=1
 FORCE_CONFIG=0
 MIGRATE_LEGACY=0
@@ -23,6 +24,8 @@ On other distributions it falls back to a direct script install.
 
 Options:
   --install-ryzenadj   Install ryzenadj (AUR) through paru/yay or makepkg
+  --install-ryzen-smu  Install the ryzen_smu DKMS module (AUR) so applies can be
+                       verified, load it, and keep it loaded at boot
   --script-install     Skip makepkg and copy files directly (untracked by pacman)
   --no-gui             Do not install the GUI runtime (PySide6, polkit); the
                        GUI files are still installed but will not start
@@ -42,6 +45,7 @@ EOF_USAGE
 while (( $# > 0 )); do
     case "$1" in
         --install-ryzenadj) INSTALL_RYZENADJ=1 ;;
+        --install-ryzen-smu) INSTALL_RYZEN_SMU=1 ;;
         --script-install) SCRIPT_INSTALL=1 ;;
         --no-gui) INSTALL_GUI=0 ;;
         --replace-script-install) REPLACE_SCRIPT_INSTALL=1 ;;
@@ -82,6 +86,9 @@ check_pacman_lock() {
 }
 
 readonly RYZENADJ_DEP='ryzenadj>=0.19.0'
+readonly RYZEN_SMU_PKG='ryzen_smu-dkms-git'
+readonly RYZEN_SMU_DEV='/dev/ryzen_smu_drv'
+readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
 
 aur_install_ryzenadj() {
     (( INSTALL_RYZENADJ == 1 )) || die "Rerun with --install-ryzenadj, or install the AUR 'ryzenadj' package first (it replaces ryzenadj-git)."
@@ -128,6 +135,150 @@ ensure_ryzenadj_binary() {
     aur_install_ryzenadj
     command -v ryzenadj >/dev/null 2>&1 || die "RyzenAdj installation completed without exposing a ryzenadj executable."
     info "Installed RyzenAdj at $(command -v ryzenadj)."
+}
+
+secure_boot_on() {
+    if command -v mokutil >/dev/null 2>&1; then
+        mokutil --sb-state 2>/dev/null | grep -qi 'SecureBoot enabled'
+        return
+    fi
+    local var state
+    for var in /sys/firmware/efi/efivars/SecureBoot-*; do
+        [[ -r "$var" ]] || continue
+        state="$(od -An -tu1 -j4 -N1 "$var" 2>/dev/null | tr -d '[:space:]')"
+        if [[ "$state" == "1" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# DKMS needs headers for the kernel that is running now, which is not necessarily the
+# one a bare 'linux-headers' would match on CachyOS. pkgbase names the right package.
+ensure_kernel_headers() {
+    local release build pkgbase
+    release="$(uname -r)"
+    build="/usr/lib/modules/${release}/build"
+    if [[ -e "$build" ]]; then
+        return 0
+    fi
+    if [[ ! -d "/usr/lib/modules/${release}" ]]; then
+        warn "Skipping ryzen_smu: the running kernel ${release} has no module tree, so an update replaced it without a reboot. Reboot, then rerun with --install-ryzen-smu."
+        return 1
+    fi
+    pkgbase="$(cat "/usr/lib/modules/${release}/pkgbase" 2>/dev/null || true)"
+    if [[ -z "$pkgbase" ]]; then
+        warn "Skipping ryzen_smu: cannot tell which headers package matches kernel ${release}. Install it by hand (CachyOS: linux-cachyos-headers), then rerun with --install-ryzen-smu."
+        return 1
+    fi
+    info "Installing ${pkgbase}-headers for the DKMS build..."
+    if ! "${SUDO[@]}" pacman -S --needed "${pkgbase}-headers"; then
+        warn "Skipping ryzen_smu: could not install ${pkgbase}-headers."
+        return 1
+    fi
+    if [[ ! -e "$build" ]]; then
+        warn "Skipping ryzen_smu: ${pkgbase}-headers is installed but ${build} is still missing."
+        return 1
+    fi
+}
+
+aur_install_ryzen_smu() {
+    if command -v paru >/dev/null 2>&1; then
+        info "Installing ${RYZEN_SMU_PKG} with paru..."
+        paru -S --needed "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the paru build failed."; return 1; }
+    elif command -v yay >/dev/null 2>&1; then
+        info "Installing ${RYZEN_SMU_PKG} with yay..."
+        yay -S --needed "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the yay build failed."; return 1; }
+    else
+        warn "Skipping ryzen_smu: no AUR helper found. Build it yourself after reviewing its PKGBUILD:
+    git clone https://aur.archlinux.org/${RYZEN_SMU_PKG}.git
+    cd ${RYZEN_SMU_PKG} && less PKGBUILD && makepkg -si"
+        return 1
+    fi
+}
+
+# Only after a successful load: an entry for a module that is absent or unsupported
+# makes systemd-modules-load.service fail on every boot.
+persist_ryzen_smu() {
+    if grep -rqs '^[[:space:]]*ryzen_smu[[:space:]]*$' \
+        /etc/modules-load.d /usr/lib/modules-load.d /run/modules-load.d; then
+        info "Something already loads ryzen_smu at boot; leaving it alone."
+        return 0
+    fi
+    local staged=""
+    if ! staged="$(mktemp)"; then
+        warn "Could not stage $MODULES_LOAD_CONF; ryzen_smu will need a modprobe after each boot."
+        return 0
+    fi
+    if ! printf '# Written by legion-powerctl install.sh --install-ryzen-smu.\n# Delete this file if you remove %s.\nryzen_smu\n' \
+        "$RYZEN_SMU_PKG" > "$staged"; then
+        warn "Could not write $MODULES_LOAD_CONF; ryzen_smu will need a modprobe after each boot."
+        rm -f "$staged"
+        return 0
+    fi
+    if "${SUDO[@]}" install -Dm0644 "$staged" "$MODULES_LOAD_CONF"; then
+        info "Wrote $MODULES_LOAD_CONF so ryzen_smu loads at boot."
+    else
+        warn "Could not write $MODULES_LOAD_CONF; ryzen_smu will need a modprobe after each boot."
+    fi
+    rm -f "$staged"
+}
+
+load_ryzen_smu() {
+    if ! "${SUDO[@]}" modprobe ryzen_smu; then
+        warn "${RYZEN_SMU_PKG} is installed but the module did not load. With Secure Boot on, enrol its MOK key; see docs/INSTALL.md."
+        return 0
+    fi
+    if [[ ! -e "$RYZEN_SMU_DEV" ]]; then
+        warn "ryzen_smu loaded but $RYZEN_SMU_DEV did not appear, so the module may not support this CPU. Limits still apply over /dev/mem, unverified."
+        return 0
+    fi
+    info "ryzen_smu is loaded and $RYZEN_SMU_DEV is present."
+    persist_ryzen_smu
+}
+
+# Optional, so nothing here may abort the install: every failure warns and returns 0.
+ensure_ryzen_smu() {
+    if [[ -e "$RYZEN_SMU_DEV" ]]; then
+        info "ryzen_smu already provides $RYZEN_SMU_DEV."
+        return 0
+    fi
+
+    # Eligibility before the offer, so we never prompt for something we cannot do,
+    # and never mention the module to someone who did not ask and cannot have it.
+    local blocker=""
+    if (( ARCH_FAMILY == 0 )); then
+        blocker="this installer only builds AUR packages on Arch/CachyOS"
+    elif [[ $EUID -eq 0 ]]; then
+        blocker="AUR packages must not be built as root, so rerun as your normal user"
+    elif ! command -v pacman >/dev/null 2>&1; then
+        blocker="pacman is not available"
+    elif [[ -e /var/lib/pacman/db.lck ]]; then
+        blocker="pacman is busy"
+    fi
+    if [[ -n "$blocker" ]]; then
+        if (( INSTALL_RYZEN_SMU == 1 )); then
+            warn "Skipping ryzen_smu: ${blocker}. Install ${RYZEN_SMU_PKG} by hand to make applies verifiable."
+        fi
+        return 0
+    fi
+
+    if (( INSTALL_RYZEN_SMU == 0 )); then
+        printf '\n'
+        info "Without the ryzen_smu module RyzenAdj cannot read limits back, so every apply reports 'unverified'."
+        if ! confirm "Install the ${RYZEN_SMU_PKG} DKMS module now?"; then
+            info "Skipping ryzen_smu. Later: ./install.sh --install-ryzen-smu"
+            return 0
+        fi
+    fi
+
+    if secure_boot_on; then
+        warn "Secure Boot is enabled. ${RYZEN_SMU_PKG} is an out-of-tree module, so it will not load until you enrol its MOK key (mokutil --import, then reboot and confirm)."
+    fi
+
+    ensure_kernel_headers || return 0
+    aur_install_ryzen_smu || return 0
+    load_ryzen_smu
 }
 
 ensure_gui_runtime() {
@@ -236,6 +387,7 @@ package_install() {
 
     check_pacman_lock
     ensure_ryzenadj_package
+    ensure_ryzen_smu
     migrate_legacy
 
     local version
@@ -270,6 +422,7 @@ script_install() {
     warn "On Arch/CachyOS prefer the default makepkg flow; run ./uninstall.sh before switching to it."
 
     ensure_ryzenadj_binary
+    ensure_ryzen_smu
     migrate_legacy
 
     info "Installing legion-powerctl..."
@@ -328,6 +481,7 @@ main() {
     printf '  legion-powerctl-gui\n'
     printf '  sudo legion-powerctl wizard balanced-plus\n'
     printf '  sudo legion-powerctl configure balanced-plus --stapm 60 --slow 65 --fast 75 --temp 82 --select --apply\n'
+    printf '  legion-powerbench doctor\n'
     printf '  systemctl status legion-powerctl.service\n'
 }
 
