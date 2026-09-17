@@ -161,6 +161,12 @@ if [[ "${1:-}" == "-i" || "${1:-}" == "--info" ]]; then
     exit 0
 fi
 printf 'ryzenadj %s\n' "$*" >> "${LEGION_TEST_LOG:?}"
+for arg in "$@"; do
+    if [[ "$arg" == "--tctl-temp=${LEGION_FAKE_RYZENADJ_FAIL_TEMP:-never}" ]]; then
+        printf 'Could not set test limits\n' >&2
+        exit 1
+    fi
+done
 if [[ -n "${LEGION_FAKE_RYZENADJ_STATE:-}" ]]; then
     : > "$LEGION_FAKE_RYZENADJ_STATE"
     for arg in "$@"; do
@@ -213,9 +219,42 @@ EOF_FAKE
 cat > "$FAKEBIN/turbostat" <<'EOF_FAKE'
 #!/usr/bin/env bash
 [[ -n "${LEGION_FAKE_NO_TURBOSTAT:-}" ]] && exit 1
-printf 'Busy%%\tBzy_MHz\tPkgWatt\n'
+if [[ -n "${LEGION_FAKE_TURBOSTAT_READ_COUNTER:-}" ]]; then
+    reads=0
+    [[ ! -r "$LEGION_FAKE_TURBOSTAT_READ_COUNTER" ]] || reads="$(<"$LEGION_FAKE_TURBOSTAT_READ_COUNTER")"
+    reads=$(( reads + 1 ))
+    printf '%s\n' "$reads" > "$LEGION_FAKE_TURBOSTAT_READ_COUNTER"
+    (( reads <= ${LEGION_FAKE_TURBOSTAT_FAIL_AFTER:-1} )) || exit 1
+fi
+while (( $# )); do
+    if [[ "$1" == -- ]]; then
+        shift
+        "$@"
+        break
+    fi
+    shift
+done
+printf '1.000123 sec\n' >&2
+printf 'Busy%%\tPkgWatt\tBzy_MHz\n' >&2
 printf '%s\t%s\t%s\n' "${LEGION_FAKE_BUSY_PCT:-99.0}" \
-    "${LEGION_FAKE_BZY_MHZ:-4200}" "${LEGION_FAKE_PKG_W:-30.0}"
+    "${LEGION_FAKE_PKG_W:-30.0}" "${LEGION_FAKE_BZY_MHZ:-4200}" >&2
+EOF_FAKE
+
+cat > "$FAKEBIN/stress-ng" <<'EOF_FAKE'
+#!/usr/bin/env bash
+while (( $# )); do
+    if [[ "$1" == --timeout ]]; then
+        sleep "${2%s}"
+        break
+    fi
+    shift
+done
+cat >&2 <<'EOF_METRICS'
+stress-ng: metrc: [4242] stressor       bogo ops real time  usr time  sys time   bogo ops/s     bogo ops/s
+stress-ng: metrc: [4242]                           (secs)    (secs)    (secs)   (real time) (usr+sys time)
+stress-ng: metrc: [4242] cpu                2401      2.00      7.00      0.10      1200.50         338.17
+stress-ng: info: [4242] successful run completed in 2.00s
+EOF_METRICS
 EOF_FAKE
 
 cat > "$FAKEBIN/nvidia-smi" <<'EOF_FAKE'

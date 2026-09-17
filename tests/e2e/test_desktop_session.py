@@ -151,17 +151,17 @@ class InstalledCliWriteTest(E2ETest):
             if key == "STAPM_W":
                 if stapm_value is not None:
                     raise ValueError(
-                        f"balanced-plus.conf has duplicate STAPM_W key"
+                        "balanced-plus.conf has duplicate STAPM_W key"
                     )
                 try:
                     stapm_value = int(value)
                 except ValueError:
                     raise ValueError(
                         f"balanced-plus.conf STAPM_W has non-integer value: {value!r}"
-                    )
+                    ) from None
         if stapm_value is None:
             raise ValueError(
-                f"balanced-plus.conf missing STAPM_W key"
+                "balanced-plus.conf missing STAPM_W key"
             )
         return stapm_value
 

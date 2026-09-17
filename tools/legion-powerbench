@@ -27,7 +27,7 @@ readonly STRESS_NG_BIN="${LEGION_POWERBENCH_STRESS_NG_BIN:-stress-ng}"
 readonly OPENSSL_BIN="${LEGION_POWERBENCH_OPENSSL_BIN:-openssl}"
 readonly VKMARK_BIN="${LEGION_POWERBENCH_VKMARK_BIN:-vkmark}"
 readonly GLMARK2_BIN="${LEGION_POWERBENCH_GLMARK2_BIN:-glmark2}"
-readonly BENCH_PROFILE="${LEGION_POWERBENCH_PROFILE_NAME:-powerbench}"
+readonly BENCH_PROFILE="${LEGION_POWERBENCH_PROFILE_NAME:-powerbench-$$}"
 
 # Thresholds behind the limiter table in docs/TUNING.md section 2.
 readonly TEMP_HEADROOM_C="${LEGION_POWERBENCH_TEMP_HEADROOM_C:-5}"
@@ -51,6 +51,15 @@ die()     { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 SAMPLE_INTERVAL=5
 DRY_RUN=0
 RESTORE_PROFILE=""
+RESTORE_RECORD=""
+RESTORE_STAPM="" RESTORE_SLOW="" RESTORE_FAST=""
+PROFILE_CHANGED=0
+LOAD_LOG=""
+RUN_DIR=""
+LOAD_GROUPS=()
+LOAD_RECORDS=()
+LOAD_DURATION=0
+LAST_PHASE_ELAPSED=0
 STEP_STAPM="" STEP_SLOW="" STEP_FAST="" STEP_TEMP=""
 
 usage() {
@@ -80,8 +89,10 @@ Run options:
   --out FILE          CSV output (default powerbench-<ladder>.csv)
   --dry-run           Print the plan and every command; change and load nothing
 
-A run applies its steps through a scratch profile named 'powerbench' and restores the
-previously active profile when it finishes, including on interrupt.
+A run requires a successfully applied profile whose saved settings still match it.
+Temperature ladders preserve that profile's three power limits. Each run uses a new
+scratch profile, restores the running profile on exit, and removes its scratch profile.
+Existing output files are never overwritten; dry runs do not create output files.
 
 See docs/TUNING.md for the protocol, the stop rules, and how to read the result.
 EOF_USAGE
@@ -119,8 +130,6 @@ detect_sources() {
         PKG_SOURCE=turbostat
     elif have_cmd "$RYZENADJ_BIN" && ryzenadj_value 'STAPM VALUE' >/dev/null 2>&1; then
         PKG_SOURCE=ryzenadj
-    elif battery_watts >/dev/null 2>&1; then
-        PKG_SOURCE=battery
     else
         PKG_SOURCE=none
     fi
@@ -144,7 +153,16 @@ detect_sources() {
 # ---------------------------------------------------------------- readers
 
 milli_to_unit() {
+    is_number "${1:-}" || return 1
     awk -v v="${1:-}" 'BEGIN { if (v == "") exit 1; printf "%.1f", v / 1000 }'
+}
+
+is_number() { [[ ${#1} -le 24 && "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+
+validate_uint() {
+    local label="$1" value="$2" minimum="$3" maximum="$4"
+    [[ "$value" =~ ^(0|[1-9][0-9]{0,8})$ ]] || die "$label must be an integer."
+    (( value >= minimum && value <= maximum )) || die "$label must be $minimum..$maximum."
 }
 
 read_tctl() {
@@ -163,6 +181,7 @@ read_tccd() {
         file="${label%_label}_input"
         [[ -r "$file" ]] || continue
         value="$(<"$file")"
+        [[ "$value" =~ ^[0-9]{1,9}$ ]] || continue
         if [[ -z "$best" ]] || (( value > best )); then best="$value"; fi
     done
     [[ -n "$best" ]] || return 1
@@ -173,16 +192,22 @@ read_tccd() {
 turbostat_read() {
     local interval="${1:-1}"
     "$SUDO_BIN" -n "$TURBOSTAT_BIN" --quiet --Summary \
-        --show PkgWatt,Bzy_MHz,Busy% -- sleep "$interval" 2>/dev/null |
+        --show PkgWatt,Bzy_MHz,Busy% -- sleep "$interval" 2>&1 |
         awk '
-            NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; next }
-            NR == 2 {
-                printf "%s %s %s\n",
-                    (col["PkgWatt"] ? $col["PkgWatt"] : ""),
-                    (col["Bzy_MHz"] ? $col["Bzy_MHz"] : ""),
-                    (col["Busy%"]   ? $col["Busy%"]   : "")
-                exit
-            }'
+            function number(v) { return length(v) <= 24 && v ~ /^[0-9]+([.][0-9]+)?$/ }
+            /PkgWatt/ {
+                for (i = 1; i <= NF; i++) col[$i] = i
+                next
+            }
+            col["PkgWatt"] && !found {
+                p = $col["PkgWatt"]
+                b = col["Bzy_MHz"] ? $col["Bzy_MHz"] : ""
+                u = col["Busy%"] ? $col["Busy%"] : ""
+                if (!number(p)) next
+                printf "%s,%s,%s\n", p, number(b) ? b : "", number(u) ? u : ""
+                found = 1
+            }
+            END { if (!found) exit 1 }'
 }
 
 # ryzenadj -i rows are "| Name | Value | Parameter |". The VALUE rows carry an empty
@@ -200,7 +225,7 @@ ryzenadj_value() {
                 exit
             }
         }' <<<"$report")"
-    [[ -n "$value" ]] || return 1
+    is_number "$value" || return 1
     printf '%s' "$value"
 }
 
@@ -223,7 +248,13 @@ gpu_sample() {
     "$NVIDIA_SMI_BIN" \
         --query-gpu=power.draw,enforced.power.limit,temperature.gpu,utilization.gpu \
         --format=csv,noheader,nounits 2>/dev/null |
-        head -n1 | tr -d ' ' | awk -F, 'NF >= 4 { print $1, $2, $3, $4 }'
+        awk -F, 'NR == 1 && NF == 4 {
+            for (i = 1; i <= 4; i++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", $i)
+                if (length($i) > 24 || $i !~ /^[0-9]+([.][0-9]+)?$/) $i = ""
+            }
+            printf "%s,%s,%s,%s\n", $1, $2, $3, $4
+        }'
 }
 
 # ---------------------------------------------------------------- sampling
@@ -231,24 +262,38 @@ gpu_sample() {
 # Emits one CSV row. The caller owns pacing except under turbostat, which measures over
 # the interval and therefore consumes it.
 sample_row() {
-    local step="$1" phase="$2" elapsed="$3" throughput="${4:-}"
-    local tctl tccd pkg bzy busy fan gpu_w gpu_lim gpu_t gpu_u
-
-    tctl="$(read_tctl 2>/dev/null || true)"
-    tccd="$(read_tccd 2>/dev/null || true)"
-    fan="$(read_fan 2>/dev/null || true)"
+    local step="$1" phase="$2" elapsed="$3" throughput="${4:-}" interval="${5:-0}"
+    local started="${6:-}" tctl tccd pkg bzy busy fan gpu_w gpu_lim gpu_t gpu_u
+    local read_started="${EPOCHREALTIME/./}" remaining delay elapsed_us
 
     pkg="" bzy="" busy=""
     case "$PKG_SOURCE" in
-        turbostat) read -r pkg bzy busy <<<"$(turbostat_read "$SAMPLE_INTERVAL" || true)" ;;
-        ryzenadj)  pkg="$(ryzenadj_value 'STAPM VALUE' 2>/dev/null || true)"; sleep "$SAMPLE_INTERVAL" ;;
-        battery)   pkg="$(battery_watts 2>/dev/null || true)"; sleep "$SAMPLE_INTERVAL" ;;
-        *)         sleep "$SAMPLE_INTERVAL" ;;
+        turbostat)
+            if (( interval > 0 )); then
+                IFS=, read -r pkg bzy busy <<<"$(turbostat_read "$interval" || true)"
+                remaining=$(( interval * 1000000 - (${EPOCHREALTIME/./} - read_started) ))
+                if (( remaining > 0 )); then
+                    printf -v delay '%d.%06d' "$(( remaining / 1000000 ))" "$(( remaining % 1000000 ))"
+                    sleep "$delay"
+                fi
+            fi ;;
+        ryzenadj)
+            sleep "$interval"
+            pkg="$(ryzenadj_value 'STAPM VALUE' 2>/dev/null || true)" ;;
+        *) sleep "$interval" ;;
     esac
+    tctl="$(read_tctl 2>/dev/null || true)"
+    tccd="$(read_tccd 2>/dev/null || true)"
+    fan="$(read_fan 2>/dev/null || true)"
+    is_number "$fan" || fan=""
 
     gpu_w="" gpu_lim="" gpu_t="" gpu_u=""
     if [[ "$GPU_SOURCE" == nvidia-smi ]]; then
-        read -r gpu_w gpu_lim gpu_t gpu_u <<<"$(gpu_sample || true)"
+        IFS=, read -r gpu_w gpu_lim gpu_t gpu_u <<<"$(gpu_sample || true)"
+    fi
+    if [[ -n "$started" ]]; then
+        elapsed_us=$(( ${EPOCHREALTIME/./} - started ))
+        printf -v elapsed '%d.%06d' "$(( elapsed_us / 1000000 ))" "$(( elapsed_us % 1000000 ))"
     fi
 
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
@@ -259,12 +304,31 @@ sample_row() {
 }
 
 sample_for() {
-    local step="$1" phase="$2" duration="$3" out="$4"
-    local elapsed=0
-    while (( elapsed < duration )); do
-        sample_row "$step" "$phase" "$elapsed" >> "$out"
-        elapsed=$(( elapsed + SAMPLE_INTERVAL ))
+    local step="$1" phase="$2" duration="$3" elapsed_us=0 interval started="${EPOCHREALTIME/./}"
+    while (( elapsed_us < duration * 1000000 )); do
+        [[ "$phase" != load ]] || check_workloads
+        interval="$SAMPLE_INTERVAL"
+        (( interval * 1000000 <= duration * 1000000 - elapsed_us )) ||
+            interval=$(( (duration * 1000000 - elapsed_us + 999999) / 1000000 ))
+        sample_row "$step" "$phase" 0 "" "$interval" "$started" >&3
+        elapsed_us=$(( ${EPOCHREALTIME/./} - started ))
     done
+    printf -v LAST_PHASE_ELAPSED '%d.%06d' "$(( elapsed_us / 1000000 ))" "$(( elapsed_us % 1000000 ))"
+}
+
+open_csv() {
+    local out="$1"
+    if [[ -n "$out" ]]; then
+        set -C
+        if ! exec 3>"$out"; then
+            set +C
+            die "Cannot create '$out'; choose a new output file."
+        fi
+        set +C
+    else
+        exec 3>&1
+    fi
+    printf '%s\n' "$CSV_HEADER" >&3
 }
 
 # ---------------------------------------------------------------- workloads
@@ -275,13 +339,13 @@ resolve_workload() {
         none) printf 'sleep %s' "$duration" ;;
         cpu|crossload)
             if have_cmd "$STRESS_NG_BIN"; then
-                printf '%s --cpu 0 --cpu-method matrixprod --timeout %ss --metrics-brief' \
+                printf '%q --cpu 0 --cpu-method matrixprod --timeout %ss --metrics-brief' \
                     "$STRESS_NG_BIN" "$duration"
             elif have_cmd "$OPENSSL_BIN"; then
-                printf '%s speed -seconds %s -multi %s sha256' \
+                printf '%q speed -seconds %s -multi %s -bytes 16384 sha256' \
                     "$OPENSSL_BIN" "$duration" "$(nproc 2>/dev/null || printf 1)"
             else
-                warn "Neither stress-ng nor openssl was found; using the portable busy-loop fallback. Its throughput number is comparable only against itself."
+                warn "Neither stress-ng nor openssl was found; using a busy loop without throughput measurement."
                 printf 'busy_loop %s' "$duration"
             fi
             ;;
@@ -290,14 +354,12 @@ resolve_workload() {
 }
 
 resolve_gpu_workload() {
-    local duration="$1"
     if have_cmd "$VKMARK_BIN"; then
-        printf '%s --run-forever' "$VKMARK_BIN"
+        printf '%q --run-forever' "$VKMARK_BIN"
     elif have_cmd "$GLMARK2_BIN"; then
-        printf '%s --run-forever' "$GLMARK2_BIN"
+        printf '%q --run-forever' "$GLMARK2_BIN"
     else
-        warn "No vkmark or glmark2 found; this crossload run carries no GPU load and measures the CPU-only class instead."
-        printf 'sleep %s' "$duration"
+        die "Crossload requires vkmark or glmark2, or use --workload-cmd for your own load."
     fi
 }
 
@@ -306,66 +368,164 @@ busy_loop() {
     jobs="$(nproc 2>/dev/null || printf 1)"
     local -a pids=()
     for (( i = 0; i < jobs; i++ )); do
-        ( local_count=0; end=$(( SECONDS + duration ))
-          while (( SECONDS < end )); do local_count=$(( local_count + 1 )); done
-          printf '%s\n' "$local_count" ) &
+        ( while :; do :; done ) &
         pids+=("$!")
     done
+    sleep "$duration"
+    kill "${pids[@]}" 2>/dev/null || true
     wait "${pids[@]}" 2>/dev/null || true
 }
 
-# Throughput is only ever as good as what the workload itself reports. stress-ng's
-# metrics-brief table is parsed properly; anything else falls back to the last bare
-# number printed, which is a guess and is documented as one.
 extract_throughput() {
-    local log="$1" value
-    [[ -r "$log" ]] || return 0
-    value="$(awk '$2 == "cpu" && NF >= 6 && $6 ~ /^[0-9.]+$/ { print $6 }' "$log" | tail -n1)"
-    if [[ -z "$value" ]]; then
-        value="$(grep -Eo '[0-9]+\.?[0-9]*' "$log" 2>/dev/null | tail -n1 || true)"
-    fi
-    printf '%s' "${value:-}"
+    local log="$1" kind="$2"
+    [[ "$kind" == stress-ng && -r "$log" ]] || return 0
+    awk '
+        /^stress-ng:[[:space:]]+metrc:/ {
+            sub(/^stress-ng:[[:space:]]+metrc:[[:space:]]+\[[0-9]+\][[:space:]]+/, "")
+            if (/bogo ops\/s/) header = 1
+            if (/\(real time\)/) real = 1
+            if (header && real && $1 == "cpu" && NF == 7 && length($6) <= 24 && $6 ~ /^[0-9]+([.][0-9]+)?$/)
+                value = $6
+        }
+        END { if (value != "") print value }
+    ' "$log"
 }
 
-run_load() {
-    local cmd="$1"
+start_load() {
+    local cmd="$1" log="$2" completion pid
     if [[ "$cmd" == busy_loop* ]]; then
-        busy_loop "${cmd#busy_loop }"
-    else
-        bash -c "$cmd"
+        cmd="$(declare -f busy_loop)
+$cmd"
     fi
+    completion="$(mktemp "$RUN_DIR/completion.XXXXXX")"
+    # shellcheck disable=SC2016
+    setsid bash -c '
+        started=$EPOCHREALTIME
+        bash -c "$1"
+        rc=$?
+        printf "%s %s %s\n" "$started" "$EPOCHREALTIME" "$rc" > "$2"
+        exit "$rc"
+    ' bash "$cmd" "$completion" >"$log" 2>&1 &
+    pid=$!
+    LOAD_GROUPS+=("$pid")
+    LOAD_RECORDS+=("$completion")
+}
+
+check_workloads() {
+    local index pid started ended rc
+    for index in "${!LOAD_GROUPS[@]}"; do
+        pid="${LOAD_GROUPS[index]}"
+        if [[ -s "${LOAD_RECORDS[index]}" ]]; then
+            read -r started ended rc < "${LOAD_RECORDS[index]}"
+            if [[ "$rc" == 0 ]] && awk -v start="$started" -v end="$ended" -v duration="$LOAD_DURATION" \
+                'BEGIN { exit !(end - start >= duration) }'; then
+                continue
+            fi
+            [[ -z "$LOAD_LOG" ]] || tail -n 12 "$LOAD_LOG" >&2
+            die "Workload ended before the measurement finished (exit $rc); this step is incomplete."
+        elif ! kill -0 "$pid" 2>/dev/null; then
+            die "Workload exited without a completion record; this step is incomplete."
+        fi
+    done
+}
+
+stop_loads() {
+    local pid attempt alive
+    for pid in "${LOAD_GROUPS[@]}"; do
+        kill -TERM -- "-$pid" 2>/dev/null || true
+    done
+    for (( attempt=0; attempt<20; attempt++ )); do
+        alive=0
+        for pid in "${LOAD_GROUPS[@]}"; do
+            if kill -0 -- "-$pid" 2>/dev/null; then alive=1; fi
+        done
+        (( alive )) || break
+        sleep 0.05
+    done
+    for pid in "${LOAD_GROUPS[@]}"; do
+        kill -KILL -- "-$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
+    LOAD_GROUPS=()
+    LOAD_RECORDS=()
 }
 
 # ---------------------------------------------------------------- privileged calls
 
 active_profile() {
     "$CLI_BIN" status --json 2>/dev/null |
-        grep -o '"active_profile":"[^"]*"' | head -n1 | cut -d'"' -f4
+        python3 -c 'import json, sys; print((json.load(sys.stdin).get("last_apply") or {}).get("profile", "unknown"))'
+}
+
+restorable_state() {
+    "$CLI_BIN" status --json | python3 -c '
+import json, re, sys
+try:
+    status = json.load(sys.stdin)
+    scratch, saved = sys.argv[1:]
+    record = json.loads(saved) if saved else status.get("last_apply")
+    if not isinstance(record, dict) or record.get("result") != "ok" or record.get("verified") == "no":
+        raise ValueError("no successfully applied restoration profile; apply a profile first")
+    name = record.get("profile", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name.startswith("powerbench-") or name == scratch:
+        raise ValueError("the running profile is not a restoration profile")
+    profiles = status["profiles"]
+    if not saved and any(p.get("name") == scratch for p in profiles):
+        raise ValueError("scratch profile already exists; choose a different name")
+    profile = next((p for p in profiles if p.get("name") == name), None)
+    if not profile or profile.get("valid") is not True:
+        raise ValueError("restoration profile is missing or invalid")
+    keys = ("stapm_w", "slow_w", "fast_w", "temp_c", "power_profile", "min_freq_mhz", "max_freq_mhz", "boost", "epp")
+    if any(k not in record or str(profile.get(k)) != str(record[k]) for k in keys):
+        raise ValueError("restoration profile changed since it was applied; apply it again first")
+    limits = [str(record[k]) for k in keys[:4]]
+    if any(not re.fullmatch(r"[1-9][0-9]{0,2}", v) for v in limits):
+        raise ValueError("invalid running limits")
+    stapm, slow, fast, temp = map(int, limits)
+    if not (5 <= stapm <= slow <= fast <= 200 and 50 <= temp <= 100):
+        raise ValueError("running limits are out of range")
+    print(name, *limits, json.dumps(record), sep="\n")
+except (ValueError, KeyError, TypeError, AttributeError) as exc:
+    print("Cannot restore: " + str(exc), file=sys.stderr)
+    sys.exit(1)
+' "$BENCH_PROFILE" "${RESTORE_RECORD:-}"
 }
 
 apply_step() {
     local stapm="$1" slow="$2" fast="$3" temp="$4"
     if (( DRY_RUN )); then
-        printf 'DRY-RUN: %s configure %s --stapm %s --slow %s --fast %s --temp %s --apply\n' \
+        printf 'DRY-RUN: %s configure %s --stapm %s --slow %s --fast %s --temp %s --power-profile unchanged --min-mhz unchanged --max-mhz unchanged --boost unchanged --epp unchanged --apply\n' \
             "$CLI_BIN" "$BENCH_PROFILE" "$stapm" "$slow" "$fast" "$temp" >&2
         return 0
     fi
+    PROFILE_CHANGED=1
     "$SUDO_BIN" "$CLI_BIN" configure "$BENCH_PROFILE" \
         --stapm "$stapm" --slow "$slow" --fast "$fast" --temp "$temp" \
+        --power-profile unchanged --min-mhz unchanged --max-mhz unchanged \
+        --boost unchanged --epp unchanged \
         --description "legion-powerbench scratch profile; see docs/TUNING.md" \
         --apply >/dev/null
 }
 
-restore_profile() {
-    local profile="$RESTORE_PROFILE"
-    [[ -n "$profile" && "$profile" != "$BENCH_PROFILE" ]] || return 0
-    if (( DRY_RUN )); then
-        printf 'DRY-RUN: %s apply %s\n' "$CLI_BIN" "$profile" >&2
-        return 0
+cleanup_run() {
+    local rc="$1"
+    trap - EXIT
+    trap '' INT TERM
+    stop_loads
+    if (( PROFILE_CHANGED )); then
+        info "Restoring profile '$RESTORE_PROFILE'."
+        if restorable_state >/dev/null && "$SUDO_BIN" "$CLI_BIN" apply "$RESTORE_PROFILE"; then
+            if ! "$SUDO_BIN" "$CLI_BIN" delete "$BENCH_PROFILE"; then
+                warn "Could not remove scratch profile '$BENCH_PROFILE'."
+                rc=1
+            fi
+        else
+            warn "RESTORATION FAILED. Check the profile and run: sudo $CLI_BIN apply $RESTORE_PROFILE"
+            rc=1
+        fi
     fi
-    info "Restoring profile '$profile'."
-    "$SUDO_BIN" "$CLI_BIN" apply "$profile" >/dev/null 2>&1 ||
-        warn "Could not restore profile '$profile'. Run: sudo $CLI_BIN apply $profile"
+    [[ -z "$RUN_DIR" ]] || rm -rf -- "$RUN_DIR"
+    exit "$rc"
 }
 
 # ---------------------------------------------------------------- commands
@@ -400,10 +560,12 @@ cmd_doctor() {
 
     case "$PKG_SOURCE" in
         turbostat) doctor_line OK Package-power "turbostat" ;;
-        ryzenadj)  doctor_line WARN Package-power "ryzenadj metrics table; turbostat is more reliable on Zen. Install linux-tools and allow '$SUDO_BIN -n $TURBOSTAT_BIN'" ;;
-        battery)   doctor_line WARN Package-power "battery power_now only; whole-system, and reads zero on AC" ;;
+        ryzenadj)  doctor_line WARN Package-power "ryzenadj metrics table; turbostat needs an authenticated sudo session (sudo -v)" ;;
         *)         doctor_line FAIL Package-power "no source; power-limited and thermally limited cannot be told apart" ;;
     esac
+    if [[ "$PKG_SOURCE" == none ]] && battery_watts >/dev/null 2>&1; then
+        doctor_line WARN System-power "battery draw is whole-system power; CPU package watts remain unavailable"
+    fi
 
     if [[ "$FAN_SOURCE" != none ]]; then
         doctor_line OK Fan "$FAN_SOURCE"
@@ -424,7 +586,7 @@ cmd_doctor() {
     if [[ -n "$loads" ]]; then
         doctor_line OK Workloads "available:$loads"
     else
-        doctor_line WARN Workloads "none found; the busy-loop fallback is comparable only against itself"
+        doctor_line WARN Workloads "none found; the busy-loop fallback has no throughput measurement"
     fi
 
     if have_cmd "$CLI_BIN"; then
@@ -448,14 +610,15 @@ cmd_sample() {
         esac
         shift
     done
+    validate_uint --duration "$duration" 1 86400
+    validate_uint --interval "$SAMPLE_INTERVAL" 1 86400
     detect_sources
     if [[ "$PKG_SOURCE" == none && "$TEMP_SOURCE" == none ]]; then
         die "No telemetry source at all. Run '$PROGRAM doctor'."
     fi
 
-    local target="${out:-/dev/stdout}"
-    printf '%s\n' "$CSV_HEADER" > "$target"
-    sample_for idle sample "$duration" "$target"
+    open_csv "$out"
+    sample_for idle sample "$duration"
     if [[ -n "$out" ]]; then
         success "Wrote $out"
     fi
@@ -464,14 +627,14 @@ cmd_sample() {
 
 cmd_run() {
     local ladder="" from="" to="" step="" workload=cpu workload_cmd=""
-    local soak=600 cool=300 fixed_temp=85 out=""
+    local soak=600 cool=300 fixed_temp=85 out="" temp_set=0
     while (( $# > 0 )); do
         case "$1" in
             --ladder) ladder="${2:?--ladder needs a value}"; shift ;;
             --from) from="${2:?--from needs a value}"; shift ;;
             --to) to="${2:?--to needs a value}"; shift ;;
             --step) step="${2:?--step needs a value}"; shift ;;
-            --temp) fixed_temp="${2:?--temp needs a value}"; shift ;;
+            --temp) fixed_temp="${2:?--temp needs a value}"; temp_set=1; shift ;;
             --workload) workload="${2:?--workload needs a value}"; shift ;;
             --workload-cmd) workload_cmd="${2:?--workload-cmd needs a value}"; shift ;;
             --soak) soak="${2:?--soak needs a value}"; shift ;;
@@ -488,80 +651,114 @@ cmd_run() {
     [[ -n "$ladder" ]] || die "run requires --ladder stapm or --ladder temp."
     [[ -n "$from" && -n "$to" ]] || die "run requires --from and --to."
     case "$ladder" in
-        stapm) step="${step:-10}" ;;
-        temp)  step="${step:-5}" ;;
+        stapm)
+            step="${step:-10}"
+            validate_uint --from "$from" 5 185
+            validate_uint --to "$to" 5 185 ;;
+        temp)
+            step="${step:-5}"
+            (( temp_set == 0 )) || die "--temp applies only to a stapm ladder."
+            validate_uint --from "$from" 50 100
+            validate_uint --to "$to" 50 100 ;;
         *) die "Unknown ladder '$ladder'. Use stapm or temp." ;;
     esac
+    validate_uint --step "$step" 1 200
+    validate_uint --temp "$fixed_temp" 50 100
+    validate_uint --soak "$soak" 1 86400
+    validate_uint --cool "$cool" 0 86400
+    validate_uint --interval "$SAMPLE_INTERVAL" 1 86400
     (( from <= to )) || die "--from must not exceed --to."
-    (( step > 0 )) || die "--step must be positive."
+    case "$workload" in cpu|crossload|none) ;; *) die "Unknown workload '$workload'." ;; esac
+    [[ "$BENCH_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die "Invalid scratch profile name."
+    have_cmd python3 || die "Python 3 is required to validate the restoration profile."
+    have_cmd setsid || die "setsid (util-linux) is required for workload cleanup."
     out="${out:-powerbench-$ladder.csv}"
 
-    detect_sources
-    if (( ! DRY_RUN )); then
-        if [[ "$PKG_SOURCE" == none ]]; then
-            warn "No package-power source. The ladder will run, but 'power limited' cannot be distinguished from 'thermally limited'. Run '$PROGRAM doctor'."
-        fi
-        RESTORE_PROFILE="$(active_profile || true)"
-        trap 'restore_profile; exit 130' INT TERM
-        trap 'restore_profile' EXIT
+    local state
+    state="$(restorable_state)" || die "A known restoration profile is required before a trial."
+    local -a values
+    mapfile -t values <<<"$state"
+    RESTORE_PROFILE="${values[0]}"
+    RESTORE_STAPM="${values[1]}" RESTORE_SLOW="${values[2]}" RESTORE_FAST="${values[3]}"
+    RESTORE_RECORD="${values[5]}"
+
+    local cmd gpu_cmd="" throughput_kind=""
+    cmd="${workload_cmd:-$(resolve_workload "$workload" "$soak")}" || return 1
+    if [[ "$workload" == crossload && -z "$workload_cmd" ]]; then
+        gpu_cmd="$(resolve_gpu_workload)" || return 1
+    fi
+    if [[ -z "$workload_cmd" && "$workload" != none ]] && have_cmd "$STRESS_NG_BIN"; then
+        throughput_kind=stress-ng
     fi
 
-    printf '%s\n' "$CSV_HEADER" > "$out"
+    if (( ! DRY_RUN )); then
+        detect_sources
+        [[ "$TEMP_SOURCE" != none ]] || die "No temperature source; refusing to change limits."
+        if [[ "$PKG_SOURCE" == none ]]; then
+            warn "No CPU package-power source; limiter and efficiency results will be inconclusive."
+        fi
+        open_csv "$out"
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'cleanup_run $?' EXIT
+    fi
 
     info "Ladder: $ladder $from..$to by $step, soak ${soak}s, cool ${cool}s, interval ${SAMPLE_INTERVAL}s"
     info "Telemetry: temp=$TEMP_SOURCE power=$PKG_SOURCE fan=${FAN_SOURCE##*/} gpu=$GPU_SOURCE"
 
-    local value label log throughput cmd gpu_cmd gpu_pid load_pid
+    local value label throughput load_elapsed
     for (( value = from; value <= to; value += step )); do
         if [[ "$ladder" == stapm ]]; then
             STEP_STAPM="$value"
+            STEP_SLOW=$(( STEP_STAPM + 5 ))
+            STEP_FAST=$(( STEP_STAPM + 15 ))
             STEP_TEMP="$fixed_temp"
         else
-            STEP_STAPM="$from"
+            STEP_STAPM="$RESTORE_STAPM"
+            STEP_SLOW="$RESTORE_SLOW"
+            STEP_FAST="$RESTORE_FAST"
             STEP_TEMP="$value"
         fi
-        STEP_SLOW=$(( STEP_STAPM + 5 ))
-        STEP_FAST=$(( STEP_STAPM + 15 ))
         label="${ladder}-${value}"
 
         info "Step $label: ${STEP_STAPM}/${STEP_SLOW}/${STEP_FAST} W, ${STEP_TEMP} C"
         apply_step "$STEP_STAPM" "$STEP_SLOW" "$STEP_FAST" "$STEP_TEMP"
 
-        cmd="${workload_cmd:-$(resolve_workload "$workload" "$soak")}"
         if (( DRY_RUN )); then
             printf 'DRY-RUN: baseline %ss, load %ss with: %s, cooldown %ss\n' \
                 "$SAMPLE_INTERVAL" "$soak" "$cmd" "$cool" >&2
+            [[ -z "$gpu_cmd" ]] || printf 'DRY-RUN: GPU load: %s\n' "$gpu_cmd" >&2
             continue
         fi
 
-        sample_for "$label" baseline "$SAMPLE_INTERVAL" "$out"
+        sample_for "$label" baseline "$SAMPLE_INTERVAL"
 
-        log="$(mktemp)"
-        gpu_pid=""
-        if [[ "$workload" == crossload && -z "$workload_cmd" ]]; then
-            gpu_cmd="$(resolve_gpu_workload "$soak")"
-            run_load "$gpu_cmd" >/dev/null 2>&1 &
-            gpu_pid=$!
+        RUN_DIR="$(mktemp -d)"
+        LOAD_LOG="$RUN_DIR/load.log"
+        LOAD_DURATION="$soak"
+        if [[ -n "$gpu_cmd" ]]; then
+            start_load "$gpu_cmd" /dev/null
         fi
-        run_load "$cmd" > "$log" 2>&1 &
-        load_pid=$!
-        sample_for "$label" load "$soak" "$out"
-        wait "$load_pid" 2>/dev/null || true
-        if [[ -n "$gpu_pid" ]]; then
-            kill "$gpu_pid" 2>/dev/null || true
-            wait "$gpu_pid" 2>/dev/null || true
-        fi
+        start_load "$cmd" "$LOAD_LOG"
+        sample_for "$label" load "$soak"
+        load_elapsed="$LAST_PHASE_ELAPSED"
+        check_workloads
+        stop_loads
 
-        throughput="$(extract_throughput "$log")"
-        rm -f "$log"
-        sample_row "$label" summary "$soak" "$throughput" >> "$out"
+        throughput="$(extract_throughput "$LOAD_LOG" "$throughput_kind")"
+        rm -rf -- "$RUN_DIR"
+        RUN_DIR=""
+        LOAD_LOG=""
+        sample_row "$label" summary "$load_elapsed" "$throughput" >&3
 
         if (( cool > 0 )); then
-            sample_for "$label" cooldown "$cool" "$out"
+            sample_for "$label" cooldown "$cool"
         fi
     done
 
     if (( DRY_RUN )); then
+        printf 'DRY-RUN: %s apply %s\n' "$CLI_BIN" "$RESTORE_PROFILE" >&2
+        printf 'DRY-RUN: %s delete %s\n' "$CLI_BIN" "$BENCH_PROFILE" >&2
         success "Dry run complete; nothing was applied or loaded."
         return 0
     fi
@@ -573,31 +770,55 @@ cmd_run() {
 cmd_report() {
     local file="${1:?usage: $PROGRAM report FILE}"
     [[ -r "$file" ]] || die "Cannot read '$file'."
+    local header
+    IFS= read -r header < "$file" || die "Empty CSV file."
+    [[ "$header" == "$CSV_HEADER" ]] || die "Unrecognised CSV header."
+    if ! is_number "$POWER_PIN_TOL_W" || ! is_number "$TEMP_HEADROOM_C" || ! is_number "$GAIN_MIN_PCT"; then
+        die "Report thresholds must be nonnegative numbers."
+    fi
 
     awk -F, -v tol="$POWER_PIN_TOL_W" -v head="$TEMP_HEADROOM_C" -v gain="$GAIN_MIN_PCT" '
+        function number(v) { return length(v) <= 24 && v ~ /^[0-9]+([.][0-9]+)?$/ }
         function classify(s, t, p) {
-            if (t == "" || p == "") return "inconclusive: missing telemetry, run doctor"
-            if (ceiling[s] != "" && t >= ceiling[s] - 1)
+            if (!(s in finish) || finish[s] < 120 || samples[s] < 2 || gaps[s] || finish[s] - previous[s] > 30)
+                return "inconclusive: incomplete run or insufficient continuous coverage of the final two minutes"
+            if (bad[s] || t == "" || p == "") return "inconclusive: missing or invalid telemetry, run doctor"
+            if (t >= ceiling[s] - 1)
                 return "thermally limited: Tctl is at the ceiling, more power will not help"
-            if (stapm[s] != "" && p >= stapm[s] - tol && t <= ceiling[s] - head)
-                return "power limited by your own cap: headroom exists, raise STAPM"
-            if (stapm[s] != "" && p < stapm[s] - tol)
-                return "neither cap binds: a current or firmware limit sits below yours"
-            return "mixed: neither signature is clean, extend the soak"
+            if (p >= stapm[s] - tol && p <= stapm[s] + tol && t <= ceiling[s] - head)
+                return "power limited by your own cap: temperature headroom exists; compare workload performance"
+            if (p < stapm[s] - tol)
+                return "inconclusive: neither cap binds; check workload, CPU scheduling, memory pressure and firmware"
+            return "inconclusive: neither signature is clean, extend the soak"
         }
-        NR == 1 { next }
+        NR == FNR {
+            if ($2 == "summary" && number($3)) {
+                if ($1 in finish) bad[$1] = 1
+                finish[$1] = $3
+                if (number($18)) tp[$1] = $18
+            }
+            next
+        }
+        FNR == 1 { next }
         $2 == "load" {
             s = $1
             if (!(s in order)) { order[s] = ++steps; name[steps] = s }
-            if ($8 != "") { t_sum[s] += $8; t_n[s]++ }
-            if ($10 != "") { p_sum[s] += $10; p_n[s]++ }
-            if ($13 != "") { f_sum[s] += $13; f_n[s]++ }
-            if ($14 != "") { g_sum[s] += $14; g_n[s]++ }
             stapm[s] = $4; ceiling[s] = $7
+            if (!number($3) || $3 <= previous[s] || ((s in finish) && $3 > finish[s])) { bad[s] = 1; next }
+            gap = $3 - previous[s]
+            previous[s] = $3
+            if (!number($3) || !(s in finish) || $3 <= finish[s] - 120 || $3 > finish[s]) next
+            if (gap > 30) gaps[s] = 1
+            samples[s]++
+            if (NF != 18 || !number($4) || !number($7) || !number($8) || !number($10)) bad[s] = 1
+            if (number($8)) { t_sum[s] += $8; t_n[s]++ }
+            if (number($10)) { p_sum[s] += $10; p_n[s]++ }
+            if (number($13)) { f_sum[s] += $13; f_n[s]++ }
+            if (number($14)) { g_sum[s] += $14; g_n[s]++ }
         }
-        $2 == "summary" { tp[$1] = $18 }
         END {
             if (steps == 0) { print "No load samples in this file."; exit 1 }
+            print "Steady-state telemetry: final 120 seconds of each completed load."
             printf "%-14s %-11s %-7s %-7s %-7s %-7s %-12s %-9s\n", \
                 "STEP", "LIMITS", "TCTL", "PKG_W", "FAN", "GPU_W", "THROUGHPUT", "PER_WATT"
             prev_tp = 0; stop = 0
@@ -607,7 +828,9 @@ cmd_report() {
                 p = p_n[s] ? p_sum[s] / p_n[s] : ""
                 f = f_n[s] ? f_sum[s] / f_n[s] : ""
                 g = g_n[s] ? g_sum[s] / g_n[s] : ""
-                pw = (tp[s] != "" && p != "" && p > 0) ? tp[s] / p : ""
+                verdict[i] = classify(s, t, p)
+                measured = verdict[i] !~ /^inconclusive/
+                pw = (measured && tp[s] != "" && p != "" && p > 0) ? tp[s] / p : ""
                 printf "%-14s %-11s %-7s %-7s %-7s %-7s %-12s %-9s\n", s, \
                     stapm[s] "W/" ceiling[s] "C", \
                     (t != "" ? sprintf("%.1f", t) : "-"), \
@@ -616,12 +839,11 @@ cmd_report() {
                     (g != "" ? sprintf("%.1f", g) : "-"), \
                     (tp[s] != "" ? tp[s] : "-"), \
                     (pw != "" ? sprintf("%.2f", pw) : "-")
-                verdict[i] = classify(s, t, p)
-                if (tp[s] != "" && prev_tp > 0) {
+                if (measured && tp[s] != "" && prev_tp > 0) {
                     delta = 100 * (tp[s] - prev_tp) / prev_tp
                     if (delta < gain && stop == 0) { stop = i; stop_delta = delta }
                 }
-                if (tp[s] != "") prev_tp = tp[s]
+                prev_tp = (measured && tp[s] != "") ? tp[s] : 0
             }
             printf "\nVERDICT\n"
             for (i = 1; i <= steps; i++) printf "  %-14s %s\n", name[i], verdict[i]
@@ -630,7 +852,7 @@ cmd_report() {
                     stop_delta, name[stop], gain
             printf "\n  docs/TUNING.md section 2 explains each verdict, section 6 the stop rules.\n"
         }
-    ' "$file"
+    ' "$file" "$file"
 }
 
 main() {

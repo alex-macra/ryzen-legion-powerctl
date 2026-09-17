@@ -5,7 +5,25 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- Temperature sweeps preserve all three running wattages. Trials require a known,
+  unchanged restoration profile, restore it once on exit, stop their workload process
+  groups and remove their scratch profiles after successful restoration.
+- Read command-mode turbostat telemetry from stderr without confusing missing power
+  columns with clocks. Battery draw never becomes CPU package power. Reports use the
+  final two minutes and mark incomplete or invalid measurements inconclusive.
+- Parse only structured stress-ng real-time throughput; other workloads no longer
+  produce fabricated throughput from arbitrary log numbers. Failed workloads fail the run.
+- Validate trial arguments before changing limits, preserve existing CSV files, and
+  make dry runs leave no profiles or CSV files behind.
+- Fix the three Python lint errors in the profile-derived desktop test.
+
 ### Added
+
+- A reproducible game-plus-VM comparison for balanced-plus, starting at 85 C with
+  unchanged 65/70/80 W limits, including acceptance thresholds and explicit rollback.
+  The candidate is unmeasured; bundled profile values remain unchanged pending hardware results.
 
 - `docs/TUNING.md` and `legion-powerbench`: a way to find out which limit is actually
   binding before changing one. The document is the protocol - a signature table that maps

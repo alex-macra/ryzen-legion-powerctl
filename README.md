@@ -74,11 +74,17 @@ legion-powerbench report powerbench-stapm.csv
 
 It samples unprivileged, changes limits only through `legion-powerctl`, restores the profile that was active when it started, and never writes GPU state. [docs/TUNING.md](docs/TUNING.md) is the protocol: what each signature means, where to stop, and how to report a result.
 
+For gaming alongside a VM, [the balanced-plus comparison](docs/TUNING.md#10-balanced-plus-with-a-game-and-a-vm)
+starts with a temporary 85 C trial at the current 65/70/80 W limits. It restores your
+running profile afterward. The candidate is unmeasured; the shipped 78 C profile
+stays unchanged until real game and VM results justify replacing it.
+
 ## Requirements
 
 - An Arch-based distribution with systemd and Bash 5
 - An AMD Ryzen processor supported by RyzenAdj
 - `ryzenadj` **0.19.0 or newer** from the AUR, the first release with Fire Range/HX support
+- Python 3 and `setsid` (util-linux) for the measurement harness
 - Optional: `powerprofilesctl`; `pyside6` and `polkit` for the GUI; Python 3 for the GUI launcher
 
 The profiles were developed on one Lenovo Legion Pro 7 with a Ryzen 9 9955HX3D, and those observations were informal rather than benchmarks; [docs/TUNING.md](docs/TUNING.md) and `legion-powerbench` exist so the next set of numbers does not have to be. Automated verification is headless: the GUI has been exercised only offscreen, the polkit prompts have never been displayed, and the built package has not been installed on a real Arch system. Compatibility reports from other AMD Legion models are the most useful contribution right now.

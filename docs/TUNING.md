@@ -52,7 +52,7 @@ minutes into a sustained load, not thirty seconds - and match the signature:
 |---|---|---|
 | Package power sits at `STAPM_W`, Tctl more than 5 C below `TEMP_C`, fan below maximum | Your own power cap | Raise `STAPM_W` and `SLOW_W`. **This is the headroom case.** |
 | Tctl sits at `TEMP_C`, package power below `STAPM_W` | Thermal ceiling | Raise `TEMP_C`, or improve cooling. Raising power does nothing at all. |
-| Neither pinned, effective clock below the hardware maximum | Current (TDC/EDC) or a firmware limit below yours | Not reachable through this tool's four knobs. See section 8. |
+| Neither pinned, effective clock below the hardware maximum | Inconclusive | Check CPU scheduling, VM allocation, memory pressure, workload demand, boost and firmware before raising limits |
 | Effective clock pinned at `scaling_max_freq` | CPUFreq policy or boost | `MAX_FREQ_MHZ`, `BOOST` |
 | Comfortable at 2 minutes, at the ceiling by 8 | Heat soak | Separate burst from sustained: keep `FAST_W` high, lower `STAPM_W`. |
 
@@ -74,7 +74,7 @@ you which one it got. `legion-powerbench doctor` prints the whole ladder.
 | Tccd1, Tccd2 | the same hwmon, `temp3_input` and up | Runs hotter than Tctl by design. A 95 C Tccd under an 82 C Tctl cap is not a failed cap - see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Package power | `turbostat --show PkgWatt,CorWatt,Bzy_MHz,Busy%` | The most trustworthy source on Zen. Needs root and the `msr` module |
 | Package power, fallback | `ryzenadj -i`, the `STAPM VALUE` and `PPT VALUE FAST` rows | On Fire Range the metrics table is often unavailable without `ryzen_smu`, and these rows have an empty parameter column, so they must be matched by name |
-| System draw, fallback | `/sys/class/power_supply/BAT*/power_now` | Whole-system, not package, and reads zero on AC. Useful only as a direction check |
+| System draw, diagnostic only | `/sys/class/power_supply/BAT*/power_now` | Whole-system, not package. Never stored in `pkg_w` or used for CPU limiter or efficiency conclusions |
 | Effective clock | `turbostat` `Bzy_MHz` | `scaling_cur_freq` under `amd-pstate` is a *request*, not what the core ran at. Do not tune against it |
 | Fan | `/sys/class/hwmon/*/fan*_input` | Absent unless a Legion platform driver is loaded. Treat as optional |
 | GPU | `nvidia-smi --query-gpu=power.draw,power.limit,temperature.gpu,clocks.sm,utilization.gpu` | Read only. This tool never writes GPU state |
@@ -82,9 +82,12 @@ you which one it got. `legion-powerbench doctor` prints the whole ladder.
 ## 4. The harness
 
 `tools/legion-powerbench` runs the protocol. It samples unprivileged, shells out to
-`legion-powerctl apply` for profile changes, and writes CSV.
+`legion-powerctl apply` for profile changes, and writes CSV. Python 3 validates the
+CLI status JSON, and `setsid` from util-linux isolates workloads for cleanup. Both
+are available with the Arch package and its base-system dependencies.
 
 ```
+sudo -v
 legion-powerbench doctor
 legion-powerbench sample --duration 60 --out idle.csv
 legion-powerbench run --ladder stapm --from 65 --to 105 --step 10 \
@@ -92,15 +95,53 @@ legion-powerbench run --ladder stapm --from 65 --to 105 --step 10 \
 legion-powerbench report ladder.csv
 ```
 
-`report` prints the per-step table and the limiter verdict from section 2.
+`report` averages only the final 120 seconds of each completed load. Interrupted
+steps, runs shorter than two minutes, and missing or malformed package-power or
+temperature readings produce an inconclusive verdict. The final window must have
+increasing timestamps and no sampling gaps longer than 30 seconds; a few readings
+near the end cannot establish sustained behaviour. Elapsed seconds include actual
+sampling time, and a failed telemetry read still waits out its sampling interval.
+The report keeps the CSV header unchanged. `turbostat` is read from stderr in command mode, including its
+elapsed-time preamble; a missing `PkgWatt` column cannot turn a clock into watts.
+
+Authenticate with `sudo -v` before probing telemetry. Do not grant blanket
+passwordless access to turbostat: it can execute commands as root. If credentials
+expire during a long run, authenticate when the restore command prompts. A failed
+restore exits nonzero and prints the profile to reapply.
+
+Before applying any step, the harness checks the last successfully applied profile,
+including its three power limits and optional policy settings, against the profile
+on disk. A missing, partially applied, or edited restoration profile blocks the run;
+apply the intended profile once first. The selected boot profile is not a substitute
+for the running profile. A temperature ladder preserves all three running wattages;
+`--temp` is valid only for a power ladder. Scratch profiles leave platform policy,
+boost, frequency range and EPP unchanged.
+
+Each run uses a separate scratch profile and removes it after successful restoration.
+Normal completion, interruption and failures stop the workload process groups and
+restore the previously applied profile once. If the restore fails or that profile
+was edited during the run, the scratch profile remains available for diagnosis and
+the command fails. Existing output files are rejected, so use a fresh filename for
+each comparison.
 
 Load generation is pluggable. The built-in `cpu` preset probes for `stress-ng`, then
 `openssl speed`, then falls back to a portable busy loop; `crossload` adds `vkmark` or
-`glmark2` if either is present. None of them is a dependency - `doctor` names what is
-missing and `--workload-cmd` takes any command you prefer, including a real build or a
-game benchmark.
+`glmark2`. A crossload preset without either GPU workload is rejected. None is a
+mandatory dependency; `doctor` names what is missing. `--workload-cmd` takes a command
+you choose, run as your user. It must remain active for the measurement window; an
+early exit, including success, makes that step incomplete. Remaining workload
+processes are stopped at the end of the window. Use `--workload none` when a game
+and VM are already running outside the harness; those processes are never stopped.
 
-`--dry-run` prints the plan and every command without applying or loading anything.
+Only the built-in stress-ng CPU metrics have a throughput parser: it reads real-time
+bogo operations per second from the structured metrics table, over the full load.
+OpenSSL, busy loops and custom command logs leave throughput blank. Record game FPS,
+frame pacing and VM throughput separately; arbitrary numbers in a log are not a
+benchmark result. The harness reports stop-rule evidence; it does not automatically
+approve the next rung or enforce your machine's stock envelope.
+
+`--dry-run` validates the restoration state and prints the plan without applying,
+loading, probing privileged telemetry, creating a scratch profile, or writing CSV.
 
 ## 5. The step ladder
 
@@ -117,10 +158,11 @@ A reasonable CPU-only ladder: `STAPM_W` 65, 75, 85, 95, 105, with `SLOW_W` at
 `STAPM_W + 5` and `FAST_W` at `SLOW_W + 10`, `TEMP_C` fixed at 85. That is
 `--ladder stapm`.
 
-Run the power ladder first. Only if it ends on the thermally limited verdict is
-`--ladder temp` worth running, and then it answers a narrower question: how much more the
-machine will draw for each degree you give it. Raising the ceiling on a machine that was
-never thermally limited changes nothing except the worst case.
+Choose the first dimension from the current measurements. At the 78 C balanced-plus
+ceiling, test temperature first if Tctl is pinned. A temperature ladder answers how
+much more the machine will draw for each degree you give it, at the same power limits.
+Raising the ceiling on a machine that was never thermally limited changes only the
+worst case.
 
 Record per step: throughput, steady-state Tctl, mean package power, fan RPM, and
 **throughput per watt**. That last column is the one that decides where to stop; the
@@ -216,3 +258,114 @@ Verdict: <which row of section 2 matched, and at which step it stopped improving
 
 The `Verdict` line is the point of the exercise. A ladder without it is a table of
 numbers; with it, it is a reason to change a profile.
+
+## 10. Balanced-plus with a game and a VM
+
+The first candidate is **65/70/80 W at 85 C**, with boost on, stock frequency range,
+balanced platform policy and `balance_performance` EPP. It is unmeasured. The bundled
+balanced-plus remains at 78 C until the hardware comparison below demonstrates a
+gain. The 90 C ceiling here is a bound for this experiment on the Ryzen 9 9955HX3D,
+not a new global validation limit or a claim that every Legion should use it.
+AMD lists a 100 C processor maximum in the
+[Ryzen 9 9955HX3D specifications](https://www.amd.com/en/products/processors/laptop/ryzen/9000-series/amd-ryzen-9-9955hx3d.html);
+keep this tuning session at or below 90 C.
+
+Use AC power, the same firmware mode, game settings and repeatable scene, and the
+same VM task and CPU/RAM allocation throughout. Record the installed version, actual
+profile, boost control, frequency range, CPU/GPU watts and temperatures. Check host
+memory and CPU contention with the game and VM running:
+
+```bash
+legion-powerctl status
+legion-powerctl doctor
+free -h
+vmstat 1 10
+cat /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io
+sudo -v
+legion-powerbench doctor
+```
+
+`doctor` runs once and exits; it is not a background service. If boost is off, the
+frequency range is restricted, or the host is swapping heavily, resolve that before
+attributing lag to the thermal ceiling. Verify stock limits from a clean capture in
+the same firmware mode before increasing watts. TDP specifications and a capture
+taken after another tuning tool ran are not stock-limit measurements.
+
+With balanced-plus actually applied and matching its saved profile, run one trial at
+a time. Keep the real game and VM active during the load window. These commands
+change only temperature temporarily and restore the previous profile on exit:
+
+```bash
+legion-powerbench run --ladder temp --from 78 --to 78 --workload none \
+  --soak 600 --cool 0 --interval 5 --out balanced-plus-78-run1.csv
+legion-powerbench report balanced-plus-78-run1.csv
+
+# Pause the game/VM load and cool for at least five minutes before the next run.
+legion-powerbench run --ladder temp --from 85 --to 85 --workload none \
+  --soak 600 --cool 0 --interval 5 --out balanced-plus-85-run1.csv
+legion-powerbench report balanced-plus-85-run1.csv
+```
+
+Repeat each condition three times with fresh `run2` and `run3` filenames, alternating
+conditions. Compare the final two minutes at steady state and cool back near the
+original idle temperature between runs. Record average FPS, 1% lows, and VM task
+throughput alongside each CSV. For a timed fixed VM task, use the reciprocal of its
+completion time as throughput. A stress-ng or synthetic crossload result does not
+substitute for this game-plus-VM comparison.
+
+Only if the 85 C trial is thermally limited, repeat it at 90 C (`--from 90 --to 90`).
+If it is power limited instead, test 75/80/90 W at the chosen fixed temperature:
+
+```bash
+legion-powerbench run --ladder stapm --from 75 --to 75 --temp 85 \
+  --workload none --soak 600 --cool 0 --interval 5 --out balanced-plus-75w-run1.csv
+```
+
+Use `--temp 90` only if that thermal trial was accepted. Test 85/90/100 W next only
+if 75 W still binds and each limit is within the verified stock envelope. Use
+`--from 85 --to 85` for that trial. Do not run a blind multi-step power ladder while
+gaming. Stop on instability, rejected settings, excessive heat, or worse frame pacing.
+
+Use the median of three runs. Accept a candidate only if game 1% lows or VM throughput
+improves by at least 5%, while the other metric and average FPS each regress by no
+more than 3%. Prefer the lower-power/cooler candidate when gains are within normal
+run-to-run variation. If neither improves, leave balanced-plus unchanged and
+investigate contention. Attach the CSVs and these results to the tuning PR:
+
+| Condition | Run | Average FPS | 1% low FPS | VM throughput | Tctl / CPU W / GPU W |
+|---|---|---|---|---|---|
+| 65/70/80 W, 78 C | 1-3 | | | | |
+| 65/70/80 W, 85 C | 1-3 | | | | |
+
+### Promote and roll back a measured winner
+
+Before replacing the installed profile, save it outside the profiles directory.
+The backup is never overwritten by the following command:
+
+```bash
+sudo mkdir -p /var/lib/legion-powerctl/rollback
+sudo cp -n /etc/legion-powerctl/profiles.d/balanced-plus.conf \
+  /var/lib/legion-powerctl/rollback/balanced-plus.conf
+```
+
+After the 85 C candidate passes, explicitly write and apply its measured settings;
+installing an update alone may preserve the old configuration or create a `.pacnew`:
+
+```bash
+sudo legion-powerctl configure balanced-plus --stapm 65 --slow 70 --fast 80 \
+  --temp 85 --power-profile balanced --min-mhz stock --max-mhz stock \
+  --boost on --epp balance_performance --apply
+legion-powerctl status
+```
+
+Substitute different watts or 90 C only after that exact candidate passes. Preserve
+the boot selection during trials; an already selected balanced-plus will use the
+updated values at the next enabled service run. Update the bundled profile,
+description and fixtures with the measured winner and its evidence at that point.
+To restore the previous installed settings:
+
+```bash
+sudo cp /var/lib/legion-powerctl/rollback/balanced-plus.conf \
+  /etc/legion-powerctl/profiles.d/balanced-plus.conf
+sudo legion-powerctl apply balanced-plus
+```
