@@ -13,6 +13,8 @@ readonly ETC_DIR="${LEGION_POWERCTL_ETC_DIR:-/etc/legion-powerctl}"
 readonly CONFIG_FILE="${LEGION_POWERCTL_CONFIG_FILE:-${ETC_DIR}/config.conf}"
 readonly PROFILES_DIR="${LEGION_POWERCTL_PROFILES_DIR:-${ETC_DIR}/profiles.d}"
 readonly STATE_DIR="${LEGION_POWERCTL_STATE_DIR:-/run/legion-powerctl}"
+readonly LIB_DIR="${LEGION_POWERCTL_LIB_DIR:-/var/lib/legion-powerctl}"
+readonly STOCK_LIMITS_FILE="${LEGION_POWERCTL_STOCK_LIMITS_FILE:-${LIB_DIR}/stock-limits.env}"
 readonly SYSFS_CPU_ROOT="${LEGION_POWERCTL_SYSFS_CPU_ROOT:-/sys/devices/system/cpu}"
 readonly CPUINFO_PATH="${LEGION_POWERCTL_CPUINFO_PATH:-/proc/cpuinfo}"
 readonly DMI_ROOT="${LEGION_POWERCTL_DMI_ROOT:-/sys/class/dmi/id}"
@@ -88,6 +90,7 @@ Usage:
   legion-powerctl enable [--force]
   legion-powerctl disable
   legion-powerctl restore-frequency [--boost on|off|unchanged]
+  legion-powerctl baseline [--capture|--show]
   legion-powerctl version
 
 Configure options:
@@ -206,6 +209,46 @@ ryzenadj_version() {
 
 version_lt() {
     [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+}
+
+ryzenadj_shadow_detail() {
+    local selected="$1" selected_ver="$2"
+    shift 2
+    local count=$(( $# + 1 ))
+    local cand ver stale="" same="" unknown="" tied=1
+
+    for cand in "$@"; do
+        ver="$(ryzenadj_version "$cand")"
+        if [[ -z "$ver" ]]; then
+            if [[ -n "$unknown" ]]; then unknown+=", "; fi
+            unknown+="$cand"
+        elif [[ "$ver" == "$selected_ver" ]]; then
+            if [[ -n "$same" ]]; then same+=", "; fi
+            same+="$cand"
+            tied=$(( tied + 1 ))
+        else
+            if [[ -n "$stale" ]]; then stale+=", "; fi
+            stale+="$cand $ver"
+        fi
+    done
+
+    if [[ -n "$unknown" || -z "$selected_ver" ]]; then
+        printf '%s on PATH; using %s%s, but no version from %s, so the newest cannot be confirmed' \
+            "$count" "$selected" "${selected_ver:+ $selected_ver}" "${unknown:-the others}"
+        return 1
+    fi
+
+    # A tie is broken by PATH order, not recency, so it is neither "newest" nor
+    # something to delete: on a default Arch PATH the loser is the packaged binary.
+    if [[ -n "$same" ]]; then
+        printf '%s on PATH; using %s %s, the first of %s at that version. Same version: %s' \
+            "$count" "$selected" "$selected_ver" "$tied" "$same"
+    else
+        printf '%s on PATH; using %s %s (newest)' "$count" "$selected" "$selected_ver"
+    fi
+    if [[ -n "$stale" ]]; then
+        printf '. Stale: %s - safe to delete if no package owns it' "$stale"
+    fi
 }
 
 resolve_powerprofilesctl() {
@@ -704,6 +747,77 @@ verify_ryzenadj_limits() {
     return 1
 }
 
+# The firmware's own SMU limits, recorded once so a tuning run has a denominator and a
+# way back. SMU limits reset at power-on, so the values are only the firmware's until
+# something applies over them - hence the guard on this boot's last-apply record.
+stock_limits_captured() { [[ -s "$STOCK_LIMITS_FILE" ]]; }
+
+capture_stock_limits() {
+    local ryzenadj="$1" quiet="${2:-0}" report spec label parameter value
+    stock_limits_captured && return 0
+    if [[ -e "$STATE_DIR/last-apply.env" ]]; then
+        (( quiet == 1 )) || warn "A profile was already applied this boot, so the SMU no longer holds the firmware values. Run 'legion-powerctl disable', reboot, then capture."
+        return 1
+    fi
+    report="$("$ryzenadj" -i 2>&1)" || return 1
+
+    local -a captured=()
+    for spec in "STAPM_W:stapm-limit" "SLOW_W:slow-limit" "FAST_W:fast-limit" "TEMP_C:tctl-temp"; do
+        label="${spec%%:*}"
+        parameter="${spec#*:}"
+        value="$(ryzenadj_report_value "$report" "$parameter" 2>/dev/null || true)"
+        [[ -n "$value" ]] || continue
+        captured+=("$label=$value")
+    done
+    if (( ${#captured[@]} == 0 )); then
+        (( quiet == 1 )) || warn "'$ryzenadj -i' returned no limits to capture. On Fire Range the metrics table needs ryzen_smu; see docs/INSTALL.md."
+        return 1
+    fi
+
+    mkdir -p "$LIB_DIR" 2>/dev/null || return 1
+    {
+        printf '# Firmware SMU limits, captured before the first apply. Do not edit.\n'
+        printf '%s\n' "${captured[@]}"
+        printf 'CAPTURED_AT=%s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
+    } > "$STOCK_LIMITS_FILE"
+    chmod 0644 "$STOCK_LIMITS_FILE" 2>/dev/null || true
+    return 0
+}
+
+cmd_baseline() {
+    local action=show
+    while (( $# > 0 )); do
+        case "$1" in
+            --capture) action=capture ;;
+            --show) action=show ;;
+            -h|--help) usage; return 0 ;;
+            *) die "Unknown baseline option: $1" ;;
+        esac
+        shift
+    done
+
+    if [[ "$action" == capture ]]; then
+        require_root
+        if stock_limits_captured; then
+            info "Stock limits were already captured; they are never overwritten."
+        else
+            local ryzenadj
+            ryzenadj="$(resolve_ryzenadj)"
+            [[ -n "$ryzenadj" && -x "$ryzenadj" ]] || die "ryzenadj is not installed or executable."
+            capture_stock_limits "$ryzenadj" || die "Could not capture the stock limits."
+            success "Captured the firmware limits to $STOCK_LIMITS_FILE."
+        fi
+    fi
+
+    if ! stock_limits_captured; then
+        info "No stock limits recorded. Run 'sudo legion-powerctl baseline --capture' from a boot where no profile has been applied yet."
+        return 1
+    fi
+    printf '%s\n' "Stock limits recorded in $STOCK_LIMITS_FILE:"
+    grep -v '^#' "$STOCK_LIMITS_FILE"
+    return 0
+}
+
 apply_ryzenadj() {
     local dry_run="$1" ryzenadj
     ryzenadj="$(resolve_ryzenadj)"
@@ -784,6 +898,8 @@ cmd_apply() {
     ryzenadj_preflight="$(resolve_ryzenadj)"
     [[ -n "$ryzenadj_preflight" && -x "$ryzenadj_preflight" ]] || \
         die "ryzenadj is not installed or executable. Install ryzenadj (AUR) first."
+
+    [[ "$dry_run" == "1" ]] || capture_stock_limits "$ryzenadj_preflight" 1 || true
 
     (( boot == 1 )) && info "Boot apply: profile '$profile'"
     if [[ "$dry_run" != "1" ]]; then
@@ -1276,8 +1392,13 @@ cmd_doctor() {
             mapfile -t other_ryzenadj < <(ryzenadj_candidates | grep -Fxv -- "$ryzenadj" || true)
         fi
         if (( ${#other_ryzenadj[@]} > 0 )); then
-            doctor_line WARN RyzenAdj-shadow "PATH holds more than one ryzenadj; selected $ryzenadj (newest) over ${other_ryzenadj[*]}. Running 'ryzenadj' by hand still picks the first on PATH"
-            ((warnings += 1))
+            local shadow_detail
+            if shadow_detail="$(ryzenadj_shadow_detail "$ryzenadj" "$ryzenadj_ver" "${other_ryzenadj[@]}")"; then
+                doctor_line OK RyzenAdj-shadow "$shadow_detail"
+            else
+                doctor_line WARN RyzenAdj-shadow "$shadow_detail"
+                ((warnings += 1))
+            fi
         fi
     else
         doctor_line FAIL RyzenAdj "not found; install ryzenadj (AUR)"
@@ -1290,20 +1411,15 @@ cmd_doctor() {
         doctor_line OK SMU-backend "$SMU_DEV available"
     elif [[ -e "$DEV_MEM_PATH" ]]; then
         smu_backend="devmem"
-        doctor_line WARN SMU-backend "no $SMU_DEV; RyzenAdj will try the $DEV_MEM_PATH fallback"
-        ((warnings += 1))
-    else
-        doctor_line FAIL SMU-backend "neither $SMU_DEV nor $DEV_MEM_PATH is available"
-        ((failures += 1))
-    fi
-
-    if [[ ! -e "$SMU_DEV" ]]; then
         if [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
-            doctor_line WARN ryzen_smu "module is loaded but $SMU_DEV is absent; the module may not support this CPU, so 'ryzenadj -i' verification will report unverified"
+            doctor_line WARN SMU-backend "ryzen_smu is loaded but $SMU_DEV is absent, so the module may not support this CPU; RyzenAdj falls back to $DEV_MEM_PATH and applies report unverified"
         else
-            doctor_line WARN ryzen_smu "module is not loaded; setting limits can still work over $DEV_MEM_PATH but reading them back often cannot, so applies report unverified - install ryzen_smu-dkms-git"
+            doctor_line WARN SMU-backend "no $SMU_DEV and no ryzen_smu module; the $DEV_MEM_PATH fallback sets limits but usually cannot read them back, so applies report unverified - install ryzen_smu-dkms-git"
         fi
         ((warnings += 1))
+    else
+        doctor_line FAIL SMU-backend "neither $SMU_DEV nor $DEV_MEM_PATH is available, so nothing can reach the SMU - install ryzen_smu-dkms-git, which provides $SMU_DEV"
+        ((failures += 1))
     fi
 
     local lockdown
@@ -1495,6 +1611,7 @@ main() {
         enable) cmd_enable "$@" ;;
         disable) cmd_disable "$@" ;;
         restore-frequency) cmd_restore_frequency "$@" ;;
+        baseline) cmd_baseline "$@" ;;
         version|--version|-V) printf '%s %s\n' "$PROGRAM" "$VERSION" ;;
         help|--help|-h) usage ;;
         *) die "Unknown command '$command'. Run '$PROGRAM help'." ;;

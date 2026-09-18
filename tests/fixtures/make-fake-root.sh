@@ -11,6 +11,7 @@ FIXTURE_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 ETC="$FAKE_ROOT/etc/legion-powerctl"
 PROFILES="$ETC/profiles.d"
 STATE="$FAKE_ROOT/run/legion-powerctl"
+LIB="$FAKE_ROOT/var/lib/legion-powerctl"
 SYSFS="$FAKE_ROOT/sys/devices/system/cpu"
 DMI="$FAKE_ROOT/sys/class/dmi/id"
 EFIVARS="$FAKE_ROOT/sys/firmware/efi/efivars"
@@ -23,11 +24,13 @@ SMU_DEV="$DEV/ryzen_smu_drv"
 DEV_MEM="$DEV/mem"
 LOG="$FAKE_ROOT/commands.log"
 RYZENADJ_STATE="$FAKE_ROOT/ryzenadj-limits"
+HWMON="$FAKE_ROOT/sys/class/hwmon"
+POWER_SUPPLY="$FAKE_ROOT/sys/class/power_supply"
 FAKE_EXTRA_POLICIES="${LEGION_FAKE_EXTRA_POLICIES:-0}"
 FAKE_BOOST_SHAPE="${LEGION_FAKE_BOOST_SHAPE:-amd-pstate-611}"
 
 mkdir -p "$PROFILES" "$STATE" "$SYSFS/cpufreq/policy0" "$DMI" "$EFIVARS" "$MODULES" \
-    "$FAKEBIN" "$DEV"
+    "$FAKEBIN" "$DEV" "$HWMON/hwmon0" "$HWMON/hwmon1" "$POWER_SUPPLY/BAT0"
 : > "$LOG"
 
 cp "$FIXTURE_REPO/profiles/balanced-plus.conf" "$PROFILES/balanced-plus.conf"
@@ -152,9 +155,18 @@ if [[ "${1:-}" == "-i" || "${1:-}" == "--info" ]]; then
     printf '| PPT LIMIT SLOW | %d.000 | slow-limit |\n' "$((slow / 1000))"
     printf '| PPT LIMIT FAST | %d.000 | fast-limit |\n' "$((fast / 1000))"
     printf '| THM LIMIT CORE | %d.000 | tctl-temp |\n' "${LEGION_FAKE_RYZENADJ_TCTL:-$tctl}"
+    printf '| STAPM VALUE | %s |  |\n' "${LEGION_FAKE_PKG_W:-30.000}"
+    printf '| PPT VALUE FAST | %s |  |\n' "${LEGION_FAKE_PKG_W:-30.000}"
+    printf '| THM VALUE CORE | %s |  |\n' "${LEGION_FAKE_TCTL_C:-55.000}"
     exit 0
 fi
 printf 'ryzenadj %s\n' "$*" >> "${LEGION_TEST_LOG:?}"
+for arg in "$@"; do
+    if [[ "$arg" == "--tctl-temp=${LEGION_FAKE_RYZENADJ_FAIL_TEMP:-never}" ]]; then
+        printf 'Could not set test limits\n' >&2
+        exit 1
+    fi
+done
 if [[ -n "${LEGION_FAKE_RYZENADJ_STATE:-}" ]]; then
     : > "$LEGION_FAKE_RYZENADJ_STATE"
     for arg in "$@"; do
@@ -179,6 +191,80 @@ case "${1:-}" in
 esac
 EOF_FAKE
 
+# hwmon mirrors what legion-powerbench probes: k10temp carries Tctl on temp1 and the
+# per-CCD sensors on labelled temp3/temp4, and the fan lives on a different hwmon, so
+# the probe has to walk more than one directory to find it.
+printf 'k10temp\n' > "$HWMON/hwmon0/name"
+printf '%s\n' "${LEGION_FAKE_TCTL_MC:-55000}" > "$HWMON/hwmon0/temp1_input"
+printf 'Tctl\n' > "$HWMON/hwmon0/temp1_label"
+printf 'Tccd1\n' > "$HWMON/hwmon0/temp3_label"
+printf '%s\n' "${LEGION_FAKE_TCCD_MC:-65000}" > "$HWMON/hwmon0/temp3_input"
+printf 'Tccd2\n' > "$HWMON/hwmon0/temp4_label"
+printf '%s\n' "${LEGION_FAKE_TCCD2_MC:-63000}" > "$HWMON/hwmon0/temp4_input"
+
+printf 'legion\n' > "$HWMON/hwmon1/name"
+printf '%s\n' "${LEGION_FAKE_FAN_RPM:-3000}" > "$HWMON/hwmon1/fan1_input"
+
+printf 'Battery\n' > "$POWER_SUPPLY/BAT0/type"
+printf '%s\n' "${LEGION_FAKE_BATTERY_UW:-0}" > "$POWER_SUPPLY/BAT0/power_now"
+
+# turbostat is invoked as `sudo -n turbostat ... -- sleep N`, so the fixture needs a
+# sudo that runs the rest of the line rather than a real privilege escalation.
+cat > "$FAKEBIN/sudo" <<'EOF_FAKE'
+#!/usr/bin/env bash
+while [[ "${1:-}" == -* ]]; do shift; done
+exec "$@"
+EOF_FAKE
+
+cat > "$FAKEBIN/turbostat" <<'EOF_FAKE'
+#!/usr/bin/env bash
+[[ -n "${LEGION_FAKE_NO_TURBOSTAT:-}" ]] && exit 1
+if [[ -n "${LEGION_FAKE_TURBOSTAT_READ_COUNTER:-}" ]]; then
+    reads=0
+    [[ ! -r "$LEGION_FAKE_TURBOSTAT_READ_COUNTER" ]] || reads="$(<"$LEGION_FAKE_TURBOSTAT_READ_COUNTER")"
+    reads=$(( reads + 1 ))
+    printf '%s\n' "$reads" > "$LEGION_FAKE_TURBOSTAT_READ_COUNTER"
+    (( reads <= ${LEGION_FAKE_TURBOSTAT_FAIL_AFTER:-1} )) || exit 1
+fi
+while (( $# )); do
+    if [[ "$1" == -- ]]; then
+        shift
+        "$@"
+        break
+    fi
+    shift
+done
+printf '1.000123 sec\n' >&2
+printf 'Busy%%\tPkgWatt\tBzy_MHz\n' >&2
+printf '%s\t%s\t%s\n' "${LEGION_FAKE_BUSY_PCT:-99.0}" \
+    "${LEGION_FAKE_PKG_W:-30.0}" "${LEGION_FAKE_BZY_MHZ:-4200}" >&2
+EOF_FAKE
+
+cat > "$FAKEBIN/stress-ng" <<'EOF_FAKE'
+#!/usr/bin/env bash
+while (( $# )); do
+    if [[ "$1" == --timeout ]]; then
+        sleep "${2%s}"
+        break
+    fi
+    shift
+done
+cat >&2 <<'EOF_METRICS'
+stress-ng: metrc: [4242] stressor       bogo ops real time  usr time  sys time   bogo ops/s     bogo ops/s
+stress-ng: metrc: [4242]                           (secs)    (secs)    (secs)   (real time) (usr+sys time)
+stress-ng: metrc: [4242] cpu                2401      2.00      7.00      0.10      1200.50         338.17
+stress-ng: info: [4242] successful run completed in 2.00s
+EOF_METRICS
+EOF_FAKE
+
+cat > "$FAKEBIN/nvidia-smi" <<'EOF_FAKE'
+#!/usr/bin/env bash
+[[ -n "${LEGION_FAKE_NO_NVIDIA:-}" ]] && exit 1
+printf '%s, %s, %s, %s\n' "${LEGION_FAKE_GPU_W:-140.5}" \
+    "${LEGION_FAKE_GPU_LIMIT_W:-175.0}" "${LEGION_FAKE_GPU_TEMP_C:-72}" \
+    "${LEGION_FAKE_GPU_UTIL:-98}"
+EOF_FAKE
+
 cat > "$FAKEBIN/systemctl" <<'EOF_FAKE'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -193,6 +279,8 @@ FAKE_ENV=(
     LEGION_POWERCTL_TESTING=1
     LEGION_POWERCTL_ETC_DIR="$ETC"
     LEGION_POWERCTL_STATE_DIR="$STATE"
+    LEGION_POWERCTL_LIB_DIR="$LIB"
+    LEGION_POWERCTL_STOCK_LIMITS_FILE="$LIB/stock-limits.env"
     LEGION_POWERCTL_SYSFS_CPU_ROOT="$SYSFS"
     LEGION_POWERCTL_CPUINFO_PATH="$CPUINFO"
     LEGION_POWERCTL_DMI_ROOT="$DMI"
@@ -207,6 +295,40 @@ FAKE_ENV=(
     LEGION_TEST_LOG="$LOG"
     LEGION_FAKE_RYZENADJ_STATE="$RYZENADJ_STATE"
 )
+
+BENCH_CLI="$FIXTURE_REPO/tools/legion-powerbench"
+
+BENCH_ENV=(
+    LEGION_POWERBENCH_HWMON_ROOT="$HWMON"
+    LEGION_POWERBENCH_POWER_SUPPLY_ROOT="$POWER_SUPPLY"
+    LEGION_POWERBENCH_TURBOSTAT_BIN="$FAKEBIN/turbostat"
+    LEGION_POWERBENCH_NVIDIA_SMI_BIN="$FAKEBIN/nvidia-smi"
+    LEGION_POWERBENCH_RYZENADJ_BIN="$FAKEBIN/ryzenadj"
+    LEGION_POWERBENCH_SUDO_BIN="$FAKEBIN/sudo"
+    LEGION_POWERBENCH_CLI_BIN="$FAKEBIN/legion-powerctl"
+    LEGION_POWERBENCH_STRESS_NG_BIN="$FAKEBIN/absent-stress-ng"
+    LEGION_POWERBENCH_OPENSSL_BIN="$FAKEBIN/absent-openssl"
+    LEGION_POWERBENCH_VKMARK_BIN="$FAKEBIN/absent-vkmark"
+    LEGION_POWERBENCH_GLMARK2_BIN="$FAKEBIN/absent-glmark2"
+    LEGION_TEST_LOG="$LOG"
+    LEGION_FAKE_RYZENADJ_STATE="$RYZENADJ_STATE"
+)
+
+# The harness shells out to whatever legion-powerctl resolves to, so the fixture wraps
+# the real CLI with the fake root's environment rather than stubbing its behaviour.
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'exec env'
+    printf ' %q' "${FAKE_ENV[@]}"
+    printf ' %q "$@"\n' "$FAKE_CLI"
+} > "$FAKEBIN/legion-powerctl"
+chmod +x "$FAKEBIN/legion-powerctl" "$FAKEBIN/sudo" "$FAKEBIN/turbostat" "$FAKEBIN/nvidia-smi"
+
+run_bench() {
+    env "${BENCH_ENV[@]}" \
+        ${LEGION_BENCH_ENV[@]+"${LEGION_BENCH_ENV[@]}"} \
+        "$BENCH_CLI" "$@"
+}
 
 for (( fake_policy_index = 1; fake_policy_index <= FAKE_EXTRA_POLICIES; fake_policy_index++ )); do
     fake_add_policy "$fake_policy_index" >/dev/null

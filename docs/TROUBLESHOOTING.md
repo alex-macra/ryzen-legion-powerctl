@@ -47,7 +47,7 @@ the machine's stock envelope.
 
 This is informational when followed by `Successfully set ...`. RyzenAdj first tries a compatible `ryzen_smu` module and then falls back to `/dev/mem`. The apply operation is successful when RyzenAdj exits with status zero and prints successful setting lines.
 
-Setting limits talks to the SMU mailbox and works without the module. Reading them back with `ryzenadj -i` needs the power-metric table, which the `/dev/mem` fallback often cannot provide: without `ryzen_smu`, an apply can succeed while still printing `Could not read the limits back ... this apply is unverified.`, and doctor's `Limits` line stays unavailable. Install `ryzen_smu-dkms-git` (AUR, listed as an optional dependency of the Arch package) to make verification work; see INSTALL.md for the lockdown and Secure Boot caveats. Doctor's `ryzen_smu` line reports which of these states the machine is in.
+Setting limits talks to the SMU mailbox and works without the module. Reading them back with `ryzenadj -i` needs the power-metric table, which the `/dev/mem` fallback often cannot provide: without `ryzen_smu`, an apply can succeed while still printing `Could not read the limits back ... this apply is unverified.`, and doctor's `Limits` line stays unavailable. Install `ryzen_smu-dkms-git` (AUR, listed as an optional dependency of the Arch package) to make verification work; see INSTALL.md for the lockdown and Secure Boot caveats. `./install.sh --install-ryzen-smu` does the whole job: headers, AUR build, `modprobe`, and a `modules-load.d` entry so it survives a reboot. Doctor's `SMU-backend` line reports which of these states the machine is in - it names the backend RyzenAdj will get and, when the device node is missing, whether the module is absent or merely unable to support this CPU.
 
 ## `WARNING: The kernel rejected writing BOOST=...`
 
@@ -154,16 +154,28 @@ directly with:
 ryzenadj --help | grep -i '^Version'
 ```
 
-If `doctor` reports `RyzenAdj-shadow`, you have more than one `ryzenadj` on
-`PATH` - typically an old `make install` source build in `/usr/local/bin`
-taking precedence over the packaged `/usr/bin/ryzenadj`.
+`doctor`'s `RyzenAdj-shadow` line reports how many `ryzenadj` binaries are on
+`PATH` - more than one is typically an old `make install` source build in
+`/usr/local/bin` sitting in front of the packaged `/usr/bin/ryzenadj`.
 
-legion-powerctl handles this itself: it picks the **newest** of the candidates,
-not the first, so no action is required for the tool to behave correctly. The
-warning exists because typing `ryzenadj` by hand still runs the shadowing one.
+This is normally an `OK` row, not a warning. legion-powerctl picks the
+**newest** of the candidates rather than the first, so the shadow does not
+affect the tool; the row names the one it chose and the ones it passed over,
+because typing `ryzenadj` by hand still runs whichever comes first on `PATH`.
 
-The tool never removes it - no package owns `/usr/local` files - so deleting it
-is your call:
+It turns into a `WARN` only when one of the candidates does not print a version
+its `--help` banner can be parsed from. Then "newest" cannot be proven and the
+choice falls back to `PATH` order, so the line names the binary it could not
+read. Fix that one, or pin a binary with the environment variable below.
+
+Candidates at the *same* version are reported as `Same version:` rather than
+`Stale:`, and the line does not offer to delete them. That tie is broken by
+`PATH` order rather than by recency, and on a default Arch `PATH` the binary
+that loses it is the packaged `/usr/bin/ryzenadj` - which is a hard dependency,
+so deleting it is exactly the wrong move.
+
+The tool never removes a shadowing binary - no package owns `/usr/local` files
+- so deleting it is your call:
 
 ```bash
 command -v -a ryzenadj

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication, QPalette
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model, theme
+from . import a11y, model, theme
 
 _SEVERITY_ORDER = {"FAIL": 0, "WARN": 1, "OK": 2}
+COPIED_MS = 2000
 
 
 def worst_first(lines: list[model.DoctorLine]) -> list[model.DoctorLine]:
@@ -36,12 +37,22 @@ class ChecksDialog(QDialog):
         self.resize(620, 460)
         self.rows: list[QWidget] = []
         self.chips: list[QLabel] = []
+        self._report: model.DoctorReport | None = None
+        self._stderr = ""
+        self._machine = ""
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         self.summary = QLabel("Doctor: not run yet")
         header.addWidget(self.summary)
         header.addStretch(1)
+        self.copy_button = QPushButton("&Copy report")
+        # Otherwise the first autoDefault button created takes Enter from "Run again".
+        self.copy_button.setAutoDefault(False)
+        self.copy_button.setEnabled(False)
+        self.copy_button.setMinimumWidth(self.copy_button.sizeHint().width())
+        self.copy_button.clicked.connect(self._copy)
+        header.addWidget(self.copy_button)
         self.rerun_button = QPushButton("Run &again")
         self.rerun_button.clicked.connect(self.rerun_requested)
         header.addWidget(self.rerun_button)
@@ -63,7 +74,19 @@ class ChecksDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def show_report(self, report: model.DoctorReport, stderr: str = "") -> None:
+        self._copied_timer = QTimer(self)
+        self._copied_timer.setSingleShot(True)
+        self._copied_timer.setInterval(COPIED_MS)
+        self._copied_timer.timeout.connect(self._reset_copy_label)
+
+    def show_report(
+        self, report: model.DoctorReport, stderr: str = "", machine: str = ""
+    ) -> None:
+        self._report = report
+        self._stderr = stderr
+        self._machine = machine
+        self._reset_copy_label()
+        self.copy_button.setEnabled(True)
         while self._rows_layout.count() > 1:
             item = self._rows_layout.takeAt(0)
             if item.widget():
@@ -77,8 +100,10 @@ class ChecksDialog(QDialog):
             chip = QLabel(f"{line.status} {line.label}")
             chip.setProperty("severity", line.status)
             chip.setStyleSheet(theme.chip_style(self.palette(), line.status))
+            chip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             detail = QLabel(line.detail)
             detail.setWordWrap(True)
+            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             line_layout.addWidget(chip)
             line_layout.addWidget(detail, 1)
             row.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -88,6 +113,20 @@ class ChecksDialog(QDialog):
             self.rows.append(row)
             self.chips.append(chip)
         self.summary.setText(summarise(report, stderr))
+
+    def _copy(self) -> None:
+        if self._report is None:
+            return
+        QGuiApplication.clipboard().setText(
+            report_text(self._report, self._stderr, self._machine)
+        )
+        self.copy_button.setText("&Copied")
+        self._copied_timer.start()
+        a11y.announce(self.copy_button, "Report copied to the clipboard.")
+
+    def _reset_copy_label(self) -> None:
+        self._copied_timer.stop()
+        self.copy_button.setText("&Copy report")
 
     def restyle(self, palette: QPalette) -> None:
         for chip in self.chips:
@@ -117,9 +156,12 @@ class ChecksController(QObject):
 
     def show(self) -> None:
         if self.report is not None:
-            self.dialog.show_report(self.report, self.stderr)
+            self.dialog.show_report(self.report, self.stderr, self._machine())
         if self._window.dialogs:
             self.dialog.show()
+
+    def _machine(self) -> str:
+        return self._header.machine_label.text()
 
     def restyle(self, palette: QPalette) -> None:
         self.dialog.restyle(palette)
@@ -130,7 +172,7 @@ class ChecksController(QObject):
         self.stderr = stderr
         self._header.show_checks(self.report, stderr)
         if self.dialog.isVisible():
-            self.dialog.show_report(self.report, stderr)
+            self.dialog.show_report(self.report, stderr, self._machine())
 
 
 def summarise(report: model.DoctorReport, stderr: str = "") -> str:
@@ -141,6 +183,24 @@ def summarise(report: model.DoctorReport, stderr: str = "") -> str:
             else "Doctor: produced no results"
         )
     return f"Doctor: {report.failures} failure(s), {report.warnings} warning(s)"
+
+
+def report_text(report: model.DoctorReport, stderr: str = "", machine: str = "") -> str:
+    head = ["legion-powerctl doctor report"]
+    if machine:
+        head.append(machine)
+    verdict = summarise(report, stderr)
+    if report.exit_code != 0:
+        verdict = f"{verdict} (exit {report.exit_code})"
+    head.append(verdict)
+
+    parts = ["\n".join(head)]
+    body = report.text.strip("\n")
+    if body:
+        parts.append(body)
+    if stderr.strip():
+        parts.append(f"Errors reported by the command:\n{stderr.strip()}")
+    return "\n\n".join(parts) + "\n"
 
 
 def checks_chip(report: model.DoctorReport | None) -> tuple[str, str]:

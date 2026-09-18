@@ -133,7 +133,42 @@ class ElevationArgvTest(E2ETest):
 
 
 class InstalledCliWriteTest(E2ETest):
-    STAPM_ON_DISK = 60
+    @classmethod
+    def read_stapm_from_profile(cls, profiles_dir):
+        """Read STAPM_W value from balanced-plus.conf profile file."""
+        profile_path = profiles_dir / "balanced-plus.conf"
+        content = profile_path.read_text()
+        stapm_value = None
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key == "STAPM_W":
+                if stapm_value is not None:
+                    raise ValueError(
+                        "balanced-plus.conf has duplicate STAPM_W key"
+                    )
+                try:
+                    stapm_value = int(value)
+                except ValueError:
+                    raise ValueError(
+                        f"balanced-plus.conf STAPM_W has non-integer value: {value!r}"
+                    ) from None
+        if stapm_value is None:
+            raise ValueError(
+                "balanced-plus.conf missing STAPM_W key"
+            )
+        return stapm_value
+
+    @classmethod
+    def setUpClass(cls):
+        profiles_dir = Path(os.environ["LEGION_POWERCTL_ETC_DIR"]) / "profiles.d"
+        cls.STAPM_ON_DISK = cls.read_stapm_from_profile(profiles_dir)
 
     def test_an_apply_reaches_the_installed_cli_and_writes_the_profile(self):
         profiles_dir = Path(os.environ["LEGION_POWERCTL_ETC_DIR"]) / "profiles.d"

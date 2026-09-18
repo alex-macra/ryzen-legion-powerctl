@@ -2,9 +2,8 @@ OK    CPU                      AMD processor detected
 OK    System                   LENOVO Legion Pro 7 16ARX10 (83RU)
 OK    RyzenAdj                 /usr/bin/ryzenadj
 OK    RyzenAdj-version         0.19.0
-WARN  RyzenAdj-shadow          PATH holds more than one ryzenadj; selected /usr/bin/ryzenadj (newest) over /usr/local/bin/ryzenadj. Running 'ryzenadj' by hand still picks the first on PATH
-WARN  SMU-backend              no /dev/ryzen_smu_drv; RyzenAdj will try the /dev/mem fallback
-WARN  ryzen_smu                module is not loaded; setting limits can still work over /dev/mem but reading them back often cannot, so applies report unverified - install ryzen_smu-dkms-git
+OK    RyzenAdj-shadow          2 on PATH; using /usr/bin/ryzenadj 0.19.0 (newest). Stale: /usr/local/bin/ryzenadj 0.18.0 - safe to delete if no package owns it
+WARN  SMU-backend              no /dev/ryzen_smu_drv and no ryzen_smu module; the /dev/mem fallback sets limits but usually cannot read them back, so applies report unverified - install ryzen_smu-dkms-git
 OK    Kernel-lockdown          not reported by this kernel
 OK    SecureBoot               disabled or not applicable
 WARN  Conflicts                tlp.service is active and may overwrite CPUFreq/EPP settings on power events
@@ -16,4 +15,4 @@ OK    Profile                  balanced-plus
 OK    Limits                   in force: 65/70/80 W, 78 C
 OK    systemd                  /usr/bin/systemctl
 
-Doctor result: 0 failure(s), 4 warning(s).
+Doctor result: 0 failure(s), 2 warning(s).

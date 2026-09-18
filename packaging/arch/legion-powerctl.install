@@ -11,11 +11,21 @@ The package itself enables nothing. Boot persistence comes from:
 
 (./install.sh runs this enable step for you unless --no-enable was given.)
 Fire Range / HX CPUs need ryzenadj 0.19.0 or newer.
+
+Install the optional ryzen_smu-dkms-git to make applies verifiable; without
+it RyzenAdj cannot read the limits back and doctor warns on SMU-backend.
 EOF
 }
 
 pre_remove() {
     systemctl disable --now legion-powerctl.service >/dev/null 2>&1 || true
+    # Written by ./install.sh --install-ryzen-smu, so no package owns it. Left behind
+    # it outlives ryzen_smu-dkms-git and fails systemd-modules-load.service on every
+    # boot, and the uninstall.sh that would clear it refuses to run for package installs.
+    if [ -e /etc/modules-load.d/legion-powerctl.conf ]; then
+        rm -f /etc/modules-load.d/legion-powerctl.conf
+        printf 'Removed /etc/modules-load.d/legion-powerctl.conf. The ryzen_smu module itself was not removed.\n'
+    fi
 }
 
 post_upgrade() {
