@@ -55,6 +55,12 @@ reboot changes it.
 .TP
 .B restore-frequency [--boost on|off|unchanged]
 Restore the hardware-reported CPUFreq minimum and maximum.
+.TP
+.B baseline [--capture|--show]
+Record the firmware's own SMU limits, or print the recorded ones. The capture happens
+once and is never overwritten, and it is refused after a profile has already been
+applied this boot, because the SMU no longer holds the firmware values by then. The
+first apply after installation captures them automatically.
 .SH FILES
 .TP
 .I /etc/legion-powerctl/config.conf
@@ -68,6 +74,9 @@ One-shot boot service.
 .TP
 .I /run/legion-powerctl/last-apply.env
 Volatile record of the last successful apply operation.
+.TP
+.I /var/lib/legion-powerctl/stock-limits.env
+The firmware SMU limits, recorded once before the first apply overwrote them.
 .SH GRAPHICAL INTERFACE
 .B legion-powerctl-gui
 opens an unprivileged Qt control panel (requires the optional pyside6

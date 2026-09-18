@@ -220,7 +220,10 @@ rm -f "$PROFILES/legacy.conf"
 
 printf 'Test 20a: doctor reads the real ryzen_smu device node and kernel lockdown\n'
 doctor_out="$(run_cli doctor || true)"
-assert_match "$doctor_out" "*no *ryzen_smu_drv*" 'doctor did not look for the real /dev/ryzen_smu_drv node'
+assert_match "$doctor_out" "*WARN  SMU-backend *no *ryzen_smu_drv and no ryzen_smu module*" \
+    'doctor did not fold the missing module into the SMU-backend check'
+assert_contains 'install ryzen_smu-dkms-git' "$doctor_out" \
+    'the merged SMU-backend warning lost its fix instruction'
 assert_match "$doctor_out" "*Kernel-lockdown*not reported by this kernel*" 'doctor did not report kernel lockdown state'
 
 : > "$SMU_DEV"
@@ -330,10 +333,15 @@ refute_contains '1.55' "$doctor_out" 'doctor parsed 1.55 out of the --oc-volt he
 
 printf 'Test 28: a shadowed ryzenadj on PATH is reported\n'
 mkdir -p "$TMP/pathB"
-cp "$FAKEBIN/ryzenadj" "$TMP/pathB/ryzenadj"
+sed 's/0\.19\.0/0.18.0/' "$FAKEBIN/ryzenadj" > "$TMP/pathB/ryzenadj"
+chmod +x "$TMP/pathB/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$TMP/pathB:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor did not report a second ryzenadj on PATH'
 assert_contains "$TMP/pathB/ryzenadj" "$doctor_out" 'doctor did not name the shadowed binary'
+assert_contains 'OK    RyzenAdj-shadow' "$doctor_out" \
+    'a shadow the tool already resolved correctly is not a warning'
+refute_contains 'WARN  RyzenAdj-shadow' "$doctor_out" 'the shadow warning came back'
+assert_contains '(newest)' "$doctor_out" 'the shadow line no longer says which binary was chosen'
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$PATH" run_cli doctor 2>&1 || true)"
 refute_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor reported a shadow with only one ryzenadj on PATH'
 doctor_out="$(PATH="$FAKEBIN:$TMP/pathB:$PATH" run_cli doctor 2>&1 || true)"
@@ -355,6 +363,39 @@ chmod +x "$TMP/stale/ryzenadj" "$TMP/fresh/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/stale:$TMP/fresh:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains "$TMP/fresh/ryzenadj" "$doctor_out" 'the older ryzenadj first on PATH was selected'
 refute_contains '0.14.0 is older than' "$doctor_out" 'doctor reported the stale version, so the stale binary was selected'
+assert_contains "Stale: $TMP/stale/ryzenadj 0.14.0" "$doctor_out" \
+    'the shadow line did not name the losing binary and its version'
+
+printf 'Test 28c: a candidate whose version cannot be read keeps the shadow warning\n'
+mkdir -p "$TMP/noversion"
+printf '#!/bin/sh\nprintf "Usage: ryzenadj\\n"\n' > "$TMP/noversion/ryzenadj"
+chmod +x "$TMP/noversion/ryzenadj"
+doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$TMP/noversion:$PATH" run_cli doctor 2>&1 || true)"
+assert_contains 'WARN  RyzenAdj-shadow' "$doctor_out" \
+    'an unreadable version was reported as a proven-newest selection'
+assert_contains 'no version from' "$doctor_out" \
+    'the warning did not say why the newest could not be confirmed'
+assert_contains "$TMP/noversion/ryzenadj" "$doctor_out" \
+    'doctor did not name the candidate it could not read'
+
+mkdir -p "$TMP/noversion2"
+cp "$TMP/noversion/ryzenadj" "$TMP/noversion2/ryzenadj"
+doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/noversion:$TMP/noversion2:$PATH" run_cli doctor 2>&1 || true)"
+assert_contains "using $TMP/noversion/ryzenadj, but no version from" "$doctor_out" \
+    'with no version anywhere the shadow line left a gap where the version would go'
+
+printf 'Test 28d: two ryzenadj at the same version are not ranked against each other\n'
+mkdir -p "$TMP/tieA" "$TMP/tieB"
+cp "$FAKEBIN/ryzenadj" "$TMP/tieA/ryzenadj"
+cp "$FAKEBIN/ryzenadj" "$TMP/tieB/ryzenadj"
+chmod +x "$TMP/tieA/ryzenadj" "$TMP/tieB/ryzenadj"
+doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/tieA:$TMP/tieB:$PATH" run_cli doctor 2>&1 || true)"
+assert_contains "Same version: $TMP/tieB/ryzenadj" "$doctor_out" \
+    'an equal-version binary was not reported as a tie'
+refute_contains '(newest)' "$doctor_out" \
+    'a tie broken by PATH order was reported as the newest binary'
+refute_contains 'safe to delete' "$doctor_out" \
+    'doctor advised deleting a binary that is not older, which on a default PATH is the packaged one'
 
 printf 'Test 29: doctor completes the report and exits nonzero on a corrupt active profile\n'
 cp "$ETC/config.conf" "$TMP/config.conf.saved"
@@ -608,5 +649,41 @@ assert_eq '' "$(find "$leak_tmpdir" -type f)" 'select left its temporary file be
 printf 'Test 48: no em or en dashes anywhere in the tree\n'
 dash_hits="$(cd "$ROOT_DIR" && git ls-files -z | xargs -0 grep -lP '[\x{2013}\x{2014}]' 2>/dev/null)" || true
 assert_eq '' "$dash_hits" 'these tracked files contain an em or en dash'
+
+printf 'Test 49: baseline reports honestly when nothing has been captured\n'
+rm -rf "$LIB"
+baseline_out="$(run_cli baseline 2>&1 || true)"
+assert_contains 'No stock limits recorded' "$baseline_out" 'baseline did not say the capture is missing'
+assert_exit 1 'baseline --show succeeded with nothing captured' run_cli baseline --show
+
+printf 'Test 50: baseline captures the firmware limits once and never overwrites them\n'
+rm -rf "$LIB"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+run_cli baseline --capture >/dev/null
+assert_file_contains 'STAPM_W=65.000' "$LIB/stock-limits.env" 'the firmware STAPM was not captured'
+assert_file_contains 'TEMP_C=78.000' "$LIB/stock-limits.env" 'the firmware Tctl ceiling was not captured'
+first_capture="$(<"$LIB/stock-limits.env")"
+run_cli apply dev >/dev/null
+run_cli baseline --capture >/dev/null
+assert_eq "$first_capture" "$(<"$LIB/stock-limits.env")" 'a second capture overwrote the first'
+
+printf 'Test 51: an apply captures the firmware limits before it overwrites them\n'
+rm -rf "$LIB"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+run_cli apply dev >/dev/null
+assert_file_contains 'STAPM_W=65.000' "$LIB/stock-limits.env" \
+    'apply recorded its own limits instead of the firmware ones'
+refute_contains 'STAPM_W=55' "$(<"$LIB/stock-limits.env")" \
+    'the baseline was captured after the apply, not before'
+
+printf 'Test 52: a capture is refused once this boot has already applied a profile\n'
+rm -rf "$LIB"
+tainted_out="$(run_cli baseline --capture 2>&1 || true)"
+assert_contains 'already applied this boot' "$tainted_out" \
+    'baseline captured SMU values that a previous apply had already overwritten'
+[[ ! -e "$LIB/stock-limits.env" ]] || {
+    printf 'FAIL: a tainted capture was written anyway\n' >&2
+    exit 1
+}
 
 printf 'All tests passed.\n'

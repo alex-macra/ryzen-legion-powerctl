@@ -88,10 +88,13 @@ Three panels are painted rather than laid out, and all three were forced:
   is the opposite of what clicking it does.
 - **Diagnostics are a dialog** (`dialogs.py`). Thirteen checks used to sit in a strip
   nailed to the bottom of the window. On a healthy Legion that strip permanently
-  showed two or three orange chips - a second `ryzenadj` on `PATH`, no `ryzen_smu`
-  module - none of which a user acts on, and a window that always shows warnings
-  teaches its user to stop reading them on the first day. One chip in the header
-  carries the count and its severity; the list is one click behind it, worst first.
+  showed two or three orange chips - historically a second `ryzenadj` on `PATH` and a
+  missing `ryzen_smu` module - none of which a user acts on, and a window that always
+  shows warnings teaches its user to stop reading them on the first day. One chip in the
+  header carries the count and its severity; the list is one click behind it, worst
+  first. Those two examples are no longer warnings at all: the doctor now reports a
+  resolved `ryzenadj` shadow as `OK`, and reports the module state as one
+  `SMU-backend` line rather than two rows for one cause.
 - **The power envelope** (`envelope.py`). Three sliders drew three independent
   numbers, and these three are nested: the CLI refuses them out of order and the
   editor pushes the neighbours to keep them in it, so dragging one past another moved
@@ -189,7 +192,11 @@ Setting a boot profile is a `QAction` on the list, so the Menu key reaches it; t
 painted pin is a mouse shortcut to the same signal. Saving without applying is
 `Ctrl+S` and a `Save` button on the discard prompt, which is the moment work would
 otherwise be lost. The rows of the checks dialog are focusable, since their detail was
-otherwise mouse-only.
+otherwise mouse-only. That dialog also carries a `Copy report` button (`Alt+C`) that
+puts the doctor's own output, prefixed with the tool versions, on the clipboard - the
+one thing a user needs when reporting a problem. Its row text is selectable by mouse
+but not by keyboard, so selecting does not add two tab stops per row, and `Ctrl+C` was
+deliberately left to that selection rather than bound to the button.
 
 **Reflow.** Minimum 720x480, so the window fits a 200%-scaled 1080p desktop, and the
 editor column scrolls.

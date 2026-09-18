@@ -17,6 +17,7 @@ complete -c legion-powerctl -n '__fish_use_subcommand' -a doctor -d 'Run compati
 complete -c legion-powerctl -n '__fish_use_subcommand' -a enable -d 'Enable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a disable -d 'Disable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a restore-frequency -d 'Restore stock CPUFreq boundaries'
+complete -c legion-powerctl -n '__fish_use_subcommand' -a baseline -d 'Record or show the firmware SMU limits'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a version -d 'Show version'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a help -d 'Show help'
 
@@ -26,6 +27,8 @@ complete -c legion-powerctl -n '__fish_seen_subcommand_from apply' -l boot -d 'B
 complete -c legion-powerctl -n '__fish_seen_subcommand_from select' -l apply -d 'Apply immediately'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from delete' -l force -d 'Delete even when selected'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from restore-frequency' -l boost -xa 'on off unchanged'
+complete -c legion-powerctl -n '__fish_seen_subcommand_from baseline' -l capture -d 'Record the firmware limits, once'
+complete -c legion-powerctl -n '__fish_seen_subcommand_from baseline' -l show -d 'Print the recorded firmware limits'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from enable' -l force -d 'Skip the doctor gate'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from status' -l json -d 'Machine-readable status (schema-versioned)'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from status' -l waybar -d 'Waybar custom module JSON'

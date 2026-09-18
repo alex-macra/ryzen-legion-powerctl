@@ -7,6 +7,8 @@
 - `/etc/legion-powerctl/profiles.d/*.conf`: user-editable profiles
 - `/usr/lib/systemd/system/legion-powerctl.service`: one-shot boot application
 - `/run/legion-powerctl/last-apply.env`: volatile record of the most recent successful application
+- `/var/lib/legion-powerctl/stock-limits.env`: the firmware's own SMU limits, captured once before the first apply overwrote them
+- `/usr/bin/legion-powerbench`: the measurement harness. Separate binary, unprivileged, no state of its own
 - `/usr/bin/legion-powerctl-gui`: PySide6 launcher; sets `PYTHONSAFEPATH` and `cd /` before importing anything
 - `/usr/share/legion-powerctl/gui/legion_powerctl_gui/`: the Qt Widgets application, a flat package
 - `/usr/share/polkit-1/actions/io.github.alexmacra.legion-powerctl.policy`: the two-tier authorisation rules the GUI's `pkexec` calls are matched against
@@ -14,6 +16,13 @@
 The GUI never runs as root. It shells out to the same `/usr/bin/legion-powerctl`
 through `pkexec`, reads `status --json`, and parses `doctor` output; it holds no
 second implementation of the limits or of the profile format.
+
+`legion-powerbench` is a separate binary for the same reason the CLI is one file: the
+polkit policy pins `exec.path` to `/usr/bin/legion-powerctl`, so folding a long-running,
+load-generating subcommand into it would widen what a retained `auth_admin_keep` grant
+can reach. The harness samples sysfs and `nvidia-smi` unprivileged and shells out to the
+CLI for every change, so it holds no second implementation either. It reads GPU state and
+writes none; see [WHY.md](WHY.md).
 
 ## Inside bin/legion-powerctl
 

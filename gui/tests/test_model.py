@@ -75,12 +75,21 @@ class ParseDoctorTest(unittest.TestCase):
     def test_parses_fixture(self):
         report = model.parse_doctor((FIXTURES / "doctor.txt").read_text(), 0)
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 4)
+        self.assertEqual(report.warnings, 2)
         self.assertEqual(report.exit_code, 0)
-        self.assertEqual(len(report.lines), 17)
+        self.assertEqual(len(report.lines), 16)
         smu = next(line for line in report.lines if line.label == "SMU-backend")
         self.assertEqual(smu.status, "WARN")
         self.assertIn("/dev/mem", smu.detail)
+        self.assertIn(
+            "ryzen_smu", smu.detail,
+            "the module state has to reach the reader through SMU-backend now that "
+            "the separate ryzen_smu check is gone",
+        )
+
+    def test_the_raw_output_is_kept_so_it_can_be_copied_verbatim(self):
+        source = (FIXTURES / "doctor.txt").read_text()
+        self.assertEqual(model.parse_doctor(source, 0).text, source)
 
     def test_summary_line_wins_over_counting(self):
         text = "FAIL  RyzenAdj  not found\n\nDoctor result: 4 failure(s), 2 warning(s).\n"

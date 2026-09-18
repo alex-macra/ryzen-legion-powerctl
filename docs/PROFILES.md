@@ -92,15 +92,42 @@ EPP is a preference hint used by `amd-pstate-epp`; it is not a hard wattage limi
 
 Profiles are created with `configure` or the wizard - see the README quickstart.
 
+## The shipped profiles
+
+Four vary by how loud you are willing for the machine to be:
+
+| Profile | STAPM / Slow / Fast | Ceiling |
+|---|---:|---:|
+| `quiet` | 45 / 50 / 60 W | 78 °C |
+| `balanced` | 60 / 65 / 70 W | 72 °C |
+| `balanced-plus` | 65 / 70 / 80 W | 78 °C |
+| `performance-capped` | 65 / 70 / 75 W | 85 °C |
+
+Two vary by what the workload is doing, because the CPU and the GPU share one power and
+cooling envelope:
+
+| Profile | STAPM / Slow / Fast | Ceiling | For |
+|---|---:|---:|---|
+| `crossload` | 65 / 70 / 80 W | 78 °C | Gaming and anything loading both. Restraint here leaves budget for the GPU |
+| `compute` | 85 / 90 / 100 W | 85 °C | CPU-only work with the GPU idle |
+
+`compute` ships with **unmeasured** values. They are a hypothesis about what a Legion Pro
+7 chassis can absorb with nothing competing for the cooler, not a recommendation. Run the
+ladder in [TUNING.md](TUNING.md) before trusting them, and lower them if it reports the
+machine as thermally limited rather than power limited.
+
 ## Tuning method
 
-Change one dimension at a time and compare the same workload:
+Do not raise a limit until you have shown that limit is the one binding. Most of the time
+it is not, and raising it buys heat and noise for nothing.
 
-1. Restore stock frequency range and keep boost enabled.
-2. Choose a conservative sustained power value.
-3. Keep the slow limit slightly above sustained and the fast limit above slow.
-4. Set a temperature ceiling below the processor's published maximum.
-5. Record task completion time, game frametime, 1% lows, fan speed, and temperature.
-6. Increase sustained power in small steps only when performance improves enough to justify the added heat and noise.
+[TUNING.md](TUNING.md) is the method: how to tell a power-limited machine from a
+thermally limited one, what to sample and from where, the step-ladder protocol, the stop
+rules, and how to record a result so it can be compared with someone else's.
 
-A higher temperature alone is not proof of better utilization.
+Two things worth knowing before you start:
+
+- A higher temperature alone is not proof of better utilization. It is proof of more
+  heat. The gain has to show up in throughput or frametime, separately.
+- Record the firmware's own limits first with `sudo legion-powerctl baseline --capture`.
+  Without them, "65 W" has no denominator, and there is no way back short of a reboot.

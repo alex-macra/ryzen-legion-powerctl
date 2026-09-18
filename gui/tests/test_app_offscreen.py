@@ -226,9 +226,9 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_chip_counts_what_the_doctor_found(self):
         report = self.window.checks.report
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 4)
-        self.assertIn("4", self.header.checks_button.text())
-        self.assertIn("0 failure(s), 4 warning(s)", self.header.checks_button.accessibleName())
+        self.assertEqual(report.warnings, 2)
+        self.assertIn("2", self.header.checks_button.text())
+        self.assertIn("0 failure(s), 2 warning(s)", self.header.checks_button.accessibleName())
 
     def test_the_checks_chip_is_painted_in_the_severity_it_reports(self):
         from legion_powerctl_gui import model, theme
@@ -258,7 +258,68 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_dialog_lists_every_check_on_request(self):
         self.window.checks.show()
         self.assertEqual(len(self.checks.rows), len(self.window.checks.report.lines))
-        self.assertIn("0 failure(s), 4 warning(s)", self.checks.summary.text())
+        self.assertIn("0 failure(s), 2 warning(s)", self.checks.summary.text())
+
+    def test_copying_puts_the_whole_report_on_the_clipboard(self):
+        from PySide6.QtGui import QGuiApplication
+
+        self.window.checks.show()
+        self.checks.copy_button.click()
+
+        pasted = QGuiApplication.clipboard().text()
+        body = self.window.checks.report.text.strip("\n")
+        self.assertTrue(body, "the report kept no raw text, so the next assertion proves nothing")
+        self.assertIn(body, pasted, "the clipboard lost lines the dialog was showing")
+        self.assertIn(self.header.machine_label.text(), pasted)
+
+    def test_copying_says_it_copied_and_then_offers_to_copy_again(self):
+        self.window.checks.show()
+        self.checks._copied_timer.setInterval(0)
+        self.checks.copy_button.click()
+
+        self.assertIn("Copied", self.checks.copy_button.text())
+        wait_until(self.app, lambda: "Copy report" in self.checks.copy_button.text())
+
+    def test_the_copy_is_announced_to_a_screen_reader(self):
+        self.window.checks.show()
+        with self.announcements() as announce:
+            self.checks.copy_button.click()
+            self.settle(5)
+            spoken = [self.spoken(call) for call in announce.call_args_list]
+        self.assertEqual(
+            1, sum("clipboard" in message for message in spoken),
+            f"expected exactly one clipboard announcement, got {spoken}",
+        )
+
+    def test_a_check_detail_can_be_selected_without_stealing_the_row_s_tab_stop(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+
+        self.window.checks.show()
+        self.assertTrue(self.checks.rows, "no rows to check")
+        for row in self.checks.rows:
+            self.assertEqual(row.focusPolicy(), Qt.FocusPolicy.TabFocus)
+            for label in row.findChildren(QLabel):
+                self.assertTrue(
+                    label.textInteractionFlags()
+                    & Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                self.assertEqual(
+                    label.focusPolicy(), Qt.FocusPolicy.ClickFocus,
+                    "TextSelectableByKeyboard would add two tab stops per row",
+                )
+
+    def test_every_button_in_the_checks_dialog_claims_a_different_mnemonic(self):
+        from PySide6.QtWidgets import QPushButton
+
+        self.window.checks.show()
+        mnemonics = [
+            text[text.index("&") + 1].lower()
+            for button in self.checks.findChildren(QPushButton)
+            for text in [button.text()]
+            if "&" in text
+        ]
+        self.assertEqual(sorted(mnemonics), sorted(set(mnemonics)), mnemonics)
 
     def test_typing_a_power_value_does_not_drag_the_other_limits(self):
         from PySide6.QtCore import Qt
@@ -1434,10 +1495,15 @@ class PanelSeamTest(OffscreenGuiTest):
 
         dialog = ChecksDialog()
         try:
+            self.assertFalse(
+                dialog.copy_button.isEnabled(),
+                "there is nothing to copy before the first run",
+            )
             dialog.show_report(model.DoctorReport(
                 lines=[model.DoctorLine("WARN", "RyzenAdj", "0.14.0 is older than 0.19.0")],
                 failures=0, warnings=1, exit_code=1,
             ))
+            self.assertTrue(dialog.copy_button.isEnabled())
             self.assertEqual(len(dialog.rows), 1)
             self.assertIn("0.14.0", dialog.rows[0].accessibleName())
             self.assertIn("0 failure(s), 1 warning(s)", dialog.summary.text())
@@ -1452,6 +1518,35 @@ class PanelSeamTest(OffscreenGuiTest):
             self.assertIn("no results", dialog.summary.text())
         finally:
             dialog.deleteLater()
+
+    def test_the_copied_report_names_the_tool_and_repeats_the_output_verbatim(self):
+        from legion_powerctl_gui import dialogs, model
+
+        raw = (
+            "OK    CPU                      AMD processor detected\n"
+            "WARN  SMU-backend              no /dev/ryzen_smu_drv and no ryzen_smu module\n"
+            "\nDoctor result: 0 failure(s), 1 warning(s).\n"
+        )
+        report = model.parse_doctor(raw, 0)
+        text = dialogs.report_text(report, "", "legion-powerctl 9.9.9 | GUI 9.9.9")
+
+        self.assertTrue(text.startswith("legion-powerctl doctor report\n"))
+        self.assertIn("legion-powerctl 9.9.9 | GUI 9.9.9", text)
+        self.assertIn("Doctor: 0 failure(s), 1 warning(s)", text)
+        self.assertIn(raw.strip("\n"), text, "the paste has to match what the terminal printed")
+        self.assertNotIn("Errors reported", text)
+        self.assertNotIn("(exit", text)
+
+    def test_a_doctor_that_could_not_run_is_still_worth_copying(self):
+        from legion_powerctl_gui import dialogs, model
+
+        report = model.DoctorReport(lines=[], failures=0, warnings=0, exit_code=127, text="")
+        text = dialogs.report_text(report, "legion-powerctl: command not found", "GUI 9.9.9")
+
+        self.assertIn("could not run", text)
+        self.assertIn("(exit 127)", text)
+        self.assertIn("Errors reported by the command:", text)
+        self.assertIn("legion-powerctl: command not found", text)
 
     def test_a_draft_stops_being_one_once_the_cli_reports_it(self):
         from legion_powerctl_gui import model

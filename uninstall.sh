@@ -31,6 +31,7 @@ command -v make >/dev/null 2>&1 || { echo "ERROR: make is required; the file lis
 
 "${SUDO[@]}" systemctl disable --now legion-powerctl.service 2>/dev/null || true
 "${SUDO[@]}" make -C "$ROOT_DIR" uninstall-files PREFIX=/usr
+"${SUDO[@]}" rm -f /etc/modules-load.d/legion-powerctl.conf
 if (( PURGE == 1 )); then
     "${SUDO[@]}" rm -rf /etc/legion-powerctl
 else
@@ -39,4 +40,4 @@ fi
 "${SUDO[@]}" systemctl daemon-reload
 "${SUDO[@]}" systemctl reset-failed legion-powerctl.service 2>/dev/null || true
 
-echo "legion-powerctl removed. RyzenAdj was not removed."
+echo "legion-powerctl removed. RyzenAdj and the ryzen_smu module were not removed."
