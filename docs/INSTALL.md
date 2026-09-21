@@ -74,8 +74,12 @@ when its metrics cannot be read. [Fire Range PM-table support is still incomplet
 package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so
 `linux-cachyos-headers` on a CachyOS kernel rather than a generic `linux-headers` that
 would not match), builds the AUR package, loads the module, and writes
-`/etc/modules-load.d/legion-powerctl.conf` when RyzenAdj's required sysfs files
-exist, so it comes back after a reboot. The module
+`/etc/modules-load.d/legion-powerctl.conf` when the running driver version is
+compatible and RyzenAdj's required sysfs files exist, so it comes back after a
+reboot. If a loaded module is incompatible, the explicit install flag tries an
+AUR update; it adds a boot entry only after the running module verifies. If the
+old module remains loaded, reboot and rerun the flag to verify and persist the
+updated one. The module
 is optional, so nothing in that path can fail the install - every problem warns and
 carries on. Without the flag the installer offers it interactively when the
 `/sys/kernel/ryzen_smu_drv` command interface is missing, and stays silent when there is no terminal. With

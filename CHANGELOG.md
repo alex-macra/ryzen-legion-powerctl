@@ -13,7 +13,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Detect the actual `ryzen_smu` sysfs interface instead of a nonexistent device
   node. Check RyzenAdj's driver version and required PM-table files before
   reporting the module backend ready; missing files can prevent applying limits.
-  Persist an already loaded usable module when explicitly requested.
+  Persist an already loaded usable module when explicitly requested; try an AUR
+  update without persisting an incompatible one.
+- Keep a same-name GUI repair draft for an invalid profile through status refreshes
+  until a valid saved profile replaces it.
 - Temperature sweeps preserve all three running wattages. Trials require a known,
   unchanged restoration profile, restore it once on exit, stop their workload process
   groups and remove their scratch profiles after successful restoration.
