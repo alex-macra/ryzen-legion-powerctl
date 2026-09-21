@@ -1447,6 +1447,9 @@ cmd_doctor() {
         doctor_line OK Kernel-lockdown "none"
     elif [[ "$smu_backend" == "module" ]]; then
         doctor_line OK Kernel-lockdown "$lockdown; $SMU_SYSFS_DIR provides the SMU backend"
+    elif [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
+        doctor_line WARN Kernel-lockdown "$lockdown blocks the $DEV_MEM_PATH fallback; the loaded ryzen_smu backend is not verified - see SMU-backend"
+        ((warnings += 1))
     else
         doctor_line WARN Kernel-lockdown "$lockdown - this blocks the $DEV_MEM_PATH fallback; install ryzen_smu-dkms-git"
         ((warnings += 1))
@@ -1455,6 +1458,9 @@ cmd_doctor() {
     if secure_boot_enabled; then
         if [[ "$smu_backend" == "module" ]]; then
             doctor_line OK SecureBoot "enabled; $SMU_SYSFS_DIR provides the SMU backend"
+        elif [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
+            doctor_line WARN SecureBoot "enabled; ryzen_smu is loaded but its backend is not verified - see SMU-backend"
+            ((warnings += 1))
         else
             doctor_line WARN SecureBoot "enabled - an out-of-tree ryzen_smu module needs its MOK key enrolled; see Kernel-lockdown above for whether $DEV_MEM_PATH is blocked"
             ((warnings += 1))

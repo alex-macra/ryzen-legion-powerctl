@@ -25,7 +25,7 @@ On other distributions it falls back to a direct script install.
 Options:
   --install-ryzenadj   Install ryzenadj (AUR) through paru/yay or makepkg
   --install-ryzen-smu  Install and load the ryzen_smu DKMS module (AUR) and keep
-                       it loaded at boot when RyzenAdj's required files exist
+                       it loaded at boot when the driver and required files work
   --script-install     Skip makepkg and copy files directly (untracked by pacman)
   --no-gui             Do not install the GUI runtime (PySide6, polkit); the
                        GUI files are still installed but will not start
@@ -185,10 +185,10 @@ ensure_kernel_headers() {
 aur_install_ryzen_smu() {
     if command -v paru >/dev/null 2>&1; then
         info "Installing ${RYZEN_SMU_PKG} with paru..."
-        paru -S --needed "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the paru build failed."; return 1; }
+        paru -S "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the paru build failed."; return 1; }
     elif command -v yay >/dev/null 2>&1; then
         info "Installing ${RYZEN_SMU_PKG} with yay..."
-        yay -S --needed "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the yay build failed."; return 1; }
+        yay -S "$RYZEN_SMU_PKG" || { warn "Skipping ryzen_smu: the yay build failed."; return 1; }
     else
         warn "Skipping ryzen_smu: no AUR helper found. Build it yourself after reviewing its PKGBUILD:
     git clone https://aur.archlinux.org/${RYZEN_SMU_PKG}.git
@@ -224,6 +224,24 @@ persist_ryzen_smu() {
     rm -f "$staged"
 }
 
+ryzen_smu_usable() {
+    local driver_version="" required_file
+    driver_version="$("${SUDO[@]}" cat "$RYZEN_SMU_SYSFS_DIR/drv_version" 2>/dev/null || true)"
+    if [[ "$driver_version" =~ ^0\.1\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 7 )); then
+        :
+    else
+        warn "ryzen_smu driver ${driver_version:-unreadable} is not compatible with RyzenAdj 0.19 (needs 0.1.7 or newer); not adding a boot entry."
+        return 1
+    fi
+    for required_file in mp1_smu_cmd smu_args smn pm_table_size pm_table; do
+        if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/$required_file" ]]; then
+            warn "ryzen_smu lacks $required_file, which RyzenAdj 0.19 needs; applying limits through the module may fail. Not adding a boot entry."
+            return 1
+        fi
+    done
+    return 0
+}
+
 load_ryzen_smu() {
     if ! "${SUDO[@]}" modprobe ryzen_smu; then
         warn "${RYZEN_SMU_PKG} is installed but the module did not load. With Secure Boot on, enrol its MOK key; see docs/INSTALL.md."
@@ -234,8 +252,8 @@ load_ryzen_smu() {
         return 0
     fi
     info "ryzen_smu is loaded and $RYZEN_SMU_SYSFS_DIR provides its command interface."
-    if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/smn" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table_size" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table" ]]; then
-        warn "The module lacks SMN or PM-table files required by RyzenAdj 0.19; applying limits through it may fail. Not enabling it at boot."
+    if ! ryzen_smu_usable; then
+        warn "If the package changed, reboot to load the updated module, then rerun --install-ryzen-smu; this CPU may still need driver support."
         return 0
     fi
     persist_ryzen_smu
@@ -245,12 +263,14 @@ load_ryzen_smu() {
 ensure_ryzen_smu() {
     if [[ -e "$RYZEN_SMU_SYSFS_DIR/mp1_smu_cmd" && -e "$RYZEN_SMU_SYSFS_DIR/smu_args" ]]; then
         info "ryzen_smu already provides $RYZEN_SMU_SYSFS_DIR."
-        if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/smn" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table_size" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table" ]]; then
-            warn "The module lacks SMN or PM-table files required by RyzenAdj 0.19; applying limits through it may fail. Not enabling it at boot."
-        elif (( INSTALL_RYZEN_SMU == 1 )); then
-            persist_ryzen_smu
+        if ryzen_smu_usable; then
+            if (( INSTALL_RYZEN_SMU == 1 )); then
+                persist_ryzen_smu
+            fi
+            return 0
         fi
-        return 0
+        (( INSTALL_RYZEN_SMU == 1 )) || return 0
+        warn "Trying to update ${RYZEN_SMU_PKG}; the running module may need a reboot before it can be verified."
     fi
 
     # Eligibility before the offer, so we never prompt for something we cannot do,

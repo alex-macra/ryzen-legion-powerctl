@@ -846,6 +846,11 @@ case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check() {
         'the missing PM table was described as a readback-only problem'
     assert_doctor_line WARN Kernel-lockdown 'integrity' "$out" \
         'lockdown was reported safe despite the unusable module backend'
+    assert_doctor_line WARN Kernel-lockdown 'SMU-backend' "$out" \
+        'lockdown did not point to the already loaded module problem'
+    refute_contains 'install ryzen_smu-dkms-git' \
+        "$(grep -E '^WARN[[:space:]]+Kernel-lockdown' <<< "$out")" \
+        'lockdown suggested reinstalling an already loaded incompatible module'
 
     printf '0.1.6\n' > "$SMU_SYSFS_DIR/drv_version"
     out="$(run_cli doctor || true)"
@@ -860,34 +865,92 @@ case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check() {
     fi
 }
 
+load_installer_smu_routines() {
+    local routine_file="$FAKE_ROOT/installer-functions.sh"
+    sed -n '/^[a-z_][a-z0-9_]*() {/,/^}/p' "$ROOT_DIR/install.sh" > "$routine_file"
+    [[ -s "$routine_file" ]] || { printf 'FAIL: could not isolate the installer SMU check\n' >&2; exit 1; }
+    source "$routine_file"
+}
+
 case_existing_smu_interface_is_persisted_only_when_usable() {
     fake_add_smu_interface
-    local routine_file="$FAKE_ROOT/ensure-ryzen-smu.sh" called_file="$FAKE_ROOT/persisted"
-    sed -n '/^ensure_ryzen_smu() {/,/^}/p' "$ROOT_DIR/install.sh" > "$routine_file"
-    [[ -s "$routine_file" ]] || { printf 'FAIL: could not isolate the installer SMU check\n' >&2; exit 1; }
+    local called_file="$FAKE_ROOT/persisted"
 
     (
+        load_installer_smu_routines
         INSTALL_RYZEN_SMU=1
         RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        RYZEN_SMU_PKG=ryzen_smu-dkms-git
+        ARCH_FAMILY=0
+        SUDO=()
         persist_ryzen_smu() { : > "$called_file"; }
         info() { :; }
         warn() { :; }
-        source "$routine_file"
         ensure_ryzen_smu
     )
     [[ -e "$called_file" ]] || { printf 'FAIL: explicit --install-ryzen-smu skipped boot persistence for an already loaded module\n' >&2; exit 1; }
 
     rm -f "$called_file" "$SMU_SYSFS_DIR/pm_table"
     (
+        load_installer_smu_routines
         INSTALL_RYZEN_SMU=1
         RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        RYZEN_SMU_PKG=ryzen_smu-dkms-git
+        ARCH_FAMILY=0
+        SUDO=()
         persist_ryzen_smu() { : > "$called_file"; }
         info() { :; }
         warn() { :; }
-        source "$routine_file"
         ensure_ryzen_smu
     )
     [[ ! -e "$called_file" ]] || { printf 'FAIL: installer persisted a module lacking required RyzenAdj files\n' >&2; exit 1; }
+}
+
+case_smu_persistence_rejects_an_existing_incompatible_driver() {
+    fake_add_smu_interface
+    printf '0.1.6\n' > "$SMU_SYSFS_DIR/drv_version"
+    local called_file="$FAKE_ROOT/persisted"
+    (
+        load_installer_smu_routines
+        INSTALL_RYZEN_SMU=1
+        RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        RYZEN_SMU_PKG=ryzen_smu-dkms-git
+        ARCH_FAMILY=0
+        SUDO=()
+        persist_ryzen_smu() { : > "$called_file"; }
+        info() { :; }
+        warn() { :; }
+        ensure_ryzen_smu
+    )
+    [[ ! -e "$called_file" ]] || {
+        printf 'FAIL: explicit module install persisted an existing 0.1.6 driver\n' >&2
+        exit 1
+    }
+}
+
+case_smu_persistence_rejects_a_freshly_loaded_incompatible_driver() {
+    local called_file="$FAKE_ROOT/persisted" loaded_file="$FAKE_ROOT/loaded"
+    (
+        load_installer_smu_routines
+        INSTALL_RYZEN_SMU=1
+        RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        RYZEN_SMU_PKG=ryzen_smu-dkms-git
+        SUDO=()
+        modprobe() {
+            : > "$loaded_file"
+            fake_add_smu_interface
+            printf '0.1.6\n' > "$SMU_SYSFS_DIR/drv_version"
+        }
+        persist_ryzen_smu() { : > "$called_file"; }
+        info() { :; }
+        warn() { :; }
+        load_ryzen_smu
+    )
+    [[ -e "$loaded_file" ]] || { printf 'FAIL: the fresh-load path did not load the module\n' >&2; exit 1; }
+    [[ ! -e "$called_file" ]] || {
+        printf 'FAIL: explicit module install persisted a freshly loaded 0.1.6 driver\n' >&2
+        exit 1
+    }
 }
 
 run_case case_config_rejects_malformed_and_unknown_and_traversing_values \
@@ -984,6 +1047,10 @@ run_case case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check
     'doctor folds the ryzen_smu module state into the SMU-backend check'
 run_case case_existing_smu_interface_is_persisted_only_when_usable \
     'explicit module install persists an existing usable module but not an unusable one'
+run_case case_smu_persistence_rejects_an_existing_incompatible_driver \
+    'explicit module install cannot persist an existing incompatible driver'
+run_case case_smu_persistence_rejects_a_freshly_loaded_incompatible_driver \
+    'explicit module install cannot persist a freshly loaded incompatible driver'
 run_case case_balanced_plus_rejects_saving_a_ceiling_above_78 \
     'balanced-plus cannot save a ceiling above 78 C'
 run_case case_balanced_plus_rejects_applying_a_hand_edited_high_ceiling \

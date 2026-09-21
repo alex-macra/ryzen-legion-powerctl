@@ -72,7 +72,7 @@ class ProfileList(QWidget):
     def set_profiles(
         self, profiles: list[model.Profile], boot: str, select: str, running: str = ""
     ) -> None:
-        self._drafts -= {profile.name for profile in profiles}
+        self._drafts -= {profile.name for profile in profiles if profile.valid}
         drawn = (list(profiles), boot, running, sorted(self._drafts), select)
         if drawn == self._rendered:
             return

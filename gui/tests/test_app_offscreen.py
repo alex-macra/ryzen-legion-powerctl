@@ -602,6 +602,40 @@ class MainWindowTest(OffscreenGuiTest):
             "the draft opened without arming Apply, so the repair cannot be written",
         )
 
+    def test_invalid_profile_repair_draft_survives_status_refresh_until_saved(self):
+        from PySide6.QtCore import Qt
+
+        self.sidebar.create_draft("broken")
+        refreshes = self.window.refresh_count
+        self.window.refresh()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        self.assertIn("broken", self.sidebar.drafts)
+        current = self.sidebar.list.currentItem().data(Qt.ItemDataRole.UserRole)
+        self.assertTrue(current.valid, "refresh replaced the repair draft with its invalid saved row")
+        self.assertIsNotNone(self.editor.editing)
+        self.assertEqual(self.editor.editing.name, "broken")
+        self.assertTrue(self.editor.stapm_spin.isEnabled())
+        self.assertTrue(self.editor.apply_button.isEnabled())
+        self.editor.stapm_spin.setValue(55)
+        self.assertEqual(self.editor.collect().stapm_w, 55)
+
+        status = json.loads(STATUS_FIXTURE.read_text())
+        repaired = next(profile for profile in status["profiles"] if profile["name"] == "broken")
+        repaired.update(vars(self.editor.collect()))
+        with tempfile.TemporaryDirectory() as fixture_dir:
+            fixture = Path(fixture_dir) / "saved-status.json"
+            fixture.write_text(json.dumps(status))
+            with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_STATUS_FIXTURE": str(fixture)}):
+                refreshes = self.window.refresh_count
+                self.window.refresh()
+                self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        self.assertNotIn("broken", self.sidebar.drafts)
+        names = [
+            self.sidebar.list.item(row).data(Qt.ItemDataRole.UserRole).name
+            for row in range(self.sidebar.list.count())
+        ]
+        self.assertEqual(names.count("broken"), 1)
+
     def test_a_profile_deleted_while_open_keeps_the_edits_and_a_row_to_hold_them(self):
         from legion_powerctl_gui import model
         from PySide6.QtCore import Qt
