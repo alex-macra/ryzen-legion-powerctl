@@ -218,27 +218,31 @@ assert_contains 'share at \\nas\media' "$(run_cli show legacy)" \
     'legacy profile description was unescaped and corrupted'
 rm -f "$PROFILES/legacy.conf"
 
-printf 'Test 20a: doctor reads the real ryzen_smu device node and kernel lockdown\n'
+printf 'Test 20a: doctor reads the ryzen_smu sysfs interface and kernel lockdown\n'
 doctor_out="$(run_cli doctor || true)"
-assert_match "$doctor_out" "*WARN  SMU-backend *no *ryzen_smu_drv and no ryzen_smu module*" \
+assert_match "$doctor_out" "*WARN  SMU-backend *no *ryzen_smu_drv*no ryzen_smu module*" \
     'doctor did not fold the missing module into the SMU-backend check'
 assert_contains 'install ryzen_smu-dkms-git' "$doctor_out" \
     'the merged SMU-backend warning lost its fix instruction'
 assert_match "$doctor_out" "*Kernel-lockdown*not reported by this kernel*" 'doctor did not report kernel lockdown state'
 
-: > "$SMU_DEV"
+fake_add_smu_interface
 doctor_out="$(run_cli doctor || true)"
-assert_match "$doctor_out" "*OK*SMU-backend*ryzen_smu_drv available*" 'doctor did not detect the ryzen_smu module node'
+assert_match "$doctor_out" "*OK*SMU-backend*ryzen_smu_drv*" \
+    'doctor did not detect the ryzen_smu sysfs interface'
+refute_contains '/dev/ryzen_smu_drv' "$doctor_out" 'doctor still expects a nonexistent SMU device node'
 
-rm -f "$SMU_DEV"
+rm -rf "$SMU_SYSFS_DIR"
 printf 'none [integrity] confidentiality\n' > "$LOCKDOWN"
 doctor_out="$(run_cli doctor || true)"
 assert_contains 'integrity - this blocks the' "$doctor_out" 'doctor did not warn that lockdown blocks the /dev/mem fallback'
 
-: > "$SMU_DEV"
+fake_add_smu_interface
 doctor_out="$(run_cli doctor || true)"
-assert_match "$doctor_out" "*OK*Kernel-lockdown*integrity;*" 'doctor warned about lockdown even though the SMU module node exists'
-rm -f "$LOCKDOWN" "$SMU_DEV"
+assert_match "$doctor_out" "*OK*Kernel-lockdown*integrity;*" \
+    'doctor warned about lockdown despite an available SMU sysfs interface'
+rm -f "$LOCKDOWN"
+rm -rf "$SMU_SYSFS_DIR" "$MODULES/ryzen_smu"
 
 printf 'Test 20: invalid UTF-8 in a description stays out of the JSON document\n'
 {

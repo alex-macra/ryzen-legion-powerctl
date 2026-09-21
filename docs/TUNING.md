@@ -261,10 +261,11 @@ numbers; with it, it is a reason to change a profile.
 
 ## 10. Balanced-plus with a game and a VM
 
-The first candidate is **65/70/80 W at 85 C**, with boost on, stock frequency range,
-balanced platform policy and `balance_performance` EPP. It is unmeasured. The bundled
-balanced-plus remains at 78 C until the hardware comparison below demonstrates a
-gain. The 90 C ceiling here is a bound for this experiment on the Ryzen 9 9955HX3D,
+The first experimental candidate is **65/70/80 W at 85 C**, with boost on, stock
+frequency range, balanced platform policy and `balance_performance` EPP. It is
+unmeasured and is applied only through a temporary scratch profile. `balanced-plus`
+is capped at 78 C even if this comparison demonstrates a gain. The 90 C ceiling here
+is a bound for temporary experiments on the Ryzen 9 9955HX3D,
 not a new global validation limit or a claim that every Legion should use it.
 AMD lists a 100 C processor maximum in the
 [Ryzen 9 9955HX3D specifications](https://www.amd.com/en/products/processors/laptop/ryzen/9000-series/amd-ryzen-9-9955hx3d.html);
@@ -337,35 +338,30 @@ investigate contention. Attach the CSVs and these results to the tuning PR:
 | 65/70/80 W, 78 C | 1-3 | | | | |
 | 65/70/80 W, 85 C | 1-3 | | | | |
 
-### Promote and roll back a measured winner
+### Keep balanced-plus at 78 C
 
-Before replacing the installed profile, save it outside the profiles directory.
-The backup is never overwritten by the following command:
+Package upgrades preserve edited installed profiles. If your installed
+`balanced-plus` was previously raised, correct its saved ceiling and apply it:
 
 ```bash
-sudo mkdir -p /var/lib/legion-powerctl/rollback
-sudo cp -n /etc/legion-powerctl/profiles.d/balanced-plus.conf \
-  /var/lib/legion-powerctl/rollback/balanced-plus.conf
+sudo legion-powerctl configure balanced-plus --temp 78 --apply
+legion-powerctl status
 ```
 
-After the 85 C candidate passes, explicitly write and apply its measured settings;
-installing an update alone may preserve the old configuration or create a `.pacnew`:
+If an 85 C or 90 C candidate passes the comparison, save it under a separate name.
+This leaves the `balanced-plus` boot profile capped at 78 C. For an accepted 85 C,
+65/70/80 W result:
 
 ```bash
-sudo legion-powerctl configure balanced-plus --stapm 65 --slow 70 --fast 80 \
+sudo legion-powerctl configure gaming-vm --stapm 65 --slow 70 --fast 80 \
   --temp 85 --power-profile balanced --min-mhz stock --max-mhz stock \
   --boost on --epp balance_performance --apply
 legion-powerctl status
 ```
 
-Substitute different watts or 90 C only after that exact candidate passes. Preserve
-the boot selection during trials; an already selected balanced-plus will use the
-updated values at the next enabled service run. Update the bundled profile,
-description and fixtures with the measured winner and its evidence at that point.
-To restore the previous installed settings:
+Substitute different watts or 90 C only after that exact candidate passes. To
+return to the 78 C profile immediately:
 
 ```bash
-sudo cp /var/lib/legion-powerctl/rollback/balanced-plus.conf \
-  /etc/legion-powerctl/profiles.d/balanced-plus.conf
 sudo legion-powerctl apply balanced-plus
 ```

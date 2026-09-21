@@ -1201,6 +1201,7 @@ class MainWindowTest(OffscreenGuiTest):
     def test_raising_a_limit_asks_first_and_cancelling_writes_nothing(self):
         from legion_powerctl_gui import actions as actions_module
 
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
         asked = {}
 
         def fake_confirm(parent, name, deltas):
@@ -1220,7 +1221,7 @@ class MainWindowTest(OffscreenGuiTest):
                 self.settle(5)
         finally:
             self.window.dialogs = False
-        self.assertEqual(asked.get("name"), "balanced-plus")
+        self.assertEqual(asked.get("name"), "quiet")
         self.assertIn(("Fast PPT", 80, 90), asked["deltas"])
         self.assertIn(("Ceiling", 78, 88), asked["deltas"])
         self.assertFalse(
@@ -1361,6 +1362,38 @@ class RunnerTimeoutTest(OffscreenGuiTest):
 
 
 class PanelSeamTest(OffscreenGuiTest):
+    def test_balanced_plus_editor_caps_both_temperature_controls_at_78(self):
+        from legion_powerctl_gui import model
+        from legion_powerctl_gui.editor import ProfileEditor
+
+        editor = ProfileEditor()
+        try:
+            editor.load(model.Profile(name="balanced-plus", temp_c=78))
+            self.assertEqual(editor.temp_spin.maximum(), 78)
+            self.assertEqual(editor.temp_slider.maximum(), 78)
+            editor.temp_spin.setValue(90)
+            self.assertEqual(editor.collect().temp_c, 78)
+            self.assertEqual(editor.problems(), [])
+        finally:
+            editor.deleteLater()
+
+    def test_temperature_range_follows_the_profile_when_switching(self):
+        from legion_powerctl_gui import model
+        from legion_powerctl_gui.editor import ProfileEditor
+
+        editor = ProfileEditor()
+        try:
+            editor.load(model.Profile(name="balanced-plus", temp_c=78))
+            editor.load(model.Profile(name="trial", temp_c=90))
+            self.assertEqual(editor.temp_spin.maximum(), model.TEMP_MAX_C)
+            self.assertEqual(editor.temp_slider.maximum(), model.TEMP_MAX_C)
+            self.assertEqual(editor.collect().temp_c, 90)
+            editor.load(model.Profile(name="balanced-plus", temp_c=78))
+            self.assertEqual(editor.temp_spin.maximum(), 78)
+            self.assertEqual(editor.collect().temp_c, 78)
+        finally:
+            editor.deleteLater()
+
     def test_the_editor_reads_and_validates_without_a_window(self):
         from legion_powerctl_gui import model
         from legion_powerctl_gui.editor import ProfileEditor
@@ -1524,7 +1557,7 @@ class PanelSeamTest(OffscreenGuiTest):
 
         raw = (
             "OK    CPU                      AMD processor detected\n"
-            "WARN  SMU-backend              no /dev/ryzen_smu_drv and no ryzen_smu module\n"
+            "WARN  SMU-backend              no /sys/kernel/ryzen_smu_drv and no ryzen_smu module\n"
             "\nDoctor result: 0 failure(s), 1 warning(s).\n"
         )
         report = model.parse_doctor(raw, 0)

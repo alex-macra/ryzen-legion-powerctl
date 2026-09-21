@@ -58,24 +58,27 @@ hand:
 read the file list from the Makefile rather than keeping their own copy of it. It is
 already present with `base-devel` and is not needed at runtime.
 
-RyzenAdj uses the `ryzen_smu` kernel module (`/dev/ryzen_smu_drv`) when present and
-otherwise falls back to `/dev/mem`. On newer Fire Range systems, applying limits may
-work even when `ryzenadj --info` cannot read the power-metric table.
+RyzenAdj checks the `ryzen_smu` kernel module under `/sys/kernel/ryzen_smu_drv`
+and otherwise tries `/dev/mem`. The module does not create a
+`/dev/ryzen_smu_drv` device. RyzenAdj 0.19 requires a compatible driver version
+and the module's `smn`, `pm_table_size`, and `pm_table` files before it can apply
+limits through the module. If that version is compatible but these files are
+missing, RyzenAdj does not fall back to `/dev/mem`. Check the apply output rather
+than assuming the command interface means limits were set.
 
-Applying limits talks to the SMU mailbox and does not need that table; verification
-does - the post-apply confirmation and doctor's `Limits` line both read the limits
-back with `ryzenadj -i`. Without `ryzen_smu`, every apply may print the
-`this apply is unverified` warning even though the limits were set. Installing
-`ryzen_smu-dkms-git` is the reliable backend and is recommended on CachyOS.
+The post-apply confirmation and doctor's `Limits` line read limits back with
+`ryzenadj -i`. A successful apply can still report `this apply is unverified`
+when its metrics cannot be read. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
 
 `./install.sh --install-ryzen-smu` installs it for you: it works out which headers
 package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so
 `linux-cachyos-headers` on a CachyOS kernel rather than a generic `linux-headers` that
 would not match), builds the AUR package, loads the module, and writes
-`/etc/modules-load.d/legion-powerctl.conf` so it comes back after a reboot. The module
+`/etc/modules-load.d/legion-powerctl.conf` when RyzenAdj's required sysfs files
+exist, so it comes back after a reboot. The module
 is optional, so nothing in that path can fail the install - every problem warns and
-carries on. Without the flag the installer offers it interactively when
-`/dev/ryzen_smu_drv` is missing, and stays silent when there is no terminal. With
+carries on. Without the flag the installer offers it interactively when the
+`/sys/kernel/ryzen_smu_drv` command interface is missing, and stays silent when there is no terminal. With
 Secure Boot on you still have to enrol the module's MOK key yourself before it loads.
 
 What blocks the `/dev/mem` fallback is **kernel lockdown**, not Secure Boot directly.
@@ -170,6 +173,14 @@ Pull a newer checkout and rerun `./install.sh`. On Arch and CachyOS the rebuilt 
 upgrades the previous one through pacman, and edited profiles in `/etc/legion-powerctl`
 are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
 `--force-config` is supplied.
+
+To try changes in your local checkout without pushing to GitHub or reinstalling,
+run `make dev-gui` from that checkout. Close and reopen it after edits; it reads
+the GUI and CLI source files directly while using the installed profiles. Privileged
+edits may use a generic `pkexec` prompt because the installed polkit policy names
+`/usr/bin/legion-powerctl`. This preview does not replace the installed desktop
+launcher. A local commit is enough for a package rebuild with `./install.sh`;
+`make dist` archives local `HEAD`, so uncommitted edits are not packaged.
 
 ## Uninstalling
 

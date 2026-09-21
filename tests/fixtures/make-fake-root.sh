@@ -20,7 +20,7 @@ FAKEBIN="$FAKE_ROOT/bin"
 DEV="$FAKE_ROOT/dev"
 CPUINFO="$FAKE_ROOT/cpuinfo"
 LOCKDOWN="$FAKE_ROOT/lockdown"
-SMU_DEV="$DEV/ryzen_smu_drv"
+SMU_SYSFS_DIR="$FAKE_ROOT/sys/kernel/ryzen_smu_drv"
 DEV_MEM="$DEV/mem"
 LOG="$FAKE_ROOT/commands.log"
 RYZENADJ_STATE="$FAKE_ROOT/ryzenadj-limits"
@@ -111,6 +111,16 @@ fake_add_policy() {
         fi
     done
     printf '%s' "$policy"
+}
+
+fake_add_smu_interface() {
+    mkdir -p "$MODULES/ryzen_smu" "$SMU_SYSFS_DIR"
+    printf '0.1.7\n' > "$SMU_SYSFS_DIR/drv_version"
+    : > "$SMU_SYSFS_DIR/mp1_smu_cmd"
+    : > "$SMU_SYSFS_DIR/smu_args"
+    : > "$SMU_SYSFS_DIR/smn"
+    : > "$SMU_SYSFS_DIR/pm_table_size"
+    : > "$SMU_SYSFS_DIR/pm_table"
 }
 
 FAKE_CLI="$FIXTURE_REPO/bin/legion-powerctl"
@@ -285,7 +295,7 @@ FAKE_ENV=(
     LEGION_POWERCTL_CPUINFO_PATH="$CPUINFO"
     LEGION_POWERCTL_DMI_ROOT="$DMI"
     LEGION_POWERCTL_EFIVARS_DIR="$EFIVARS"
-    LEGION_POWERCTL_SMU_DEV="$SMU_DEV"
+    LEGION_POWERCTL_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
     LEGION_POWERCTL_DEV_MEM_PATH="$DEV_MEM"
     LEGION_POWERCTL_LOCKDOWN_PATH="$LOCKDOWN"
     LEGION_POWERCTL_MODULES_ROOT="$MODULES"

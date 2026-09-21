@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 
-# shellcheck disable=SC2030,SC2031
+# shellcheck disable=SC1090,SC2030,SC2031,SC2034,SC2317,SC2329
 
 set -Eeuo pipefail
 
@@ -383,7 +383,8 @@ EOF_FAKE
 
 case_doctor_fails_on_a_non_amd_cpu_and_on_no_smu_backend() {
     printf 'vendor_id\t: GenuineIntel\n' > "$CPUINFO"
-    rm -f "$DEV_MEM" "$SMU_DEV"
+    rm -f "$DEV_MEM"
+    rm -rf "$SMU_SYSFS_DIR"
     local out rc=0
     out="$(run_cli doctor)" || rc=$?
     assert_eq '1' "$rc" 'doctor passed on an Intel machine with no SMU backend'
@@ -779,12 +780,49 @@ case_doctor_reports_the_boost_control_it_found() {
         'doctor did not warn that BOOST profiles will be skipped on this kernel'
 }
 
+case_balanced_plus_rejects_saving_a_ceiling_above_78() {
+    local before
+    before="$(<"$PROFILES/balanced-plus.conf")"
+    assert_fails 'balanced-plus accepted a saved 79 C ceiling' \
+        run_cli configure balanced-plus --temp 79
+    assert_eq "$before" "$(<"$PROFILES/balanced-plus.conf")" \
+        'a rejected ceiling changed the saved balanced-plus profile'
+    assert_eq '' "$(<"$LOG")" 'a rejected ceiling invoked a hardware helper'
+}
+
+case_balanced_plus_rejects_applying_a_hand_edited_high_ceiling() {
+    sed -i 's/^TEMP_C=.*/TEMP_C=85/' "$PROFILES/balanced-plus.conf"
+    assert_fails 'an edited balanced-plus ceiling above 78 C was applied' \
+        run_cli apply balanced-plus
+    assert_eq '' "$(<"$LOG")" 'an invalid balanced-plus ceiling reached a hardware helper'
+}
+
+case_balanced_plus_can_repair_an_existing_high_ceiling() {
+    sed -i 's/^TEMP_C=.*/TEMP_C=90/' "$PROFILES/balanced-plus.conf"
+    run_cli configure balanced-plus --temp 78 --apply >/dev/null
+    assert_file_contains 'TEMP_C=78' "$PROFILES/balanced-plus.conf" \
+        'configure could not correct an existing high balanced-plus ceiling'
+    assert_file_contains 'ryzenadj --stapm-limit=65000 --slow-limit=70000 --fast-limit=80000 --tctl-temp=78' \
+        "$LOG" 'the corrected balanced-plus profile was not applied at 78 C'
+}
+
+case_other_profiles_keep_their_temperature_range() {
+    local ceiling
+    for ceiling in 85 90; do
+        run_cli configure "trial-$ceiling" --temp "$ceiling" --apply >/dev/null
+        assert_file_contains "TEMP_C=$ceiling" "$PROFILES/trial-$ceiling.conf" \
+            'the balanced-plus cap restricted another profile'
+        assert_file_contains "--tctl-temp=$ceiling" "$LOG" \
+            'another profile could not apply its requested ceiling'
+    done
+}
+
 case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check() {
     mkdir -p "$MODULES/ryzen_smu"
     local out
     out="$(run_cli doctor || true)"
     assert_doctor_line WARN SMU-backend 'is loaded but' "$out" \
-        'doctor did not flag a loaded module whose device node is absent'
+        'doctor did not flag a loaded module whose sysfs interface is absent'
 
     rm -rf "${MODULES:?}/ryzen_smu"
     out="$(run_cli doctor || true)"
@@ -793,15 +831,63 @@ case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check() {
     assert_contains 'install ryzen_smu-dkms-git' "$out" \
         'the not-loaded branch lost its fix instruction'
 
-    : > "$SMU_DEV"
+    fake_add_smu_interface
     out="$(run_cli doctor || true)"
-    assert_doctor_line OK SMU-backend 'available' "$out" \
-        'the device node did not win over the module state'
+    assert_doctor_line OK SMU-backend "$SMU_SYSFS_DIR" "$out" \
+        'doctor did not detect an available command interface and PM table'
+    refute_contains '/dev/ryzen_smu_drv' "$out" 'doctor still expects a nonexistent SMU device node'
+
+    rm "$SMU_SYSFS_DIR/pm_table"
+    printf 'none [integrity] confidentiality\n' > "$LOCKDOWN"
+    out="$(run_cli doctor || true)"
+    assert_doctor_line FAIL SMU-backend 'pm_table' "$out" \
+        'a compatible module missing its PM table was not flagged as unable to initialize'
+    assert_doctor_line FAIL SMU-backend 'cannot initialize' "$out" \
+        'the missing PM table was described as a readback-only problem'
+    assert_doctor_line WARN Kernel-lockdown 'integrity' "$out" \
+        'lockdown was reported safe despite the unusable module backend'
+
+    printf '0.1.6\n' > "$SMU_SYSFS_DIR/drv_version"
+    out="$(run_cli doctor || true)"
+    assert_doctor_line WARN SMU-backend 'driver 0.1.6' "$out" \
+        'an incompatible module version was reported as a usable backend'
+
+    rm -f "$LOCKDOWN"
 
     if grep -qE '^(OK|WARN|FAIL) +ryzen_smu ' <<<"$out"; then
         printf 'FAIL: the standalone ryzen_smu row is back; its states belong to SMU-backend now:\n%s\n' "$out" >&2
         exit 1
     fi
+}
+
+case_existing_smu_interface_is_persisted_only_when_usable() {
+    fake_add_smu_interface
+    local routine_file="$FAKE_ROOT/ensure-ryzen-smu.sh" called_file="$FAKE_ROOT/persisted"
+    sed -n '/^ensure_ryzen_smu() {/,/^}/p' "$ROOT_DIR/install.sh" > "$routine_file"
+    [[ -s "$routine_file" ]] || { printf 'FAIL: could not isolate the installer SMU check\n' >&2; exit 1; }
+
+    (
+        INSTALL_RYZEN_SMU=1
+        RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        persist_ryzen_smu() { : > "$called_file"; }
+        info() { :; }
+        warn() { :; }
+        source "$routine_file"
+        ensure_ryzen_smu
+    )
+    [[ -e "$called_file" ]] || { printf 'FAIL: explicit --install-ryzen-smu skipped boot persistence for an already loaded module\n' >&2; exit 1; }
+
+    rm -f "$called_file" "$SMU_SYSFS_DIR/pm_table"
+    (
+        INSTALL_RYZEN_SMU=1
+        RYZEN_SMU_SYSFS_DIR="$SMU_SYSFS_DIR"
+        persist_ryzen_smu() { : > "$called_file"; }
+        info() { :; }
+        warn() { :; }
+        source "$routine_file"
+        ensure_ryzen_smu
+    )
+    [[ ! -e "$called_file" ]] || { printf 'FAIL: installer persisted a module lacking required RyzenAdj files\n' >&2; exit 1; }
 }
 
 run_case case_config_rejects_malformed_and_unknown_and_traversing_values \
@@ -896,6 +982,16 @@ run_case case_doctor_reports_the_boost_control_it_found \
     'doctor reports the boost control it found'
 run_case case_doctor_folds_the_ryzen_smu_module_state_into_the_smu_backend_check \
     'doctor folds the ryzen_smu module state into the SMU-backend check'
+run_case case_existing_smu_interface_is_persisted_only_when_usable \
+    'explicit module install persists an existing usable module but not an unusable one'
+run_case case_balanced_plus_rejects_saving_a_ceiling_above_78 \
+    'balanced-plus cannot save a ceiling above 78 C'
+run_case case_balanced_plus_rejects_applying_a_hand_edited_high_ceiling \
+    'balanced-plus cannot apply a hand-edited ceiling above 78 C'
+run_case case_balanced_plus_can_repair_an_existing_high_ceiling \
+    'balanced-plus can correct and apply an existing high ceiling at 78 C'
+run_case case_other_profiles_keep_their_temperature_range \
+    'other profiles can save and apply 85 C and 90 C ceilings'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"

@@ -62,6 +62,11 @@ Profiles are plain `KEY=VALUE` files in `/etc/legion-powerctl/profiles.d/`, pars
 
 Validation accepts 5-200 W and 50-100 °C and requires `STAPM_W <= SLOW_W <= FAST_W`. Those are sanity bounds, not a safe range: 200 W is far outside any Legion's power delivery. Stay at or below your machine's stock envelope unless you know exactly why you are not. [docs/PROFILES.md](docs/PROFILES.md) documents every field.
 
+`balanced-plus` has a stricter 78 °C ceiling in the CLI and GUI. An older installed
+profile may still contain a higher value because package upgrades preserve edited
+configuration. Correct the saved profile and apply it with
+`sudo legion-powerctl configure balanced-plus --temp 78 --apply`.
+
 ## Measuring
 
 Raising a limit only helps if that limit is the one binding, and most of the time it is not. `legion-powerbench` samples temperature, package power, fan and GPU while it steps one limit at a time, then tells you which constraint was actually in the way:
@@ -76,8 +81,8 @@ It samples unprivileged, changes limits only through `legion-powerctl`, restores
 
 For gaming alongside a VM, [the balanced-plus comparison](docs/TUNING.md#10-balanced-plus-with-a-game-and-a-vm)
 starts with a temporary 85 C trial at the current 65/70/80 W limits. It restores your
-running profile afterward. The candidate is unmeasured; the shipped 78 C profile
-stays unchanged until real game and VM results justify replacing it.
+running profile afterward. The candidate is unmeasured; `balanced-plus` stays capped
+at 78 C. Keep any higher-temperature result in a separately named profile.
 
 ## Requirements
 

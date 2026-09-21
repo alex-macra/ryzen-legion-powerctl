@@ -24,8 +24,8 @@ On other distributions it falls back to a direct script install.
 
 Options:
   --install-ryzenadj   Install ryzenadj (AUR) through paru/yay or makepkg
-  --install-ryzen-smu  Install the ryzen_smu DKMS module (AUR) so applies can be
-                       verified, load it, and keep it loaded at boot
+  --install-ryzen-smu  Install and load the ryzen_smu DKMS module (AUR) and keep
+                       it loaded at boot when RyzenAdj's required files exist
   --script-install     Skip makepkg and copy files directly (untracked by pacman)
   --no-gui             Do not install the GUI runtime (PySide6, polkit); the
                        GUI files are still installed but will not start
@@ -87,7 +87,7 @@ check_pacman_lock() {
 
 readonly RYZENADJ_DEP='ryzenadj>=0.19.0'
 readonly RYZEN_SMU_PKG='ryzen_smu-dkms-git'
-readonly RYZEN_SMU_DEV='/dev/ryzen_smu_drv'
+readonly RYZEN_SMU_SYSFS_DIR='/sys/kernel/ryzen_smu_drv'
 readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
 
 aur_install_ryzenadj() {
@@ -229,18 +229,27 @@ load_ryzen_smu() {
         warn "${RYZEN_SMU_PKG} is installed but the module did not load. With Secure Boot on, enrol its MOK key; see docs/INSTALL.md."
         return 0
     fi
-    if [[ ! -e "$RYZEN_SMU_DEV" ]]; then
-        warn "ryzen_smu loaded but $RYZEN_SMU_DEV did not appear, so the module may not support this CPU. Limits still apply over /dev/mem, unverified."
+    if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/mp1_smu_cmd" || ! -e "$RYZEN_SMU_SYSFS_DIR/smu_args" ]]; then
+        warn "ryzen_smu loaded but $RYZEN_SMU_SYSFS_DIR has no command interface. Check 'sudo dmesg | grep -i ryzen_smu'; RyzenAdj may fall back to /dev/mem if permitted."
         return 0
     fi
-    info "ryzen_smu is loaded and $RYZEN_SMU_DEV is present."
+    info "ryzen_smu is loaded and $RYZEN_SMU_SYSFS_DIR provides its command interface."
+    if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/smn" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table_size" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table" ]]; then
+        warn "The module lacks SMN or PM-table files required by RyzenAdj 0.19; applying limits through it may fail. Not enabling it at boot."
+        return 0
+    fi
     persist_ryzen_smu
 }
 
 # Optional, so nothing here may abort the install: every failure warns and returns 0.
 ensure_ryzen_smu() {
-    if [[ -e "$RYZEN_SMU_DEV" ]]; then
-        info "ryzen_smu already provides $RYZEN_SMU_DEV."
+    if [[ -e "$RYZEN_SMU_SYSFS_DIR/mp1_smu_cmd" && -e "$RYZEN_SMU_SYSFS_DIR/smu_args" ]]; then
+        info "ryzen_smu already provides $RYZEN_SMU_SYSFS_DIR."
+        if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/smn" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table_size" || ! -e "$RYZEN_SMU_SYSFS_DIR/pm_table" ]]; then
+            warn "The module lacks SMN or PM-table files required by RyzenAdj 0.19; applying limits through it may fail. Not enabling it at boot."
+        elif (( INSTALL_RYZEN_SMU == 1 )); then
+            persist_ryzen_smu
+        fi
         return 0
     fi
 
@@ -258,14 +267,14 @@ ensure_ryzen_smu() {
     fi
     if [[ -n "$blocker" ]]; then
         if (( INSTALL_RYZEN_SMU == 1 )); then
-            warn "Skipping ryzen_smu: ${blocker}. Install ${RYZEN_SMU_PKG} by hand to make applies verifiable."
+            warn "Skipping ryzen_smu: ${blocker}. Install ${RYZEN_SMU_PKG} by hand; RyzenAdj also needs a compatible driver and PM-table files."
         fi
         return 0
     fi
 
     if (( INSTALL_RYZEN_SMU == 0 )); then
         printf '\n'
-        info "Without the ryzen_smu module RyzenAdj cannot read limits back, so every apply reports 'unverified'."
+        info "Without the ryzen_smu module RyzenAdj may use /dev/mem if permitted, but limit readback may be unavailable."
         if ! confirm "Install the ${RYZEN_SMU_PKG} DKMS module now?"; then
             info "Skipping ryzen_smu. Later: ./install.sh --install-ryzen-smu"
             return 0
@@ -480,7 +489,7 @@ main() {
     printf '  legion-powerctl status\n'
     printf '  legion-powerctl-gui\n'
     printf '  sudo legion-powerctl wizard balanced-plus\n'
-    printf '  sudo legion-powerctl configure balanced-plus --stapm 60 --slow 65 --fast 75 --temp 82 --select --apply\n'
+    printf '  sudo legion-powerctl configure balanced-plus --temp 78 --select --apply\n'
     printf '  legion-powerbench doctor\n'
     printf '  systemctl status legion-powerctl.service\n'
 }

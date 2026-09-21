@@ -15,7 +15,7 @@ StateDirectory=legion-powerctl
 StateDirectoryMode=0755
 TimeoutStartSec=30s
 # ProtectSystem stays "full", not "strict": this writes CPUFreq/EPP sysfs and
-# /run/legion-powerctl, and RyzenAdj needs /dev/mem or /dev/ryzen_smu_drv. Do not
+# /run/legion-powerctl, and RyzenAdj needs /dev/mem or a usable ryzen_smu sysfs interface. Do not
 # add ProtectKernelTunables - it blocks the sysfs writes this service exists for.
 NoNewPrivileges=yes
 ProtectHome=yes
@@ -37,7 +37,7 @@ ProtectControlGroups=yes
 ProtectProc=invisible
 SystemCallArchitectures=native
 # @raw-io alongside @system-service: RyzenAdj reaches the SMU through /dev/mem or the
-# ryzen_smu ioctl, and some builds fall back to port I/O, which needs iopl/ioperm.
+# ryzen_smu sysfs interface, and some builds fall back to port I/O, which needs iopl/ioperm.
 SystemCallFilter=@system-service @raw-io
 SystemCallErrorNumber=EPERM
 UMask=0077

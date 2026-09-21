@@ -111,6 +111,11 @@ cooling envelope:
 | `crossload` | 65 / 70 / 80 W | 78 °C | Gaming and anything loading both. Restraint here leaves budget for the GPU |
 | `compute` | 85 / 90 / 100 W | 85 °C | CPU-only work with the GPU idle |
 
+`balanced-plus` is capped at 78 °C by both the CLI and GUI, even if an older installed
+file contains a higher value. Repair an older copy with
+`sudo legion-powerctl configure balanced-plus --temp 78 --apply`; other profile names
+retain the general 50-100 °C validation range.
+
 `compute` ships with **unmeasured** values. They are a hypothesis about what a Legion Pro
 7 chassis can absorb with nothing competing for the cooler, not a recommendation. Run the
 ladder in [TUNING.md](TUNING.md) before trusting them, and lower them if it reports the

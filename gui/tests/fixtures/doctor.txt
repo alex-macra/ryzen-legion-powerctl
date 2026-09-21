@@ -3,7 +3,7 @@ OK    System                   LENOVO Legion Pro 7 16ARX10 (83RU)
 OK    RyzenAdj                 /usr/bin/ryzenadj
 OK    RyzenAdj-version         0.19.0
 OK    RyzenAdj-shadow          2 on PATH; using /usr/bin/ryzenadj 0.19.0 (newest). Stale: /usr/local/bin/ryzenadj 0.18.0 - safe to delete if no package owns it
-WARN  SMU-backend              no /dev/ryzen_smu_drv and no ryzen_smu module; the /dev/mem fallback sets limits but usually cannot read them back, so applies report unverified - install ryzen_smu-dkms-git
+WARN  SMU-backend              no /sys/kernel/ryzen_smu_drv command interface and no ryzen_smu module; RyzenAdj may use /dev/mem but limit readback may be unavailable - install ryzen_smu-dkms-git
 OK    Kernel-lockdown          not reported by this kernel
 OK    SecureBoot               disabled or not applicable
 WARN  Conflicts                tlp.service is active and may overwrite CPUFreq/EPP settings on power events

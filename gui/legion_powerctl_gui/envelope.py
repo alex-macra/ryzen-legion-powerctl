@@ -164,6 +164,11 @@ class Envelope(QWidget):
     def __init__(self, tiers, low: int, high: int, suffix: str, unit: str,
                  note: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._low = low
+        self._suffix = suffix
+        self._unit = unit
+        self._note = note
+        self._tier_labels = dict(tiers)
         self.bar = EnvelopeBar(low, high)
         self.stops: dict[str, _Stop] = {}
         self.spins: dict[str, QSpinBox] = {}
@@ -202,6 +207,19 @@ class Envelope(QWidget):
         column.addLayout(row)
         for entry in entries:
             row.addWidget(entry)
+
+    def set_high(self, high: int) -> None:
+        self.bar._high = high
+        self.scale[1].setText(f"{high}{self._suffix}")
+        for key, stop in self.stops.items():
+            spin = self.spins[key]
+            stop.setMaximum(high)
+            spin.setMaximum(high)
+            a11y.name_range(
+                stop, spin, self._tier_labels[key], self._unit,
+                self._low, high, self._note,
+            )
+        self.bar.update()
 
     def restyle(self, palette: QPalette) -> None:
         background = palette.color(QPalette.ColorRole.Base)
