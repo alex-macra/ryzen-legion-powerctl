@@ -19,7 +19,7 @@ readonly SYSFS_CPU_ROOT="${LEGION_POWERCTL_SYSFS_CPU_ROOT:-/sys/devices/system/c
 readonly CPUINFO_PATH="${LEGION_POWERCTL_CPUINFO_PATH:-/proc/cpuinfo}"
 readonly DMI_ROOT="${LEGION_POWERCTL_DMI_ROOT:-/sys/class/dmi/id}"
 readonly EFIVARS_DIR="${LEGION_POWERCTL_EFIVARS_DIR:-/sys/firmware/efi/efivars}"
-readonly SMU_DEV="${LEGION_POWERCTL_SMU_DEV:-/dev/ryzen_smu_drv}"
+readonly SMU_SYSFS_DIR="${LEGION_POWERCTL_SMU_SYSFS_DIR:-/sys/kernel/ryzen_smu_drv}"
 readonly LOCKDOWN_PATH="${LEGION_POWERCTL_LOCKDOWN_PATH:-/sys/kernel/security/lockdown}"
 readonly DEV_MEM_PATH="${LEGION_POWERCTL_DEV_MEM_PATH:-/dev/mem}"
 readonly MODULES_ROOT="${LEGION_POWERCTL_MODULES_ROOT:-/sys/module}"
@@ -34,6 +34,7 @@ readonly MIN_POWER_W="${LEGION_POWERCTL_MIN_POWER_W:-5}"
 readonly MAX_POWER_W="${LEGION_POWERCTL_MAX_POWER_W:-200}"
 readonly MIN_TEMP_C="${LEGION_POWERCTL_MIN_TEMP_C:-50}"
 readonly MAX_TEMP_C="${LEGION_POWERCTL_MAX_TEMP_C:-100}"
+readonly BALANCED_PLUS_MAX_TEMP_C=78
 
 readonly -a PROFILE_KEYS=(
     STAPM_W SLOW_W FAST_W TEMP_C
@@ -110,7 +111,7 @@ Configure options:
 
 Examples:
   sudo legion-powerctl configure balanced-plus \
-      --stapm 60 --slow 65 --fast 75 --temp 82 \
+      --stapm 60 --slow 65 --fast 75 --temp 78 \
       --power-profile balanced --min-mhz stock --max-mhz stock \
       --boost on --select --apply
 
@@ -300,6 +301,7 @@ set_profile_defaults() {
     SLOW_W=65
     FAST_W=75
     TEMP_C=82
+    [[ "${1:-}" != balanced-plus ]] || TEMP_C="$BALANCED_PLUS_MAX_TEMP_C"
     POWER_PROFILE=balanced
     MIN_FREQ_MHZ=unchanged
     MAX_FREQ_MHZ=unchanged
@@ -349,7 +351,7 @@ load_profile() {
 }
 
 try_load_profile() {
-    (load_profile "$1" && validate_profile) >/dev/null 2>&1 || return 1
+    (load_profile "$1" && validate_profile "$1") >/dev/null 2>&1 || return 1
     load_profile "$1"
 }
 
@@ -363,7 +365,7 @@ validate_frequency_value() {
 }
 
 validate_profile() {
-    local label value
+    local name="${1:-}" label value
     for label in STAPM_W SLOW_W FAST_W TEMP_C; do
         value="${!label}"
         is_uint "$value" || \
@@ -378,6 +380,9 @@ validate_profile() {
         die "FAST_W must be between ${MIN_POWER_W} W and ${MAX_POWER_W} W."
     (( TEMP_C >= MIN_TEMP_C && TEMP_C <= MAX_TEMP_C )) || \
         die "TEMP_C must be between ${MIN_TEMP_C} C and ${MAX_TEMP_C} C."
+    if [[ "$name" == balanced-plus ]] && (( TEMP_C > BALANCED_PLUS_MAX_TEMP_C )); then
+        die "balanced-plus TEMP_C must be at most ${BALANCED_PLUS_MAX_TEMP_C} C; run 'sudo legion-powerctl configure balanced-plus --temp ${BALANCED_PLUS_MAX_TEMP_C} --apply' to correct the installed profile."
+    fi
     (( STAPM_W <= SLOW_W && SLOW_W <= FAST_W )) || \
         die "Expected STAPM_W <= SLOW_W <= FAST_W; got ${STAPM_W}/${SLOW_W}/${FAST_W}."
 
@@ -422,7 +427,7 @@ write_global_config() {
 write_profile() {
     local name="$1" path description key
     ensure_config_dirs
-    validate_profile
+    validate_profile "$name"
     path="$(profile_path "$name")"
     TMP_WRITE="$(mktemp)"
     description="${PROFILE_DESCRIPTION//\\/\\\\}"
@@ -444,7 +449,7 @@ write_profile() {
 print_profile() {
     local name="$1"
     load_profile "$name"
-    validate_profile
+    validate_profile "$name"
     cat <<EOF_PROFILE
 Profile:         $name
 Description:     ${PROFILE_DESCRIPTION:-none}
@@ -892,7 +897,7 @@ cmd_apply() {
     fi
 
     load_profile "$profile"
-    validate_profile
+    validate_profile "$profile"
 
     local ryzenadj_preflight
     ryzenadj_preflight="$(resolve_ryzenadj)"
@@ -940,7 +945,7 @@ cmd_configure() {
     if [[ -r "$path" ]]; then
         load_profile "$name"
     else
-        set_profile_defaults
+        set_profile_defaults "$name"
     fi
 
     while (( $# > 0 )); do
@@ -1001,7 +1006,7 @@ cmd_wizard() {
     if [[ -r "$path" ]]; then
         load_profile "$name"
     else
-        set_profile_defaults
+        set_profile_defaults "$name"
     fi
 
     printf '%s\n' "${C_BOLD}Configure profile: $name${C_RESET}"
@@ -1016,7 +1021,7 @@ cmd_wizard() {
     BOOST="$(prompt_value 'CPU boost: on/off/unchanged' "$BOOST" validate_boost_prompt)"
     EPP="$(prompt_value 'EPP preference' "$EPP" validate_epp_prompt)"
 
-    validate_profile
+    validate_profile "$name"
     write_profile "$name"
 
     read -r -p "Select '$name' for boot? [Y/n]: " answer || die "Cancelled."
@@ -1405,20 +1410,32 @@ cmd_doctor() {
         ((failures += 1))
     fi
 
-    local smu_backend=""
-    if [[ -e "$SMU_DEV" ]]; then
+    local smu_backend="" smu_drv_ver="" smu_compatible=0 smu_file
+    local -a missing_smu_files=()
+    smu_drv_ver="$(cat "$SMU_SYSFS_DIR/drv_version" 2>/dev/null || true)"
+    if [[ "$smu_drv_ver" =~ ^0\.1\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 7 )); then
+        smu_compatible=1
+    fi
+    for smu_file in mp1_smu_cmd smu_args smn pm_table_size pm_table; do
+        [[ -e "$SMU_SYSFS_DIR/$smu_file" ]] || missing_smu_files+=("$smu_file")
+    done
+    if (( smu_compatible == 1 && ${#missing_smu_files[@]} == 0 )); then
         smu_backend="module"
-        doctor_line OK SMU-backend "$SMU_DEV available"
+        doctor_line OK SMU-backend "$SMU_SYSFS_DIR has the RyzenAdj module interface (driver $smu_drv_ver)"
+    elif (( smu_compatible == 1 )); then
+        smu_backend="broken"
+        doctor_line FAIL SMU-backend "compatible ryzen_smu $smu_drv_ver lacks ${missing_smu_files[*]}; RyzenAdj 0.19 cannot initialize this module or fall back to $DEV_MEM_PATH"
+        ((failures += 1))
     elif [[ -e "$DEV_MEM_PATH" ]]; then
         smu_backend="devmem"
         if [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
-            doctor_line WARN SMU-backend "ryzen_smu is loaded but $SMU_DEV is absent, so the module may not support this CPU; RyzenAdj falls back to $DEV_MEM_PATH and applies report unverified"
+            doctor_line WARN SMU-backend "ryzen_smu is loaded but its RyzenAdj module interface is unverified (driver ${smu_drv_ver:-unreadable}); check 'sudo dmesg | grep -i ryzen_smu'; RyzenAdj may use $DEV_MEM_PATH"
         else
-            doctor_line WARN SMU-backend "no $SMU_DEV and no ryzen_smu module; the $DEV_MEM_PATH fallback sets limits but usually cannot read them back, so applies report unverified - install ryzen_smu-dkms-git"
+            doctor_line WARN SMU-backend "no $SMU_SYSFS_DIR command interface and no ryzen_smu module; RyzenAdj may use $DEV_MEM_PATH but limit readback may be unavailable - install ryzen_smu-dkms-git"
         fi
         ((warnings += 1))
     else
-        doctor_line FAIL SMU-backend "neither $SMU_DEV nor $DEV_MEM_PATH is available, so nothing can reach the SMU - install ryzen_smu-dkms-git, which provides $SMU_DEV"
+        doctor_line FAIL SMU-backend "neither a verified $SMU_SYSFS_DIR module interface nor $DEV_MEM_PATH is available; check the ryzen_smu kernel log and module support"
         ((failures += 1))
     fi
 
@@ -1429,7 +1446,7 @@ cmd_doctor() {
     elif [[ "$lockdown" == "none" ]]; then
         doctor_line OK Kernel-lockdown "none"
     elif [[ "$smu_backend" == "module" ]]; then
-        doctor_line OK Kernel-lockdown "$lockdown; $SMU_DEV provides the SMU backend"
+        doctor_line OK Kernel-lockdown "$lockdown; $SMU_SYSFS_DIR provides the SMU backend"
     else
         doctor_line WARN Kernel-lockdown "$lockdown - this blocks the $DEV_MEM_PATH fallback; install ryzen_smu-dkms-git"
         ((warnings += 1))
@@ -1437,7 +1454,7 @@ cmd_doctor() {
 
     if secure_boot_enabled; then
         if [[ "$smu_backend" == "module" ]]; then
-            doctor_line OK SecureBoot "enabled; $SMU_DEV provides the SMU backend"
+            doctor_line OK SecureBoot "enabled; $SMU_SYSFS_DIR provides the SMU backend"
         else
             doctor_line WARN SecureBoot "enabled - an out-of-tree ryzen_smu module needs its MOK key enrolled; see Kernel-lockdown above for whether $DEV_MEM_PATH is blocked"
             ((warnings += 1))
@@ -1505,7 +1522,7 @@ cmd_doctor() {
     if [[ ! -r "$(profile_path "$ACTIVE_PROFILE")" ]]; then
         doctor_line FAIL Profile "active profile '$ACTIVE_PROFILE' is missing"
         ((failures += 1))
-    elif profile_error="$( (load_profile "$ACTIVE_PROFILE" && validate_profile) 2>&1 >/dev/null )"; then
+    elif profile_error="$( (load_profile "$ACTIVE_PROFILE" && validate_profile "$ACTIVE_PROFILE") 2>&1 >/dev/null )"; then
         doctor_line OK Profile "$ACTIVE_PROFILE"
     else
         profile_error="$(sed -e $'s/\033\\[[0-9;]*m//g' -e 's/^ERROR: //' <<<"$profile_error")"

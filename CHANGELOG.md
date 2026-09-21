@@ -7,6 +7,13 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Keep `balanced-plus` at or below 78 C in the CLI and GUI, and correct the
+  installer and CLI examples that previously set it to 82 C. Existing edited
+  installs can be repaired with `configure balanced-plus --temp 78 --apply`.
+- Detect the actual `ryzen_smu` sysfs interface instead of a nonexistent device
+  node. Check RyzenAdj's driver version and required PM-table files before
+  reporting the module backend ready; missing files can prevent applying limits.
+  Persist an already loaded usable module when explicitly requested.
 - Temperature sweeps preserve all three running wattages. Trials require a known,
   unchanged restoration profile, restore it once on exit, stop their workload process
   groups and remove their scratch profiles after successful restoration.
@@ -21,6 +28,8 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `make dev-gui` runs the GUI and CLI straight from a local checkout for fast
+  previews without pushing to GitHub or rebuilding the installed package.
 - A reproducible game-plus-VM comparison for balanced-plus, starting at 85 C with
   unchanged 65/70/80 W limits, including acceptance thresholds and explicit rollback.
   The candidate is unmeasured; bundled profile values remain unchanged pending hardware results.
@@ -46,11 +55,12 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   says so in its header and its description: it is a hypothesis to run the ladder against,
   not a recommendation.
 - `install.sh --install-ryzen-smu` installs the `ryzen_smu-dkms-git` DKMS module, loads
-  it, and writes `/etc/modules-load.d/legion-powerctl.conf` so it survives a reboot. It
+  it, and writes `/etc/modules-load.d/legion-powerctl.conf` when its RyzenAdj interface
+  is usable so it survives a reboot. It
   resolves the headers package from the running kernel's `pkgbase` rather than assuming
   `linux-headers`. The module is optional, so every failure in that path warns and lets
   the install continue. Without the flag the installer offers it interactively when
-  `/dev/ryzen_smu_drv` is absent, and stays silent with no terminal.
+  `/sys/kernel/ryzen_smu_drv` has no command interface, and stays silent with no terminal.
 - A `Copy report` button in the GUI's System checks dialog. It puts the doctor's own
   output, prefixed with the tool versions and the verdict, on the clipboard, including
   on the path where doctor could not run at all. Check rows are now selectable by mouse.
@@ -60,11 +70,9 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - The `ryzen_smu` doctor check is folded into `SMU-backend`. The two were one root cause
   reported as two warnings on every machine without the module, which is the default
   after a fresh install. `SMU-backend` now carries the module state in its detail and
-  still distinguishes a module that is absent from one that is loaded but cannot support
-  the CPU. One behaviour is lost: with neither `/dev/ryzen_smu_drv` nor `/dev/mem` the
-  report no longer says whether the module was loaded. That state now names
-  `ryzen_smu-dkms-git` in the `FAIL` line itself, since installing it is what creates the
-  device node and is the fix.
+  distinguishes a missing command interface from missing RyzenAdj initialization
+  files. With no usable module backend or `/dev/mem`, the `FAIL` line points to the
+  kernel log; the module may be loaded without having successfully probed this CPU.
 - `RyzenAdj-shadow` reports `OK` when it has proof it picked correctly. The tool already
   selects the newest of several `ryzenadj` binaries rather than the first on `PATH`, so
   the old warning fired on a situation it had itself handled. It stays a warning in the

@@ -14,6 +14,7 @@ POWER_MIN_W = 5
 POWER_MAX_W = 200
 TEMP_MIN_C = 50
 TEMP_MAX_C = 100
+BALANCED_PLUS_MAX_TEMP_C = 78
 
 POWER_PROFILES = ("balanced", "performance", "power-saver", "unchanged")
 POWER_PROFILE_ICON_NAMES = {
@@ -224,6 +225,8 @@ def validate_profile(profile: Profile) -> list[str]:
             problems.append(f"{label} must be {POWER_MIN_W}-{POWER_MAX_W} W.")
     if not TEMP_MIN_C <= profile.temp_c <= TEMP_MAX_C:
         problems.append(f"Temperature must be {TEMP_MIN_C}-{TEMP_MAX_C} C.")
+    elif profile.name == "balanced-plus" and profile.temp_c > BALANCED_PLUS_MAX_TEMP_C:
+        problems.append(f"balanced-plus temperature must be at most {BALANCED_PLUS_MAX_TEMP_C} C.")
     if not profile.stapm_w <= profile.slow_w <= profile.fast_w:
         problems.append("Expected STAPM <= Slow PPT <= Fast PPT.")
     if profile.power_profile not in POWER_PROFILES:

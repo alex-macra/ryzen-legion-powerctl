@@ -12,8 +12,8 @@ The package itself enables nothing. Boot persistence comes from:
 (./install.sh runs this enable step for you unless --no-enable was given.)
 Fire Range / HX CPUs need ryzenadj 0.19.0 or newer.
 
-Install the optional ryzen_smu-dkms-git to make applies verifiable; without
-it RyzenAdj cannot read the limits back and doctor warns on SMU-backend.
+The optional ryzen_smu-dkms-git exposes /sys/kernel/ryzen_smu_drv. RyzenAdj
+needs a compatible driver and PM-table files to use it for applying limits.
 EOF
 }
 

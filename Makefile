@@ -20,7 +20,7 @@ VERSION := $(shell sed -n 's/^readonly VERSION="\([^"]*\)".*/\1/p' bin/legion-po
 
 .PHONY: all install install-files install-config uninstall uninstall-files \
 	check check-strict lint-py syntax test test-gui test-e2e test-e2e-podman \
-	dist verify-versions print-shell-sources print-version
+	dist dev-gui verify-versions print-shell-sources print-version
 
 print-shell-sources:
 	@printf '%s\n' $(SHELL_SOURCES)
@@ -30,6 +30,11 @@ print-version:
 
 all:
 	@printf 'Run make check, make install, or ./install.sh\n'
+
+dev-gui:
+	LEGION_POWERCTL_GUI_ROOT="$(CURDIR)/gui" \
+	LEGION_POWERCTL_GUI_CLI="$(CURDIR)/bin/legion-powerctl" \
+	./bin/legion-powerctl-gui
 
 dist:
 	@test -n "$(VERSION)" || { printf 'Could not read VERSION from bin/legion-powerctl\n' >&2; exit 1; }

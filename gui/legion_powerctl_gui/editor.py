@@ -105,6 +105,10 @@ class ProfileEditor(QWidget):
         self.current_name = profile.name
         self._set_enabled(True)
         self.profile_title.setText(profile.name)
+        self.thermal_envelope.set_high(
+            model.BALANCED_PLUS_MAX_TEMP_C if profile.name == "balanced-plus"
+            else model.TEMP_MAX_C
+        )
         for slider, spin, value in (
             (self.stapm_slider, self.stapm_spin, profile.stapm_w),
             (self.slow_slider, self.slow_spin, profile.slow_w),

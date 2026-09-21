@@ -17,7 +17,7 @@ license=('MIT')
 # package ships; the heavyweight Qt runtime (pyside6) stays optional.
 depends=('bash' 'systemd' 'ryzenadj>=0.19.0' 'python' 'hicolor-icon-theme')
 optdepends=('power-profiles-daemon: apply Linux power profiles through powerprofilesctl'
-            'ryzen_smu-dkms-git: kernel SMU backend; makes applies verifiable and is required when kernel lockdown blocks /dev/mem'
+            'ryzen_smu-dkms-git: kernel SMU backend when /dev/mem is blocked, if the driver and PM table support this CPU'
             'pyside6: graphical control panel (legion-powerctl-gui)'
             'polkit: authentication for privileged GUI and widget actions')
 backup=('etc/legion-powerctl/config.conf'
