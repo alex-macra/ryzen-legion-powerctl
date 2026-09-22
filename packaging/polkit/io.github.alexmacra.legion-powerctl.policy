@@ -12,7 +12,7 @@
 
        configure/apply/select are ONE trust tier, not three: exec.argv1 pins only
        argv[1], and configure accepts the select and apply flags. The isolation is
-       the tier below, where delete/enable/disable always prompt, so a retained
+       the tier below, where delete/enable/disable/repair always prompt, so a retained
        editing grant cannot destroy a profile or install boot persistence. -->
 
   <!-- Retained tier: configure/apply/select. -->
@@ -53,7 +53,19 @@
     <annotate key="org.freedesktop.policykit.exec.argv1">select</annotate>
   </action>
 
-  <!-- Always-prompt tier: delete/enable/disable. -->
+  <!-- Always-prompt tier: delete/enable/disable/repair. -->
+
+  <action id="io.github.alexmacra.legion-powerctl.repair">
+    <description>Repair the balanced-plus profile and RyzenAdj backend</description>
+    <message>Authentication is required to reset power settings and repair the optional SMU driver</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/legion-powerctl</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">repair</annotate>
+  </action>
 
   <action id="io.github.alexmacra.legion-powerctl.delete">
     <description>Delete a Legion power limit profile</description>

@@ -260,6 +260,134 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertEqual(len(self.checks.rows), len(self.window.checks.report.lines))
         self.assertIn("0 failure(s), 2 warning(s)", self.checks.summary.text())
 
+    def click_repair(self, accept=True):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox
+
+        captured = []
+
+        def answer():
+            box = self.app.activeModalWidget()
+            if isinstance(box, QMessageBox):
+                captured.append(box.text() + "\n" + box.informativeText())
+                button = next(
+                    button for button in box.buttons()
+                    if button.text() == "Repair and apply"
+                ) if accept else box.button(QMessageBox.StandardButton.Cancel)
+                button.click()
+
+        self.window.dialogs = True
+        self.window.checks.show()
+        QTimer.singleShot(0, answer)
+        self.checks.repair_button.click()
+        self.window.dialogs = False
+        self.assertEqual(len(captured), 1, "repair must explain and confirm the reset")
+        return captured[0]
+
+    def test_checks_repair_replaces_an_invalid_profile_and_refreshes_the_results(self):
+        data = json.loads(STATUS_FIXTURE.read_text(encoding="utf-8"))
+        repaired = json.loads(json.dumps(data))
+        repaired["profiles"][0].update(stapm_w=60, slow_w=65, fast_w=75)
+        repaired["last_apply"].update(stapm_w="60", slow_w="65", fast_w="75")
+        data["profiles"][0] = {"name": "balanced-plus", "valid": False}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status, after, doctor, healthy = [
+                root / name for name in ("status.json", "after.json", "doctor.txt", "ok.txt")
+            ]
+            status.write_text(json.dumps(data), encoding="utf-8")
+            after.write_text(json.dumps(repaired), encoding="utf-8")
+            doctor.write_text("FAIL  Profile  balanced-plus is invalid\n", encoding="utf-8")
+            healthy.write_text("OK  Profile  balanced-plus\n", encoding="utf-8")
+            with unittest.mock.patch.dict(os.environ, {
+                "FAKE_CLI_STATUS_FIXTURE": str(status),
+                "FAKE_CLI_REPAIR_STATUS_FIXTURE": str(after),
+                "FAKE_CLI_DOCTOR_FIXTURE": str(doctor),
+                "FAKE_CLI_REPAIR_DOCTOR_FIXTURE": str(healthy),
+            }):
+                self.window.refresh()
+                self.window.checks.run()
+                self.assertTrue(wait_until(self.app, lambda: not self.window.runner.processes))
+                self.assertIsNone(self.editor.editing)
+                refreshes, checks = self.window.refresh_count, self.window.checks.count
+                confirmation = self.click_repair()
+                self.assertTrue(wait_until(self.app, lambda: (
+                    self.window.refresh_count > refreshes and self.window.checks.count > checks
+                    and not self.window.runner.processes
+                )))
+                self.assertIn("78 C", confirmation)
+                self.assertIn("60/65/75 W", confirmation)
+                self.assertIn("backup", confirmation.lower())
+                self.assertIn("ryzen_smu", confirmation)
+                self.assertIn("unload it before applying", confirmation)
+                self.assertIn("only after a successful apply", confirmation)
+                self.assertIn("repair balanced-plus", self.read_log())
+                self.assertEqual(self.editor.collect().stapm_w, 60)
+                self.assertEqual(self.editor.collect().slow_w, 65)
+                self.assertEqual(self.editor.collect().fast_w, 75)
+                self.assertEqual(self.editor.collect().temp_c, 78)
+                self.assertFalse(self.editor.dirty)
+                self.assertEqual(self.window.checks.report.failures, 0)
+                self.assertIn("0 failure(s)", self.checks.summary.text())
+                self.assertFalse(self.window.reports.details_button.isHidden())
+                self.assertEqual(
+                    self.window.reports.last_warning,
+                    "Recovery backup: /var/lib/legion-powerctl/repair/example",
+                )
+
+    def test_cancelling_checks_repair_preserves_dirty_edits(self):
+        self.editor.stapm_spin.setValue(55)
+        self.editor._on_edited()
+        confirmation = self.click_repair(accept=False)
+        self.assertIn("unsaved", confirmation.lower())
+        self.assertNotIn("repair balanced-plus", self.read_log())
+        self.assertTrue(self.editor.dirty)
+        self.assertEqual(self.editor.stapm_spin.value(), 55)
+
+    def test_failed_checks_repair_surfaces_the_error_and_preserves_dirty_edits(self):
+        self.editor.stapm_spin.setValue(55)
+        self.editor._on_edited()
+        with unittest.mock.patch.dict(os.environ, {
+            "FAKE_CLI_REPAIR_ERROR": "ryzen_smu is in use; repair was rolled back"
+        }):
+            self.click_repair()
+            self.assertTrue(wait_until(self.app, lambda: bool(self.window.errors)))
+        self.assertIn("ryzen_smu is in use", self.window.errors[-1])
+        self.assertIn("Recovery backup: /var/lib/legion-powerctl/repair/example",
+                      self.window.errors[-1])
+        self.assertFalse(self.window.reports.details_button.isHidden())
+        self.assertIn("Recovery backup: /var/lib/legion-powerctl/repair/example",
+                      self.window.reports.last_warning)
+        self.assertTrue(self.editor.dirty)
+        self.assertEqual(self.editor.stapm_spin.value(), 55)
+
+    def test_confirmed_checks_repair_discards_edits_and_opens_the_repaired_profile(self):
+        self.sidebar.select_by_name("quiet")
+        self.editor.stapm_spin.setValue(40)
+        self.editor._on_edited()
+        refreshes, checks = self.window.refresh_count, self.window.checks.count
+        confirmation = self.click_repair()
+        self.assertIn("unsaved changes to 'quiet'", confirmation)
+        self.assertTrue(wait_until(self.app, lambda: (
+            self.window.refresh_count > refreshes and self.window.checks.count > checks
+            and not self.window.runner.processes
+        )))
+        self.assertEqual(self.editor.current_name, "balanced-plus")
+        self.assertFalse(self.editor.dirty)
+
+    def test_checks_repair_warning_details_include_the_backup_path(self):
+        with unittest.mock.patch.dict(os.environ, {
+            "FAKE_CLI_REPAIR_WARNING": "Applied, but limit readback is unavailable."
+        }):
+            self.checks.repair_button.click()
+            self.assertTrue(wait_until(self.app, lambda: (
+                "limit readback is unavailable" in self.window.reports.last_warning
+            )))
+        self.assertIn("Recovery backup: /var/lib/legion-powerctl/repair/example",
+                      self.window.reports.last_warning)
+        self.assertNotIn("balanced-plus repaired and applied", self.window.reports.last_warning)
+        self.assertFalse(self.window.reports.details_button.isHidden())
+
     def test_copying_puts_the_whole_report_on_the_clipboard(self):
         from PySide6.QtGui import QGuiApplication
 

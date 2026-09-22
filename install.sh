@@ -89,6 +89,8 @@ readonly RYZENADJ_DEP='ryzenadj>=0.19.0'
 readonly RYZEN_SMU_PKG='ryzen_smu-dkms-git'
 readonly RYZEN_SMU_SYSFS_DIR='/sys/kernel/ryzen_smu_drv'
 readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
+readonly RYZEN_SMU_MODULE_DIR='/sys/module/ryzen_smu'
+readonly SMU_BLACKLIST_FILE='/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf'
 
 aur_install_ryzenadj() {
     (( INSTALL_RYZENADJ == 1 )) || die "Rerun with --install-ryzenadj, or install the AUR 'ryzenadj' package first (it replaces ryzenadj-git)."
@@ -243,24 +245,40 @@ ryzen_smu_usable() {
 }
 
 load_ryzen_smu() {
+    local was_loaded=0 usable=1
+    [[ ! -d "${RYZEN_SMU_MODULE_DIR:-/sys/module/ryzen_smu}" ]] || was_loaded=1
     if ! "${SUDO[@]}" modprobe ryzen_smu; then
         warn "${RYZEN_SMU_PKG} is installed but the module did not load. With Secure Boot on, enrol its MOK key; see docs/INSTALL.md."
         return 0
     fi
     if [[ ! -e "$RYZEN_SMU_SYSFS_DIR/mp1_smu_cmd" || ! -e "$RYZEN_SMU_SYSFS_DIR/smu_args" ]]; then
         warn "ryzen_smu loaded but $RYZEN_SMU_SYSFS_DIR has no command interface. Check 'sudo dmesg | grep -i ryzen_smu'; RyzenAdj may fall back to /dev/mem if permitted."
+        usable=0
+    elif ! ryzen_smu_usable; then
+        usable=0
+    fi
+    if (( usable == 0 )); then
+        if (( was_loaded == 0 )); then
+            if "${SUDO[@]}" modprobe -r ryzen_smu; then
+                warn "Unloaded the unusable module loaded by this installer so it cannot block RyzenAdj's /dev/mem fallback."
+            else
+                warn "Could not unload the unusable module; stop its users, then run 'sudo legion-powerctl repair balanced-plus'."
+            fi
+        else
+            warn "The pre-existing module was left loaded. Run 'sudo legion-powerctl repair balanced-plus' to recover 60/65/75 W at 78 C with a backup."
+        fi
         return 0
     fi
-    info "ryzen_smu is loaded and $RYZEN_SMU_SYSFS_DIR provides its command interface."
-    if ! ryzen_smu_usable; then
-        warn "If the package changed, reboot to load the updated module, then rerun --install-ryzen-smu; this CPU may still need driver support."
-        return 0
-    fi
+    info "ryzen_smu is loaded and $RYZEN_SMU_SYSFS_DIR provides its usable RyzenAdj interface."
     persist_ryzen_smu
 }
 
 # Optional, so nothing here may abort the install: every failure warns and returns 0.
 ensure_ryzen_smu() {
+    if [[ -e "${SMU_BLACKLIST_FILE:-/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf}" ]]; then
+        warn "SMU recovery is active; skipping ryzen_smu installation/loading. Remove ${SMU_BLACKLIST_FILE:-/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf} only when restoring supported module use."
+        return 0
+    fi
     if [[ -e "$RYZEN_SMU_SYSFS_DIR/mp1_smu_cmd" && -e "$RYZEN_SMU_SYSFS_DIR/smu_args" ]]; then
         info "ryzen_smu already provides $RYZEN_SMU_SYSFS_DIR."
         if ryzen_smu_usable; then

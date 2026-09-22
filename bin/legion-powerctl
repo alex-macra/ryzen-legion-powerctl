@@ -23,6 +23,8 @@ readonly SMU_SYSFS_DIR="${LEGION_POWERCTL_SMU_SYSFS_DIR:-/sys/kernel/ryzen_smu_d
 readonly LOCKDOWN_PATH="${LEGION_POWERCTL_LOCKDOWN_PATH:-/sys/kernel/security/lockdown}"
 readonly DEV_MEM_PATH="${LEGION_POWERCTL_DEV_MEM_PATH:-/dev/mem}"
 readonly MODULES_ROOT="${LEGION_POWERCTL_MODULES_ROOT:-/sys/module}"
+readonly MODULES_LOAD_CONF="${LEGION_POWERCTL_MODULES_LOAD_CONF:-/etc/modules-load.d/legion-powerctl.conf}"
+readonly SMU_BLACKLIST_FILE="${LEGION_POWERCTL_SMU_BLACKLIST_FILE:-/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf}"
 readonly GUI_LAUNCHER="${LEGION_POWERCTL_GUI_LAUNCHER:-/usr/bin/legion-powerctl-gui}"
 readonly POLKIT_POLICY="${LEGION_POWERCTL_POLKIT_POLICY:-/usr/share/polkit-1/actions/io.github.alexmacra.legion-powerctl.policy}"
 readonly PYTHON_BIN="${LEGION_POWERCTL_PYTHON_BIN:-python3}"
@@ -88,6 +90,7 @@ Usage:
   legion-powerctl delete PROFILE [--force]
   legion-powerctl status [--json|--waybar]
   legion-powerctl doctor
+  legion-powerctl repair balanced-plus [--dry-run]
   legion-powerctl enable [--force]
   legion-powerctl disable
   legion-powerctl restore-frequency [--boost on|off|unchanged]
@@ -121,6 +124,13 @@ Examples:
 
 The systemd service is a one-shot boot service. It has no timer and does not
 remain running after the limits are applied.
+
+repair balanced-plus backs up the installed profile and applies 60/65/75 W at
+78 C, balanced mode, stock frequencies, boost on and balance_performance EPP.
+If an incomplete ryzen_smu module blocks RyzenAdj, repair unloads it without
+force and disables its automatic loading only after the replacement apply
+succeeds. This requires lockdown none and /dev/mem. Other module users may be
+affected; normal apply never unloads a module. Use --dry-run to preview.
 EOF_USAGE
 }
 
@@ -479,6 +489,7 @@ run_or_print() {
 
 apply_power_profile() {
     local dry_run="$1" ppctl
+    POWER_PROFILE_APPLIED=skipped
     [[ "$POWER_PROFILE" == "unchanged" ]] && return 0
     ppctl="$(resolve_powerprofilesctl)"
     if [[ -z "$ppctl" || ! -x "$ppctl" ]]; then
@@ -489,6 +500,7 @@ apply_power_profile() {
     if ! run_or_print "$dry_run" "$ppctl" set "$POWER_PROFILE"; then
         warn "Could not set power profile '$POWER_PROFILE'; continuing with CPU limits."
     else
+        POWER_PROFILE_APPLIED=yes
         info "Linux power profile: $POWER_PROFILE"
     fi
 }
@@ -604,6 +616,7 @@ apply_frequency_policy() {
 
 apply_frequency_limits() {
     local dry_run="$1"
+    FREQUENCY_APPLIED=skipped
     [[ "$MIN_FREQ_MHZ" == "unchanged" && "$MAX_FREQ_MHZ" == "unchanged" ]] && return 0
 
     local policies=("$SYSFS_CPU_ROOT"/cpufreq/policy*)
@@ -619,6 +632,7 @@ apply_frequency_limits() {
     for policy in "${policies[@]}"; do
         [[ -d "$policy" ]] || continue
         apply_frequency_policy "$dry_run" "$policy"
+        FREQUENCY_APPLIED=yes
     done
     info "CPU frequency policy: min=$MIN_FREQ_MHZ, max=$MAX_FREQ_MHZ"
 
@@ -678,15 +692,20 @@ apply_boost() {
 
 apply_epp() {
     local dry_run="$1"
+    EPP_APPLIED=skipped
     [[ "$EPP" == "unchanged" ]] && return 0
     local policies=("$SYSFS_CPU_ROOT"/cpufreq/policy*)
-    local applied=0 policy file available
+    local applied=0 skipped=0 policy file available
     for policy in "${policies[@]}"; do
         file="$policy/energy_performance_preference"
-        [[ -e "$file" ]] || continue
+        if [[ ! -e "$file" ]]; then
+            ((skipped += 1))
+            continue
+        fi
         available="$(cat "$policy/energy_performance_available_preferences" 2>/dev/null || true)"
         if [[ -n "$available" && " $available " != *" $EPP "* ]]; then
             warn "${policy##*/} does not advertise EPP '$EPP'; skipped."
+            ((skipped += 1))
             continue
         fi
         write_sysfs "$dry_run" "$EPP" "$file"
@@ -695,6 +714,7 @@ apply_epp() {
     if (( applied == 0 )); then
         warn "No compatible EPP controls were found."
     else
+        (( skipped > 0 )) || EPP_APPLIED=yes
         info "AMD P-State EPP: $EPP"
     fi
 }
@@ -823,6 +843,41 @@ cmd_baseline() {
     return 0
 }
 
+inspect_smu_backend() {
+    SMU_DRIVER_VERSION="$(cat "$SMU_SYSFS_DIR/drv_version" 2>/dev/null || true)"
+    SMU_COMPATIBLE=0
+    SMU_MISSING_FILES=()
+    local file
+    if [[ "$SMU_DRIVER_VERSION" =~ ^0\.1\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 7 )); then
+        SMU_COMPATIBLE=1
+    fi
+    for file in mp1_smu_cmd smu_args smn pm_table_size pm_table; do
+        [[ -e "$SMU_SYSFS_DIR/$file" ]] || SMU_MISSING_FILES+=("$file")
+    done
+    if (( SMU_COMPATIBLE == 1 )); then
+        SMU_BACKEND=module
+        (( ${#SMU_MISSING_FILES[@]} == 0 )) || SMU_BACKEND=broken
+    elif [[ -e "$DEV_MEM_PATH" ]]; then
+        SMU_BACKEND=devmem
+    else
+        SMU_BACKEND=none
+    fi
+}
+
+check_apply_backend() {
+    inspect_smu_backend
+    if [[ "$SMU_BACKEND" == broken ]]; then
+        die "ryzen_smu $SMU_DRIVER_VERSION lacks ${SMU_MISSING_FILES[*]}; RyzenAdj cannot apply limits while this module is loaded. Run 'sudo legion-powerctl repair balanced-plus' for the backed-up 60/65/75 W, 78 C recovery. No power settings were changed."
+    fi
+    [[ "$SMU_BACKEND" != none ]] || die "Neither a usable ryzen_smu backend nor $DEV_MEM_PATH is available. No power settings were changed."
+    if [[ "$SMU_BACKEND" == devmem ]]; then
+        local lockdown
+        lockdown="$(kernel_lockdown_state || true)"
+        [[ -z "$lockdown" || "$lockdown" == none ]] || \
+            die "Kernel lockdown '$lockdown' blocks the $DEV_MEM_PATH backend. No power settings were changed."
+    fi
+}
+
 apply_ryzenadj() {
     local dry_run="$1" ryzenadj
     ryzenadj="$(resolve_ryzenadj)"
@@ -837,7 +892,7 @@ apply_ryzenadj() {
     )
 
     info "Applying RyzenAdj: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C"
-    run_or_print "$dry_run" "${cmd[@]}"
+    run_or_print "$dry_run" "${cmd[@]}" || return "$?"
     [[ "$dry_run" == "1" ]] && return 0
 
     local drift rc=0
@@ -898,19 +953,37 @@ cmd_apply() {
 
     load_profile "$profile"
     validate_profile "$profile"
+    apply_loaded_profile "$profile" "$dry_run" "$boot"
+}
+
+record_failed_apply() {
+    local rc="$1"
+    trap - EXIT
+    write_state "$APPLY_IN_PROGRESS_PROFILE" 0 partial || true
+    remove_tmp_write || true
+    warn "Apply failed; power settings may be partially applied. Run doctor before retrying."
+    exit "$rc"
+}
+
+apply_loaded_profile() {
+    local profile="$1" dry_run="$2" boot="${3:-0}" recovery="${4:-0}"
 
     local ryzenadj_preflight
     ryzenadj_preflight="$(resolve_ryzenadj)"
     [[ -n "$ryzenadj_preflight" && -x "$ryzenadj_preflight" ]] || \
         die "ryzenadj is not installed or executable. Install ryzenadj (AUR) first."
 
-    [[ "$dry_run" == "1" ]] || capture_stock_limits "$ryzenadj_preflight" 1 || true
+    if [[ "$dry_run" != "1" ]]; then
+        check_apply_backend
+        capture_stock_limits "$ryzenadj_preflight" 1 || true
+    fi
 
     (( boot == 1 )) && info "Boot apply: profile '$profile'"
     if [[ "$dry_run" != "1" ]]; then
-        trap 'write_state "$profile" 0 partial
-              warn "Interrupted; the power state may be partially applied. Re-run apply."
-              exit 130' INT TERM
+        APPLY_IN_PROGRESS_PROFILE="$profile"
+        trap 'record_failed_apply "$?"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
     fi
     RYZENADJ_DRIFT=""
     RYZENADJ_VERIFIED=unknown
@@ -919,7 +992,17 @@ cmd_apply() {
     apply_boost "$dry_run"
     apply_frequency_limits "$dry_run"
     apply_epp "$dry_run"
+    if [[ "$recovery" == 1 ]]; then
+        local -a incomplete=()
+        [[ "$POWER_PROFILE_APPLIED" == yes ]] || incomplete+=("balanced platform policy")
+        [[ "$BOOST_APPLIED" == yes ]] || incomplete+=("boost")
+        [[ "$FREQUENCY_APPLIED" == yes ]] || incomplete+=("stock frequency limits")
+        [[ "$EPP_APPLIED" == yes ]] || incomplete+=("EPP")
+        (( ${#incomplete[@]} == 0 )) || \
+            die "Recovery is incomplete: ${incomplete[*]} could not be applied. Original profile and module boot configuration were preserved."
+    fi
     trap - INT TERM
+    trap remove_tmp_write EXIT
     if [[ "$dry_run" == "1" ]]; then
         write_state "$profile" "$dry_run" ok
         success "Dry run complete; profile '$profile' was not applied."
@@ -931,6 +1014,123 @@ cmd_apply() {
     fi
     write_state "$profile" 0 ok
     success "Profile '$profile' applied successfully."
+}
+
+owned_smu_boot_entry() {
+    [[ -f "$MODULES_LOAD_CONF" && ! -L "$MODULES_LOAD_CONF" ]] || return 1
+    grep -Fxq '# Written by legion-powerctl install.sh --install-ryzen-smu.' "$MODULES_LOAD_CONF" || return 1
+    awk '!/^[[:space:]]*(#|$)/ && $0 !~ /^[[:space:]]*ryzen_smu[[:space:]]*$/ { bad=1 } END { exit bad }' "$MODULES_LOAD_CONF"
+}
+
+cmd_repair() {
+    local profile="" dry_run="$DRY_RUN_DEFAULT" unload=0 recover_smu=0 path backup file ryzenadj
+    local pending="$STATE_DIR/smu-recovery.pending"
+    local pending_marker='Repair of an incomplete ryzen_smu module was requested.'
+    while (( $# > 0 )); do
+        case "$1" in
+            --dry-run) dry_run=1 ;;
+            balanced-plus) [[ -z "$profile" ]] || die "Only one profile may be supplied."; profile="$1" ;;
+            *) die "Usage: legion-powerctl repair balanced-plus [--dry-run]" ;;
+        esac
+        shift
+    done
+    [[ "$profile" == balanced-plus ]] || die "repair requires the profile name balanced-plus."
+    [[ "$dry_run" == 1 ]] || require_root
+    path="$(profile_path "$profile")"
+    set_profile_defaults "$profile"
+    MIN_FREQ_MHZ=stock
+    MAX_FREQ_MHZ=stock
+    BOOST=on
+    EPP=balance_performance
+    PROFILE_DESCRIPTION="Gaming baseline: 60/65/75 W, 78 C, boost on and stock frequencies."
+    validate_profile "$profile"
+    ryzenadj="$(resolve_ryzenadj)"
+    [[ -n "$ryzenadj" && -x "$ryzenadj" ]] || die "ryzenadj is not installed or executable. No settings were changed."
+    inspect_smu_backend
+    if [[ "$SMU_BACKEND" == broken ]]; then
+        command -v modprobe >/dev/null 2>&1 || die "Repair needs modprobe to unload the broken module."
+        [[ -d "$MODULES_ROOT/ryzen_smu" ]] || die "The incomplete SMU interface has no loaded ryzen_smu module to remove."
+        unload=1
+        recover_smu=1
+    elif [[ "$SMU_BACKEND" == devmem && ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" && -f "$pending" && ! -L "$pending" ]] && \
+            [[ "$(cat "$pending")" == "$pending_marker" ]]; then
+        recover_smu=1
+    else
+        check_apply_backend
+    fi
+    if (( recover_smu == 1 )); then
+        [[ "$(kernel_lockdown_state || true)" == none ]] || \
+            die "Repair cannot use $DEV_MEM_PATH unless kernel lockdown is confirmed as none. No settings were changed."
+        [[ -e "$DEV_MEM_PATH" ]] || die "Repair needs $DEV_MEM_PATH before unloading the broken module. No settings were changed."
+        if [[ -e "$SMU_BLACKLIST_FILE" || -L "$SMU_BLACKLIST_FILE" ]]; then
+            [[ -f "$SMU_BLACKLIST_FILE" && ! -L "$SMU_BLACKLIST_FILE" ]] || \
+                die "Refusing to replace $SMU_BLACKLIST_FILE; it is not a regular file."
+            [[ "$(cat "$SMU_BLACKLIST_FILE")" == $'# Written by legion-powerctl repair balanced-plus.\nblacklist ryzen_smu' ]] || \
+                die "Refusing to replace unrelated settings at $SMU_BLACKLIST_FILE."
+        fi
+    fi
+    [[ ! -L "$path" ]] || die "Repair will not replace a symlinked profile: $path"
+    [[ ! -e "$path" || -f "$path" ]] || die "The profile is not a regular file: $path"
+
+    info "Repair plan: balanced mode, 60/65/75 W, 78 C, boost on, stock frequencies, balance_performance EPP."
+    if (( unload == 1 )); then
+        info "Repair plan: unload the incomplete ryzen_smu module, then disable its automatic loading after a successful apply."
+    elif (( recover_smu == 1 )); then
+        info "Repair plan: finish the earlier SMU recovery by disabling its automatic loading after a successful apply."
+    fi
+    if [[ "$dry_run" == 1 ]]; then
+        info "DRY RUN: back up the existing profile and module configuration under $LIB_DIR/backups before applying."
+        apply_loaded_profile "$profile" 1
+        return 0
+    fi
+
+    mkdir -p "$LIB_DIR/backups"
+    chmod 0700 "$LIB_DIR/backups"
+    backup="$(mktemp -d "$LIB_DIR/backups/repair-XXXXXXXX")"
+    for file in "$path" "$CONFIG_FILE" "$STATE_DIR/last-apply.env" "$MODULES_LOAD_CONF" "$SMU_BLACKLIST_FILE"; do
+        [[ -f "$file" ]] || continue
+        cp -p -- "$file" "$backup/${file##*/}"
+    done
+    info "Recovery backup: $backup"
+    if (( unload == 1 )); then
+        mkdir -p "$STATE_DIR"
+        TMP_WRITE="$(mktemp "${pending}.XXXXXX")"
+        printf '%s\n' "$pending_marker" > "$TMP_WRITE"
+        chmod 0600 "$TMP_WRITE"
+        mv -f -- "$TMP_WRITE" "$pending"
+        TMP_WRITE=""
+        modprobe -r ryzen_smu || die "Could not unload ryzen_smu; it may be in use. No profile or boot configuration was changed. Backup: $backup"
+        [[ ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" ]] || \
+            die "ryzen_smu still exposes an interface after unload; stopping before power or profile changes. Backup: $backup"
+        info "Removed the incomplete module for this boot. If the apply fails, persistent settings remain unchanged."
+    fi
+
+    apply_loaded_profile "$profile" 0 0 1
+    if (( recover_smu == 1 )) && [[ -d "$MODULES_ROOT/ryzen_smu" || -e "$SMU_SYSFS_DIR" ]]; then
+        write_state "$profile" 0 partial
+        die "ryzen_smu returned during recovery. Stop the other module loader before retrying; original profile and boot configuration were preserved."
+    fi
+    write_profile "$profile"
+    if (( recover_smu == 1 )); then
+        mkdir -p -- "${SMU_BLACKLIST_FILE%/*}"
+        TMP_WRITE="$(mktemp "${SMU_BLACKLIST_FILE}.XXXXXX")"
+        printf '# Written by legion-powerctl repair balanced-plus.\nblacklist ryzen_smu\n' > "$TMP_WRITE"
+        chmod 0644 "$TMP_WRITE"
+        mv -f -- "$TMP_WRITE" "$SMU_BLACKLIST_FILE"
+        TMP_WRITE=""
+        if owned_smu_boot_entry; then
+            rm -- "$MODULES_LOAD_CONF"
+        elif [[ -e "$MODULES_LOAD_CONF" ]]; then
+            warn "Left unrelated module-loading settings at $MODULES_LOAD_CONF untouched."
+        fi
+        info "Disabled ryzen_smu automatic loading with $SMU_BLACKLIST_FILE."
+        info "To undo the module change: remove $SMU_BLACKLIST_FILE and restore the backed-up module-loading file if present, then reboot."
+        warn "If ryzen_smu is included in your initramfs or loaded by another service, update that configuration before rebooting; the blacklist alone cannot remove an embedded module."
+    fi
+    if [[ -f "$pending" && ! -L "$pending" ]] && [[ "$(cat "$pending")" == "$pending_marker" ]]; then
+        rm -- "$pending"
+    fi
+    success "balanced-plus repaired and applied at 78 C. Original files: $backup"
 }
 
 cmd_configure() {
@@ -1410,26 +1610,18 @@ cmd_doctor() {
         ((failures += 1))
     fi
 
-    local smu_backend="" smu_drv_ver="" smu_compatible=0 smu_file
-    local -a missing_smu_files=()
-    smu_drv_ver="$(cat "$SMU_SYSFS_DIR/drv_version" 2>/dev/null || true)"
-    if [[ "$smu_drv_ver" =~ ^0\.1\.([0-9]+)$ ]] && (( 10#${BASH_REMATCH[1]} >= 7 )); then
-        smu_compatible=1
-    fi
-    for smu_file in mp1_smu_cmd smu_args smn pm_table_size pm_table; do
-        [[ -e "$SMU_SYSFS_DIR/$smu_file" ]] || missing_smu_files+=("$smu_file")
-    done
-    if (( smu_compatible == 1 && ${#missing_smu_files[@]} == 0 )); then
-        smu_backend="module"
+    inspect_smu_backend
+    local smu_backend="$SMU_BACKEND" smu_drv_ver="$SMU_DRIVER_VERSION"
+    if [[ "$smu_backend" == module ]]; then
         doctor_line OK SMU-backend "$SMU_SYSFS_DIR has the RyzenAdj module interface (driver $smu_drv_ver)"
-    elif (( smu_compatible == 1 )); then
-        smu_backend="broken"
-        doctor_line FAIL SMU-backend "compatible ryzen_smu $smu_drv_ver lacks ${missing_smu_files[*]}; RyzenAdj 0.19 cannot initialize this module or fall back to $DEV_MEM_PATH"
+    elif [[ "$smu_backend" == broken ]]; then
+        doctor_line FAIL SMU-backend "compatible ryzen_smu $smu_drv_ver lacks ${SMU_MISSING_FILES[*]}; RyzenAdj 0.19 cannot initialize this module or fall back to $DEV_MEM_PATH. Run 'sudo legion-powerctl repair balanced-plus' to back up the profile, recover 60/65/75 W at 78 C and disable this incomplete module when lockdown is none."
         ((failures += 1))
-    elif [[ -e "$DEV_MEM_PATH" ]]; then
-        smu_backend="devmem"
+    elif [[ "$smu_backend" == devmem ]]; then
         if [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then
             doctor_line WARN SMU-backend "ryzen_smu is loaded but its RyzenAdj module interface is unverified (driver ${smu_drv_ver:-unreadable}); check 'sudo dmesg | grep -i ryzen_smu'; RyzenAdj may use $DEV_MEM_PATH"
+        elif [[ -r "$SMU_BLACKLIST_FILE" ]] && grep -Fxq 'blacklist ryzen_smu' "$SMU_BLACKLIST_FILE"; then
+            doctor_line WARN SMU-backend "ryzen_smu automatic loading is disabled for recovery; RyzenAdj uses $DEV_MEM_PATH, and limit readback may be unavailable"
         else
             doctor_line WARN SMU-backend "no $SMU_SYSFS_DIR command interface and no ryzen_smu module; RyzenAdj may use $DEV_MEM_PATH but limit readback may be unavailable - install ryzen_smu-dkms-git"
         fi
@@ -1631,6 +1823,7 @@ main() {
         delete|remove-profile) cmd_delete "$@" ;;
         status) cmd_status "$@" ;;
         doctor|check) cmd_doctor "$@" ;;
+        repair) cmd_repair "$@" ;;
         enable) cmd_enable "$@" ;;
         disable) cmd_disable "$@" ;;
         restore-frequency) cmd_restore_frequency "$@" ;;

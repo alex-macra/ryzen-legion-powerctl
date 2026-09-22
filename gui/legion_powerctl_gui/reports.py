@@ -63,6 +63,13 @@ class ReportArea(QObject):
         a11y.announce(self._bar, text, interrupt=True)
         self.details_button.show()
 
+    def offer_repair_backup(self, backup: str) -> None:
+        if self.details_button.isHidden():
+            self.last_warning = backup
+        else:
+            self.last_warning += f"\n\n{backup}"
+        self.details_button.show()
+
     def show_details(self) -> None:
         if self._dialogs and self.last_warning:
             QMessageBox.information(

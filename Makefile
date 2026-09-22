@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 SHELL_SOURCES := bin/legion-powerctl bin/legion-powerctl-gui install.sh uninstall.sh \
 	tools/legion-powerbench \
-	tests/test.sh tests/test-branches.sh tests/test-bench.sh tests/lib.sh \
+	tests/test.sh tests/test-branches.sh tests/test-bench.sh tests/test-repair.sh tests/lib.sh \
 	tests/fixtures/make-fake-root.sh \
 	tests/e2e/run.sh tests/e2e/podman.sh \
 	gui/tests/fake-legion-powerctl gui/tests/fixtures/regenerate-doctor.sh \
@@ -127,6 +127,7 @@ test: syntax
 	bash tests/test.sh
 	bash tests/test-branches.sh
 	bash tests/test-bench.sh
+	bash tests/test-repair.sh
 
 test-gui:
 	PYTHONPATH=gui QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s gui/tests -v

@@ -27,6 +27,8 @@ class ProfileActions(QObject):
     warned = Signal(str, str)
     cancelled = Signal(str)
     busy_changed = Signal(bool)
+    repaired = Signal()
+    repair_backup = Signal(str)
 
     def __init__(
         self,
@@ -77,6 +79,18 @@ class ProfileActions(QObject):
             self.failed.emit(f"Refusing to act on an invalid profile name: {name!r}")
             return
         self._run(model.build_apply_args(name), f"Applied '{name}'.")
+
+    def repair_balanced_plus(self) -> None:
+        if self._busy:
+            return
+        dirty = self._editor.current_name if self._editor.dirty else ""
+        if self._window.dialogs and not dialogs.confirm_repair(self._window.checks.dialog, dirty):
+            return
+        self._run(
+            ["repair", "balanced-plus"],
+            "Repaired and applied 'balanced-plus'. The previous settings were backed up.",
+            on_success=self.repaired.emit,
+        )
 
     def pin_boot(self, name: str) -> None:
         if not model.valid_profile_name(name):
@@ -175,15 +189,26 @@ class ProfileActions(QObject):
         saved: model.Profile | None = None,
         on_fail=None,
         go_back: str = "",
+        on_success=None,
     ) -> None:
         self.previous_profile = go_back
         self._set_busy(True)
 
         def done(code: int, stdout: str, stderr: str) -> None:
             self._set_busy(False)
+            backup = ""
+            if args == ["repair", "balanced-plus"]:
+                backup = next((line for line in stdout.splitlines()
+                               if line.startswith("Recovery backup: ")), "")
+                if backup and code != 0:
+                    stderr = f"{stderr.strip() or 'Repair failed.'}\n{backup}"
+            if code == 0 and on_success is not None:
+                on_success()
             self.handle_result(
                 code, stdout, stderr, saved=saved, message=message, on_fail=on_fail
             )
+            if backup:
+                self.repair_backup.emit(backup)
 
         self._runner.run(model.privileged_command(args), done)
 

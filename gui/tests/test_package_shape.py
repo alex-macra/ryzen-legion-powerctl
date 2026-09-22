@@ -3,6 +3,7 @@
 import ast
 import re
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "legion_powerctl_gui"
@@ -103,11 +104,22 @@ class PackageShapeTest(unittest.TestCase):
         policy = (REPO / "packaging/polkit/io.github.alexmacra.legion-powerctl.policy")
         pinned = set(re.findall(r"exec\.argv1\">([a-z-]+)<", policy.read_text(encoding="utf-8")))
         self.assertEqual(
-            sent, {"configure", "apply", "select", "delete", "enable", "disable"}
+            sent, {"configure", "apply", "select", "delete", "enable", "disable", "repair"}
         )
         self.assertLessEqual(
             sent, pinned, f"the GUI runs {sorted(sent - pinned)} through pkexec unpinned"
         )
+
+    def test_repair_requires_fresh_admin_authentication(self):
+        policy = ET.parse(REPO / "packaging/polkit/io.github.alexmacra.legion-powerctl.policy")
+        action = policy.find(".//action[@id='io.github.alexmacra.legion-powerctl.repair']")
+        self.assertIsNotNone(action)
+        self.assertEqual(action.find("annotate[@key='org.freedesktop.policykit.exec.argv1']").text,
+                         "repair")
+        self.assertEqual(action.find("annotate[@key='org.freedesktop.policykit.exec.path']").text,
+                         "/usr/bin/legion-powerctl")
+        for kind in ("allow_any", "allow_inactive", "allow_active"):
+            self.assertEqual(action.find(f"defaults/{kind}").text, "auth_admin")
 
     def test_no_module_writes_down_a_colour(self):
         colour = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")

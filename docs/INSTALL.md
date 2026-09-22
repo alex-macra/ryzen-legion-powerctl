@@ -79,7 +79,11 @@ compatible and RyzenAdj's required sysfs files exist, so it comes back after a
 reboot. If a loaded module is incompatible, the explicit install flag tries an
 AUR update; it adds a boot entry only after the running module verifies. If the
 old module remains loaded, reboot and rerun the flag to verify and persist the
-updated one. The module
+updated one. A newly loaded unusable module is unloaded again without force;
+a module that was already loaded is left for explicit recovery. Use
+`sudo legion-powerctl repair balanced-plus` or **Checks > Repair balanced-plus**
+to back up and recover a broken installation. The installer respects the
+recovery blacklist instead of loading the module again. The module
 is optional, so nothing in that path can fail the install - every problem warns and
 carries on. Without the flag the installer offers it interactively when the
 `/sys/kernel/ryzen_smu_drv` command interface is missing, and stays silent when there is no terminal. With
@@ -203,3 +207,7 @@ install:
 ```
 
 RyzenAdj is not removed automatically, because other tools may depend on it.
+The recovery blacklist at `/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf`
+and backups under `/var/lib/legion-powerctl/backups` are also retained. Remove
+that blacklist only if you intend to restore the optional module's automatic
+loading; see [recovery rollback](TROUBLESHOOTING.md#recover-balanced-plus).

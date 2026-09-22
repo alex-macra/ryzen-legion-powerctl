@@ -7,6 +7,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Refuse a known broken SMU backend before changing power policy, and record
+  ordinary apply failures as partial instead of leaving a stale success visible.
+- Unload an unusable module newly loaded by the installer, and respect a recovery
+  blacklist on later installs.
 - Keep `balanced-plus` at or below 78 C in the CLI and GUI, and correct the
   installer and CLI examples that previously set it to 82 C. Existing edited
   installs can be repaired with `configure balanced-plus --temp 78 --apply`.
@@ -31,6 +35,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `repair balanced-plus` and the GUI's **Repair balanced-plus** action back up
+  the installed settings and recover 60/65/75 W at 78 C with stock frequencies
+  and boost on. With lockdown off, recovery can remove an incomplete optional
+  SMU module and disable its automatic loading after a successful RyzenAdj apply.
 - `make dev-gui` runs the GUI and CLI straight from a local checkout for fast
   previews without pushing to GitHub or rebuilding the installed package.
 - A reproducible game-plus-VM comparison for balanced-plus, starting at 85 C with
