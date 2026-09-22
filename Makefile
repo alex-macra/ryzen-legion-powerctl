@@ -62,11 +62,12 @@ verify-versions:
 	pkg="$$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)"; \
 	log="$$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -n1)"; \
 	gui="$$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' gui/legion_powerctl_gui/__init__.py)"; \
+	bench="$$(sed -n 's/^readonly VERSION="\([^"]*\)".*/\1/p' tools/legion-powerbench)"; \
 	man="$$(sed -n 's/^\.TH .*legion-powerctl \([0-9][0-9.]*\).*/\1/p' man/legion-powerctl.8)"; \
-	printf 'CLI %s / PKGBUILD %s / CHANGELOG %s / GUI %s / man %s\n' "$$cli" "$$pkg" "$$log" "$$gui" "$$man"; \
+	printf 'CLI %s / PKGBUILD %s / CHANGELOG %s / GUI %s / benchmark %s / man %s\n' "$$cli" "$$pkg" "$$log" "$$gui" "$$bench" "$$man"; \
 	test -n "$$cli" && test "$$cli" = "$$pkg" && test "$$cli" = "$$log" && \
-		test "$$cli" = "$$gui" && test "$$cli" = "$$man" || \
-		{ printf 'Version mismatch across bin/legion-powerctl, PKGBUILD, CHANGELOG.md, the GUI package, and the man page\n' >&2; exit 1; }
+		test "$$cli" = "$$gui" && test "$$cli" = "$$bench" && test "$$cli" = "$$man" || \
+		{ printf 'Version mismatch across bin/legion-powerctl, PKGBUILD, CHANGELOG.md, the GUI package, legion-powerbench, and the man page\n' >&2; exit 1; }
 
 install: install-files install-config
 

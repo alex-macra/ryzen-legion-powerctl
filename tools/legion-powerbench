@@ -13,7 +13,7 @@
 set -Eeuo pipefail
 shopt -s nullglob
 
-readonly VERSION="0.3.0"
+readonly VERSION="0.4.0"
 readonly PROGRAM="${0##*/}"
 
 readonly HWMON_ROOT="${LEGION_POWERBENCH_HWMON_ROOT:-/sys/class/hwmon}"

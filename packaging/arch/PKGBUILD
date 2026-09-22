@@ -7,7 +7,7 @@
 # Before AUR submission: switch source= to the tagged release tarball
 # (commented below) and replace sha256sums with updpkgsums.
 pkgname=legion-powerctl
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc='Configurable Ryzen CPU power and thermal limits for Lenovo Legion laptops'
 arch=('any')

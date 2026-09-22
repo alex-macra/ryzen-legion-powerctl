@@ -182,6 +182,23 @@ upgrades the previous one through pacman, and edited profiles in `/etc/legion-po
 are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
 `--force-config` is supplied.
 
+Pulling Git changes updates the checkout only. Reinstall and close every running GUI
+window before launching the app again. To distinguish the checkout from the installed
+CLI, compare:
+
+```bash
+./bin/legion-powerctl version
+/usr/bin/legion-powerctl version
+legion-powerctl version
+```
+
+For this update, all three should report `0.4.0`, and the reopened GUI header should
+show `legion-powerctl 0.4.0 | GUI 0.4.0`. If the last command differs from
+`/usr/bin/legion-powerctl`, use `type -a legion-powerctl` to locate the older copy
+on your PATH. On Arch/CachyOS, `pacman -Q legion-powerctl` should report `0.4.0-1`.
+Upgrading preserves edited profiles; use **Checks > Repair balanced-plus** to apply
+the 60/65/75 W, 78 C recovery baseline if the old settings still need repair.
+
 To try changes in your local checkout without pushing to GitHub or reinstalling,
 run `make dev-gui` from that checkout. Close and reopen it after edits; it reads
 the GUI and CLI source files directly while using the installed profiles. Privileged
