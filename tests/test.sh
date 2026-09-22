@@ -235,7 +235,9 @@ refute_contains '/dev/ryzen_smu_drv' "$doctor_out" 'doctor still expects a nonex
 rm -rf "$SMU_SYSFS_DIR"
 printf 'none [integrity] confidentiality\n' > "$LOCKDOWN"
 doctor_out="$(run_cli doctor || true)"
-assert_contains 'integrity - this blocks the' "$doctor_out" 'doctor did not warn that lockdown blocks the /dev/mem fallback'
+assert_contains 'integrity blocks the' "$doctor_out" 'doctor did not warn that lockdown blocks the /dev/mem fallback'
+assert_contains 'loaded ryzen_smu backend is not verified' "$doctor_out" \
+    'doctor gave module-install advice despite a loaded ryzen_smu module'
 
 fake_add_smu_interface
 doctor_out="$(run_cli doctor || true)"

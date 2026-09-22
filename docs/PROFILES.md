@@ -116,6 +116,13 @@ file contains a higher value. Repair an older copy with
 `sudo legion-powerctl configure balanced-plus --temp 78 --apply`; other profile names
 retain the general 50-100 °C validation range.
 
+`repair balanced-plus` is an explicit recovery action that saves a backup and
+replaces the installed profile with 60/65/75 W at 78 °C, balanced platform policy,
+stock frequency bounds, boost on and `balance_performance` EPP. Those wattages
+reproduce the earlier manual gaming baseline; the bundled 65/70/80 W profile is
+unchanged pending hardware comparisons. Repair applies immediately and preserves
+the selected boot-profile name.
+
 `compute` ships with **unmeasured** values. They are a hypothesis about what a Legion Pro
 7 chassis can absorb with nothing competing for the cooler, not a recommendation. Run the
 ladder in [TUNING.md](TUNING.md) before trusting them, and lower them if it reports the

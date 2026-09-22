@@ -31,7 +31,7 @@ one action per subcommand, each pinned with `org.freedesktop.policykit.exec.argv
 | Action | `allow_active` |
 |---|---|
 | `.configure`, `.apply`, `.select` | `auth_admin_keep` |
-| `.delete`, `.enable`, `.disable` | `auth_admin` |
+| `.delete`, `.enable`, `.disable`, `.repair` | `auth_admin` |
 
 Three properties of this design are deliberate and are **not** vulnerabilities:
 
@@ -58,6 +58,12 @@ packaging defect that installs the policy with wrong ownership or permissions
 `exec.path` must match the CLI as installed. `make install` rewrites it from
 `PREFIX` for that reason. A mismatch is a functional bug, not a hole - polkit
 falls back to `org.freedesktop.policykit.exec`, which prompts every time.
+
+`repair balanced-plus` resets and applies the recovery profile after saving a
+backup. It may unload an incomplete optional `ryzen_smu` module and disable that
+module's automatic loading after a successful apply. This system configuration
+change requires fresh administrator authentication; a retained profile-editing
+grant does not authorize it. The GUI confirms the reset and any discarded edits.
 
 ## Trust boundaries
 

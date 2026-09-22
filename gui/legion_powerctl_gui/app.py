@@ -103,6 +103,9 @@ class MainWindow(QMainWindow):
         self.editor.apply_requested.connect(self.profile_actions.apply)
         self.header.service_toggled.connect(self.profile_actions.set_service)
         self.header.checks_requested.connect(self.checks.show)
+        self.checks.dialog.repair_requested.connect(self.profile_actions.repair_balanced_plus)
+        self.profile_actions.repaired.connect(self._on_repaired)
+        self.profile_actions.repair_backup.connect(self.reports.offer_repair_backup)
         self.profile_actions.succeeded.connect(self._on_action_succeeded)
         self.profile_actions.warned.connect(self._on_action_warned)
         self.profile_actions.failed.connect(self._on_action_failed)
@@ -116,6 +119,12 @@ class MainWindow(QMainWindow):
     def _on_action_succeeded(self, message: str) -> None:
         self.reports.success(message, self.profile_actions.previous_profile)
         self.refresh()
+
+    def _on_repaired(self) -> None:
+        self.editor.clear()
+        self.editor.dirty = False
+        self._pending_open = "balanced-plus"
+        self.checks.run()
 
     def _on_action_warned(self, message: str, detail: str) -> None:
         self.reports.warning(message, detail)
@@ -141,6 +150,8 @@ class MainWindow(QMainWindow):
         self.editor.set_busy(busy)
         self.header.set_busy(busy)
         self.sidebar.setEnabled(not busy)
+        self.checks.dialog.repair_button.setEnabled(not busy)
+        self.checks.dialog.rerun_button.setEnabled(not busy)
         if not busy:
             widget, self._focus_before_busy = self._focus_before_busy, None
             if widget is not None and isValid(widget) and widget.isEnabled():

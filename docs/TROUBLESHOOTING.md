@@ -49,7 +49,62 @@ This is informational when followed by `Successfully set ...`. RyzenAdj first tr
 
 Setting limits can work without the module if `/dev/mem` is permitted. RyzenAdj 0.19 uses the module only if its `drv_version` is compatible. Once it selects the module, it requires `smn`, `pm_table_size`, and `pm_table`; if any is missing, initialization fails without a `/dev/mem` fallback. A failed apply must not be treated as an unverified success. A successful apply may still print `Could not read the limits back ... this apply is unverified.` when metrics cannot be read. The module exposes `/sys/kernel/ryzen_smu_drv`, not `/dev/ryzen_smu_drv`. [Fire Range PM-table support remains incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
 
-`legion-powerctl doctor` distinguishes a usable RyzenAdj module interface, missing initialization files, a loaded module that failed to expose its interface, and an unloaded module. For missing files or a missing interface, check `sudo dmesg | grep -i ryzen_smu` for the actual probe error. `./install.sh --install-ryzen-smu` installs and loads the optional `ryzen_smu-dkms-git` module and sets it to load at boot when the required files exist; see [INSTALL.md](INSTALL.md) for the lockdown and Secure Boot caveats. Installing it cannot by itself add an unsupported PM-table version.
+`legion-powerctl doctor` distinguishes a usable RyzenAdj module interface, missing initialization files, a loaded module that failed to expose its interface, and an unloaded module. For missing files or a missing interface, check `sudo dmesg | grep -i ryzen_smu` for the actual probe error. `./install.sh --install-ryzen-smu` installs and loads the optional `ryzen_smu-dkms-git` module and sets it to load at boot only when its driver version and required files are compatible; see [INSTALL.md](INSTALL.md) for the lockdown and Secure Boot caveats. Installing it cannot by itself add an unsupported PM-table version.
+
+## Recover balanced-plus
+
+For the combination of an invalid old `balanced-plus` temperature and a loaded
+`ryzen_smu 0.1.7` missing `pm_table_size` / `pm_table`, use **Checks > Repair
+balanced-plus** in the GUI. The CLI equivalent is:
+
+```bash
+legion-powerctl repair balanced-plus --dry-run
+sudo legion-powerctl repair balanced-plus
+```
+
+You can use the current checkout immediately, before reinstalling the app:
+
+```bash
+./bin/legion-powerctl repair balanced-plus --dry-run
+sudo ./bin/legion-powerctl repair balanced-plus
+```
+
+Recovery backs up the original profile, boot selection, last apply record and
+existing module configuration under `/var/lib/legion-powerctl/backups/repair-*`.
+It applies **60/65/75 W at 78 C**, balanced platform policy, boost on, stock
+frequency bounds and `balance_performance` EPP. This starts from the previously
+successful manual wattages; it does not prove that gaming or VM performance is
+restored at the lower temperature ceiling.
+
+When the compatible module is incomplete, recovery requires known lockdown
+`none` and `/dev/mem`, then tries a normal `modprobe -r ryzen_smu`. An in-use
+module is never forcibly removed. If RyzenAdj cannot apply the replacement
+settings, the old profile and boot configuration remain unchanged and a partial
+runtime record reports any attempted power changes. The module may remain
+unloaded until reboot. Missing readback after a successful apply stays
+**unverified**, not confirmed.
+
+Recovery also refuses to save when a required platform, boost, frequency or EPP
+control could not be applied, or when another process reloads the module during
+the attempt. An interrupted or failed attempt retains a pending recovery record
+for this boot so a successful retry finishes the module-loading changes.
+
+Only after a successful apply does recovery save the profile, write
+`/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf` and remove its own
+`/etc/modules-load.d/legion-powerctl.conf` entry. A usable module is left alone.
+The blacklist suppresses PCI autoload, but cannot remove a module already in an
+initramfs; inspect/rebuild that image with your distribution's tooling if the
+module returns on reboot. The installer respects the recovery blacklist.
+
+To undo recovery, use the exact backup directory printed by the command. Restore
+the desired profile files, remove the recovery blacklist, and restore the old
+module-loading file if it existed. The original profile may still exceed 78 C;
+correct that value before applying it. Re-enable the optional driver only when
+its PM-table support works on this CPU.
+
+After recovery, check `legion-powerctl status` and `sudo legion-powerctl doctor`,
+then repeat the same game scene and VM task. If the slowdown persists, compare
+CPU frequency, host memory/swap pressure and GPU power before raising limits.
 
 ## `WARNING: The kernel rejected writing BOOST=...`
 

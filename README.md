@@ -67,6 +67,16 @@ profile may still contain a higher value because package upgrades preserve edite
 configuration. Correct the saved profile and apply it with
 `sudo legion-powerctl configure balanced-plus --temp 78 --apply`.
 
+If games and a VM became slow after older profiles or the optional SMU driver were
+installed, open **Checks > Repair balanced-plus** in the GUI, or run
+`sudo legion-powerctl repair balanced-plus`. This backs up the existing settings,
+restores the previously used 60/65/75 W gaming baseline at your 78 C cap, enables
+boost and restores stock frequency limits. It can unload an incomplete SMU driver
+that blocks RyzenAdj when lockdown is off. See the
+[recovery and rollback instructions](docs/TROUBLESHOOTING.md#recover-balanced-plus).
+This is a recovery baseline; game and VM performance still needs measurement on
+the laptop, especially because 78 C is lower than the earlier 82 C setting.
+
 ## Measuring
 
 Raising a limit only helps if that limit is the one binding, and most of the time it is not. `legion-powerbench` samples temperature, package power, fan and GPU while it steps one limit at a time, then tells you which constraint was actually in the way:

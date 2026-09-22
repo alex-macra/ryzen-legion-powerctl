@@ -20,7 +20,24 @@ case "$command" in
         fi
         ;;
     doctor)
-        cat "$HERE/fixtures/doctor.txt"
+        cat "${FAKE_CLI_DOCTOR_FIXTURE:-$HERE/fixtures/doctor.txt}"
+        ;;
+    repair)
+        printf 'Recovery backup: /var/lib/legion-powerctl/repair/example\n'
+        if [[ -n "${FAKE_CLI_REPAIR_ERROR:-}" ]]; then
+            printf '%s\n' "$FAKE_CLI_REPAIR_ERROR" >&2
+            exit 1
+        fi
+        if [[ -n "${FAKE_CLI_REPAIR_STATUS_FIXTURE:-}" ]]; then
+            cp "$FAKE_CLI_REPAIR_STATUS_FIXTURE" "$FAKE_CLI_STATUS_FIXTURE"
+        fi
+        if [[ -n "${FAKE_CLI_REPAIR_DOCTOR_FIXTURE:-}" ]]; then
+            cp "$FAKE_CLI_REPAIR_DOCTOR_FIXTURE" "$FAKE_CLI_DOCTOR_FIXTURE"
+        fi
+        printf 'balanced-plus repaired and applied.\n'
+        if [[ -n "${FAKE_CLI_REPAIR_WARNING:-}" ]]; then
+            printf '%s\n' "$FAKE_CLI_REPAIR_WARNING" >&2
+        fi
         ;;
     apply)
         if [[ "$*" == *--dry-run* ]]; then

@@ -30,6 +30,7 @@ def worst_first(lines: list[model.DoctorLine]) -> list[model.DoctorLine]:
 
 class ChecksDialog(QDialog):
     rerun_requested = Signal()
+    repair_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -71,6 +72,11 @@ class ChecksDialog(QDialog):
         layout.addWidget(self.scroll, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.repair_button = buttons.addButton(
+            "&Repair balanced-plus", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.repair_button.setAutoDefault(False)
+        self.repair_button.clicked.connect(self.repair_requested)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
@@ -250,6 +256,27 @@ def confirm_enable(parent: QWidget, boot_profile: str) -> bool:
     accept = box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole)
     box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(accept)
+    box.exec()
+    return box.clickedButton() is accept
+
+
+def confirm_repair(parent: QWidget, dirty_profile: str = "") -> bool:
+    box = QMessageBox(parent)
+    box.setWindowTitle("Repair balanced-plus")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText("Reset and apply balanced-plus at 60/65/75 W and 78 C?")
+    detail = (
+        "Restore balanced mode, stock CPU frequency limits, boost on and "
+        "balance_performance EPP. Save a backup of the existing profile and module settings.\n\n"
+        "If ryzen_smu is incomplete and blocks RyzenAdj, unload it before applying. "
+        "Disable its automatic loading only after a successful apply. A working driver is kept."
+    )
+    if dirty_profile:
+        detail += f"\n\nDiscard unsaved changes to '{dirty_profile}' after repair succeeds."
+    box.setInformativeText(detail)
+    accept = box.addButton("Repair and apply", QMessageBox.ButtonRole.AcceptRole)
+    cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(cancel)
     box.exec()
     return box.clickedButton() is accept
 

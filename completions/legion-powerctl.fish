@@ -14,6 +14,7 @@ complete -c legion-powerctl -n '__fish_use_subcommand' -a show -d 'Show a profil
 complete -c legion-powerctl -n '__fish_use_subcommand' -a delete -d 'Delete a profile'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a status -d 'Show configuration and service state'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a doctor -d 'Run compatibility checks'
+complete -c legion-powerctl -n '__fish_use_subcommand' -a repair -d 'Back up and recover balanced-plus at 78 C'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a enable -d 'Enable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a disable -d 'Disable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a restore-frequency -d 'Restore stock CPUFreq boundaries'
@@ -23,6 +24,8 @@ complete -c legion-powerctl -n '__fish_use_subcommand' -a help -d 'Show help'
 
 complete -c legion-powerctl -n '__fish_seen_subcommand_from apply select show delete wizard' -a '(__legion_powerctl_profiles)'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from apply' -l dry-run -d 'Print changes without applying them'
+complete -c legion-powerctl -n '__fish_seen_subcommand_from repair' -a balanced-plus
+complete -c legion-powerctl -n '__fish_seen_subcommand_from repair' -l dry-run -d 'Preview recovery without changing settings'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from apply' -l boot -d 'Boot-time apply (used by the systemd unit)'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from select' -l apply -d 'Apply immediately'
 complete -c legion-powerctl -n '__fish_seen_subcommand_from delete' -l force -d 'Delete even when selected'

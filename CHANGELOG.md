@@ -7,13 +7,20 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Refuse a known broken SMU backend before changing power policy, and record
+  ordinary apply failures as partial instead of leaving a stale success visible.
+- Unload an unusable module newly loaded by the installer, and respect a recovery
+  blacklist on later installs.
 - Keep `balanced-plus` at or below 78 C in the CLI and GUI, and correct the
   installer and CLI examples that previously set it to 82 C. Existing edited
   installs can be repaired with `configure balanced-plus --temp 78 --apply`.
 - Detect the actual `ryzen_smu` sysfs interface instead of a nonexistent device
   node. Check RyzenAdj's driver version and required PM-table files before
   reporting the module backend ready; missing files can prevent applying limits.
-  Persist an already loaded usable module when explicitly requested.
+  Persist an already loaded usable module when explicitly requested; try an AUR
+  update without persisting an incompatible one.
+- Keep a same-name GUI repair draft for an invalid profile through status refreshes
+  until a valid saved profile replaces it.
 - Temperature sweeps preserve all three running wattages. Trials require a known,
   unchanged restoration profile, restore it once on exit, stop their workload process
   groups and remove their scratch profiles after successful restoration.
@@ -28,6 +35,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `repair balanced-plus` and the GUI's **Repair balanced-plus** action back up
+  the installed settings and recover 60/65/75 W at 78 C with stock frequencies
+  and boost on. With lockdown off, recovery can remove an incomplete optional
+  SMU module and disable its automatic loading after a successful RyzenAdj apply.
 - `make dev-gui` runs the GUI and CLI straight from a local checkout for fast
   previews without pushing to GitHub or rebuilding the installed package.
 - A reproducible game-plus-VM comparison for balanced-plus, starting at 85 C with

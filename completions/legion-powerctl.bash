@@ -8,7 +8,7 @@ _legion_powerctl_complete() {
 
     if (( COMP_CWORD == 1 )); then
         COMPREPLY=( $(compgen -W 'apply configure wizard select list show delete status
-            doctor enable disable restore-frequency baseline version help' -- "$cur") )
+            doctor repair enable disable restore-frequency baseline version help' -- "$cur") )
         return
     fi
 
@@ -22,6 +22,7 @@ _legion_powerctl_complete() {
     cmd="${COMP_WORDS[1]}"
     case "$cmd" in
         apply)             opts='--dry-run --boot' ;;
+        repair)            opts='--dry-run' ;;
         configure)         opts='--stapm --slow --fast --temp --power-profile --min-mhz
                                  --max-mhz --boost --epp --description --select --apply' ;;
         select)            opts='--apply' ;;
@@ -34,6 +35,10 @@ _legion_powerctl_complete() {
 
     if [[ "$cur" != -* ]]; then
         case "$cmd" in
+            repair)
+                COMPREPLY=( $(compgen -W 'balanced-plus' -- "$cur") )
+                return
+                ;;
             apply|wizard|select|show|delete)
                 profiles="$(legion-powerctl list 2>/dev/null | awk '{print $(NF-1)}')"
                 COMPREPLY=( $(compgen -W "$profiles" -- "$cur") )
