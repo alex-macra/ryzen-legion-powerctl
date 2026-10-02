@@ -12,7 +12,7 @@ OK    Boost-control            /sys/devices/system/cpu/cpufreq/boost (value 0, d
 OK    powerprofilesctl         /usr/bin/powerprofilesctl
 OK    GUI                      /usr/bin/legion-powerctl-gui (PySide6 and polkit policy present)
 OK    Profile                  balanced-plus
-OK    Limits                   in force: 65/70/80 W, 78 C
+OK    Limits                   in force: 87/92/102 W, 80 C
 OK    systemd                  /usr/bin/systemctl
 
 Doctor result: 0 failure(s), 2 warning(s).

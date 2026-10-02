@@ -23,7 +23,7 @@ class RunStateTest(unittest.TestCase):
         self.assertTrue(state.applied)
         self.assertEqual(state.profile, "balanced-plus")
         self.assertEqual(state.headline(), "balanced-plus")
-        self.assertEqual(state.summary(), "65/70/80 W, 78 C cap")
+        self.assertEqual(state.summary(), "87/92/102 W, 80 C cap")
 
     def test_values_arrive_as_strings_and_come_out_as_numbers(self):
         state = runstate.run_state(model.parse_status(FIXTURE.read_text(encoding="utf-8")))

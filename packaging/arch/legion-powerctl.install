@@ -35,4 +35,9 @@ If you edited the bundled profiles, check for .pacnew files under
 
     sudo legion-powerctl apply
 EOF
+    active="$(sed -n 's/^[[:space:]]*ACTIVE_PROFILE[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
+        /etc/legion-powerctl/config.conf 2>/dev/null | tail -n 1)"
+    if [ -n "$active" ] && [ ! -e "/etc/legion-powerctl/profiles.d/$active.conf" ]; then
+        printf '\nThe boot profile %s no longer exists. Select another one:\n\n    sudo legion-powerctl select balanced-plus --apply\n' "$active"
+    fi
 }

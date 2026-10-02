@@ -14,7 +14,7 @@ complete -c legion-powerctl -n '__fish_use_subcommand' -a show -d 'Show a profil
 complete -c legion-powerctl -n '__fish_use_subcommand' -a delete -d 'Delete a profile'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a status -d 'Show configuration and service state'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a doctor -d 'Run compatibility checks'
-complete -c legion-powerctl -n '__fish_use_subcommand' -a repair -d 'Back up and recover balanced-plus at 78 C'
+complete -c legion-powerctl -n '__fish_use_subcommand' -a repair -d 'Back up and recover balanced-plus at 80 C'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a enable -d 'Enable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a disable -d 'Disable the boot service'
 complete -c legion-powerctl -n '__fish_use_subcommand' -a restore-frequency -d 'Restore stock CPUFreq boundaries'

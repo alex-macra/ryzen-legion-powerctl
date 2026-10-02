@@ -174,6 +174,12 @@ class CliContractTest(unittest.TestCase):
             {key: value for key, value in cli_defaults.items() if key != "PROFILE_DESCRIPTION"},
         )
 
+    def test_the_balanced_plus_ceiling_is_the_cli_ceiling(self):
+        self.assertIn(
+            f"readonly BALANCED_PLUS_MAX_TEMP_C={model.BALANCED_PLUS_MAX_TEMP_C}\n",
+            CLI.read_text(),
+        )
+
     def test_the_frequency_bounds_are_the_cli_bounds(self):
         text = CLI.read_text()
         self.assertIn("(( value >= 100 && value <= 10000 ))", text)

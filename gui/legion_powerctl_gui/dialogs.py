@@ -264,7 +264,7 @@ def confirm_repair(parent: QWidget, dirty_profile: str = "") -> bool:
     box = QMessageBox(parent)
     box.setWindowTitle("Repair balanced-plus")
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setText("Reset and apply balanced-plus at 60/65/75 W and 78 C?")
+    box.setText("Reset and apply balanced-plus at 87/92/102 W and 80 C?")
     detail = (
         "Restore balanced mode, stock CPU frequency limits, boost on and "
         "balance_performance EPP. Save a backup of the existing profile and module settings.\n\n"

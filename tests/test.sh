@@ -666,8 +666,8 @@ printf 'Test 50: baseline captures the firmware limits once and never overwrites
 rm -rf "$LIB"
 rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
 run_cli baseline --capture >/dev/null
-assert_file_contains 'STAPM_W=65.000' "$LIB/stock-limits.env" 'the firmware STAPM was not captured'
-assert_file_contains 'TEMP_C=78.000' "$LIB/stock-limits.env" 'the firmware Tctl ceiling was not captured'
+assert_file_contains 'STAPM_W=87.000' "$LIB/stock-limits.env" 'the firmware STAPM was not captured'
+assert_file_contains 'TEMP_C=80.000' "$LIB/stock-limits.env" 'the firmware Tctl ceiling was not captured'
 first_capture="$(<"$LIB/stock-limits.env")"
 run_cli apply dev >/dev/null
 run_cli baseline --capture >/dev/null
@@ -677,7 +677,7 @@ printf 'Test 51: an apply captures the firmware limits before it overwrites them
 rm -rf "$LIB"
 rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
 run_cli apply dev >/dev/null
-assert_file_contains 'STAPM_W=65.000' "$LIB/stock-limits.env" \
+assert_file_contains 'STAPM_W=87.000' "$LIB/stock-limits.env" \
     'apply recorded its own limits instead of the firmware ones'
 refute_contains 'STAPM_W=55' "$(<"$LIB/stock-limits.env")" \
     'the baseline was captured after the apply, not before'

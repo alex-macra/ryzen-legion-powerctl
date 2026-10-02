@@ -44,7 +44,7 @@ package_source() {
 }
 
 assert_restored_once() {
-    assert_eq '1' "$(grep -c -- '--tctl-temp=78' "$LOG" || true)" \
+    assert_eq '1' "$(grep -c -- '--tctl-temp=80' "$LOG" || true)" \
         'the previously applied profile was not restored exactly once'
     assert_file_contains 'PROFILE=balanced-plus' "$STATE/last-apply.env" \
         'the restored profile was not recorded'
@@ -131,9 +131,9 @@ printf 'Test 7: temperature steps restore the running profile and remove their s
 sed -i 's/^ACTIVE_PROFILE=.*/ACTIVE_PROFILE=quiet/' "$ETC/config.conf"
 run_bench run --ladder temp --from 85 --to 90 --workload none \
     --soak 1 --cool 0 --interval 1 --out "$TMP/temp.csv" >/dev/null 2>&1
-assert_file_contains 'ryzenadj --stapm-limit=65000 --slow-limit=70000 --fast-limit=80000 --tctl-temp=85' \
+assert_file_contains 'ryzenadj --stapm-limit=87000 --slow-limit=92000 --fast-limit=102000 --tctl-temp=85' \
     "$LOG" 'the first temperature step changed CPU power limits'
-assert_file_contains 'ryzenadj --stapm-limit=65000 --slow-limit=70000 --fast-limit=80000 --tctl-temp=90' \
+assert_file_contains 'ryzenadj --stapm-limit=87000 --slow-limit=92000 --fast-limit=102000 --tctl-temp=90' \
     "$LOG" 'the second temperature step changed CPU power limits'
 assert_restored_once
 assert_eq 'quiet' "$(sed -n 's/^ACTIVE_PROFILE=//p' "$ETC/config.conf")" \
@@ -356,9 +356,9 @@ done
 reset_machine
 
 printf 'Test 26: restoration failure is returned to the caller\n'
-LEGION_BENCH_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=78)
+LEGION_BENCH_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=80)
 assert_fails 'a failed restoration was reported as successful' short_run "$TMP/failed-restore.csv"
-assert_eq '1' "$(grep -c -- '--tctl-temp=78' "$LOG" || true)" 'restoration was attempted more than once'
+assert_eq '1' "$(grep -c -- '--tctl-temp=80' "$LOG" || true)" 'restoration was attempted more than once'
 rm -f -- "$PROFILES"/powerbench-*.conf
 reset_machine
 

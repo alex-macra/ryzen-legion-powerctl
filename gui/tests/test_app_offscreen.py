@@ -117,10 +117,10 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertIn("balanced-plus", self.header.running_label.text())
         self.assertIn("balanced-plus", self.header.boot_label.text())
         self.assertEqual(self.editor.profile_title.text(), "balanced-plus")
-        self.assertEqual(self.editor.stapm_spin.value(), 65)
-        self.assertEqual(self.editor.slow_spin.value(), 70)
-        self.assertEqual(self.editor.fast_spin.value(), 80)
-        self.assertEqual(self.editor.temp_spin.value(), 78)
+        self.assertEqual(self.editor.stapm_spin.value(), 87)
+        self.assertEqual(self.editor.slow_spin.value(), 92)
+        self.assertEqual(self.editor.fast_spin.value(), 102)
+        self.assertEqual(self.editor.temp_spin.value(), 80)
         self.assertFalse(self.window.errors)
 
     def _item(self, name):
@@ -193,10 +193,10 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertNotIn("boot profile", quiet)
 
     def test_slider_order_is_enforced_live(self):
-        self.editor.stapm_spin.setValue(100)
-        self.assertEqual(self.editor.stapm_spin.value(), 100)
-        self.assertEqual(self.editor.slow_spin.value(), 100)
-        self.assertEqual(self.editor.fast_spin.value(), 100)
+        self.editor.stapm_spin.setValue(110)
+        self.assertEqual(self.editor.stapm_spin.value(), 110)
+        self.assertEqual(self.editor.slow_spin.value(), 110)
+        self.assertEqual(self.editor.fast_spin.value(), 110)
         self.editor.fast_spin.setValue(70)
         self.assertEqual(self.editor.stapm_spin.value(), 70)
         self.assertEqual(self.editor.slow_spin.value(), 70)
@@ -208,7 +208,7 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, lambda: any("configure" in line for line in self.read_log()))
         )
         line = next(line for line in self.read_log() if line.startswith("configure"))
-        self.assertIn("configure balanced-plus --stapm 55 --slow 70 --fast 80 --temp 78", line)
+        self.assertIn("configure balanced-plus --stapm 55 --slow 92 --fast 102 --temp 80", line)
         self.assertIn("--power-profile balanced", line)
         self.assertIn("--apply", line)
 
@@ -287,8 +287,6 @@ class MainWindowTest(OffscreenGuiTest):
     def test_checks_repair_replaces_an_invalid_profile_and_refreshes_the_results(self):
         data = json.loads(STATUS_FIXTURE.read_text(encoding="utf-8"))
         repaired = json.loads(json.dumps(data))
-        repaired["profiles"][0].update(stapm_w=60, slow_w=65, fast_w=75)
-        repaired["last_apply"].update(stapm_w="60", slow_w="65", fast_w="75")
         data["profiles"][0] = {"name": "balanced-plus", "valid": False}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -315,17 +313,17 @@ class MainWindowTest(OffscreenGuiTest):
                     self.window.refresh_count > refreshes and self.window.checks.count > checks
                     and not self.window.runner.processes
                 )))
-                self.assertIn("78 C", confirmation)
-                self.assertIn("60/65/75 W", confirmation)
+                self.assertIn("80 C", confirmation)
+                self.assertIn("87/92/102 W", confirmation)
                 self.assertIn("backup", confirmation.lower())
                 self.assertIn("ryzen_smu", confirmation)
                 self.assertIn("unload it before applying", confirmation)
                 self.assertIn("only after a successful apply", confirmation)
                 self.assertIn("repair balanced-plus", self.read_log())
-                self.assertEqual(self.editor.collect().stapm_w, 60)
-                self.assertEqual(self.editor.collect().slow_w, 65)
-                self.assertEqual(self.editor.collect().fast_w, 75)
-                self.assertEqual(self.editor.collect().temp_c, 78)
+                self.assertEqual(self.editor.collect().stapm_w, 87)
+                self.assertEqual(self.editor.collect().slow_w, 92)
+                self.assertEqual(self.editor.collect().fast_w, 102)
+                self.assertEqual(self.editor.collect().temp_c, 80)
                 self.assertFalse(self.editor.dirty)
                 self.assertEqual(self.window.checks.report.failures, 0)
                 self.assertIn("0 failure(s)", self.checks.summary.text())
@@ -455,11 +453,11 @@ class MainWindowTest(OffscreenGuiTest):
 
         self.assertFalse(self.editor.fast_spin.keyboardTracking())
         self.editor.fast_spin.selectAll()
-        QTest.keyClicks(self.editor.fast_spin, "100")
+        QTest.keyClicks(self.editor.fast_spin, "110")
         QTest.keyClick(self.editor.fast_spin, Qt.Key.Key_Return)
-        self.assertEqual(self.editor.fast_spin.value(), 100)
-        self.assertEqual(self.editor.stapm_spin.value(), 65)
-        self.assertEqual(self.editor.slow_spin.value(), 70)
+        self.assertEqual(self.editor.fast_spin.value(), 110)
+        self.assertEqual(self.editor.stapm_spin.value(), 87)
+        self.assertEqual(self.editor.slow_spin.value(), 92)
 
     def test_failed_action_keeps_unsaved_edits(self):
         self.editor.stapm_spin.setValue(58)
@@ -886,7 +884,7 @@ class MainWindowTest(OffscreenGuiTest):
         running = self._item("balanced-plus")
         self.assertTrue(running.data(RUNNING_ROLE))
         self.assertTrue(running.data(BOOT_ROLE))
-        self.assertEqual(running.data(DETAIL_ROLE), "65/70/80 W, 78 C cap")
+        self.assertEqual(running.data(DETAIL_ROLE), "87/92/102 W, 80 C cap")
         self.assertFalse(self._item("quiet").data(RUNNING_ROLE))
         self.assertFalse(self._item("quiet").data(BOOT_ROLE))
         self.assertEqual(self._item("broken").data(DETAIL_ROLE), "invalid profile file")
@@ -1376,7 +1374,7 @@ class MainWindowTest(OffscreenGuiTest):
             with unittest.mock.patch.object(
                 actions_module.dialogs, "confirm_raise", fake_confirm
             ):
-                self.editor.fast_spin.setValue(90)
+                self.editor.fast_spin.setValue(110)
                 self.editor.temp_spin.setValue(88)
                 self.editor._on_edited()
                 self.window.profile_actions.apply()
@@ -1384,8 +1382,8 @@ class MainWindowTest(OffscreenGuiTest):
         finally:
             self.window.dialogs = False
         self.assertEqual(asked.get("name"), "quiet")
-        self.assertIn(("Fast PPT", 80, 90), asked["deltas"])
-        self.assertIn(("Ceiling", 78, 88), asked["deltas"])
+        self.assertIn(("Fast PPT", 102, 110), asked["deltas"])
+        self.assertIn(("Ceiling", 80, 88), asked["deltas"])
         self.assertFalse(
             any("configure" in line for line in self.read_log()),
             "Cancel still wrote to the hardware",
@@ -1524,17 +1522,17 @@ class RunnerTimeoutTest(OffscreenGuiTest):
 
 
 class PanelSeamTest(OffscreenGuiTest):
-    def test_balanced_plus_editor_caps_both_temperature_controls_at_78(self):
+    def test_balanced_plus_editor_caps_both_temperature_controls_at_80(self):
         from legion_powerctl_gui import model
         from legion_powerctl_gui.editor import ProfileEditor
 
         editor = ProfileEditor()
         try:
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
-            self.assertEqual(editor.temp_spin.maximum(), 78)
-            self.assertEqual(editor.temp_slider.maximum(), 78)
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
+            self.assertEqual(editor.temp_spin.maximum(), 80)
+            self.assertEqual(editor.temp_slider.maximum(), 80)
             editor.temp_spin.setValue(90)
-            self.assertEqual(editor.collect().temp_c, 78)
+            self.assertEqual(editor.collect().temp_c, 80)
             self.assertEqual(editor.problems(), [])
         finally:
             editor.deleteLater()
@@ -1545,14 +1543,14 @@ class PanelSeamTest(OffscreenGuiTest):
 
         editor = ProfileEditor()
         try:
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
             editor.load(model.Profile(name="trial", temp_c=90))
             self.assertEqual(editor.temp_spin.maximum(), model.TEMP_MAX_C)
             self.assertEqual(editor.temp_slider.maximum(), model.TEMP_MAX_C)
             self.assertEqual(editor.collect().temp_c, 90)
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
-            self.assertEqual(editor.temp_spin.maximum(), 78)
-            self.assertEqual(editor.collect().temp_c, 78)
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
+            self.assertEqual(editor.temp_spin.maximum(), 80)
+            self.assertEqual(editor.collect().temp_c, 80)
         finally:
             editor.deleteLater()
 

@@ -42,10 +42,10 @@ cat > "$STATE/last-apply.env" <<'EOF_STATE'
 PROFILE=balanced-plus
 RESULT=ok
 VERIFIED=yes
-STAPM_W=65
-SLOW_W=70
-FAST_W=80
-TEMP_C=78
+STAPM_W=87
+SLOW_W=92
+FAST_W=102
+TEMP_C=80
 POWER_PROFILE=balanced
 MIN_FREQ_MHZ=stock
 MAX_FREQ_MHZ=stock
@@ -157,7 +157,7 @@ if [[ "${1:-}" == "-i" || "${1:-}" == "--info" ]]; then
         exit 0
     fi
     state="${LEGION_FAKE_RYZENADJ_STATE:-}"
-    stapm=65000 slow=70000 fast=80000 tctl=78
+    stapm=87000 slow=92000 fast=102000 tctl=80
     [[ -n "$state" && -r "$state" ]] && . "$state"
     printf 'CPU Family: Fire Range\n'
     printf '| Name | Value | Parameter |\n'
