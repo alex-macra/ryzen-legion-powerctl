@@ -7,7 +7,12 @@ from datetime import datetime
 
 from . import model
 
-_LIMITS = ("stapm_w", "slow_w", "fast_w", "temp_c")
+LIMITS = (
+    ("Sustained", "stapm_w", "W"),
+    ("Slow PPT", "slow_w", "W"),
+    ("Fast PPT", "fast_w", "W"),
+    ("Ceiling", "temp_c", "C"),
+)
 
 
 @dataclass
@@ -34,12 +39,18 @@ class RunState:
             return "Firmware defaults"
         return f"{self.profile} - PARTIALLY APPLIED" if self.partial else self.profile
 
+    def limits(self) -> list[int] | None:
+        values = [getattr(self, key) for _label, key, _unit in LIMITS]
+        return values if self.applied and None not in values else None
+
     def summary(self) -> str:
         if not self.applied:
             return "nothing applied since this boot"
-        if None in (self.stapm_w, self.slow_w, self.fast_w, self.temp_c):
+        values = self.limits()
+        if values is None:
             return ""
-        return f"{self.stapm_w}/{self.slow_w}/{self.fast_w} W, {self.temp_c} C cap"
+        stapm, slow, fast, temp = values
+        return f"{stapm}/{slow}/{fast} W, {temp} C cap"
 
     def mark(self) -> tuple[str, str]:
         if not self.applied:
@@ -51,6 +62,13 @@ class RunState:
         if self.verified == "no":
             return ("limits did not take", "FAIL")
         return ("unverified", "WARN")
+
+    def announcement(self, mark: str) -> str:
+        if not self.applied:
+            return "Running now: firmware defaults, nothing applied since this boot"
+        detail = self.summary()
+        tail = f", {mark}" if mark else ""
+        return f"Running now: {self.headline()}{', ' + detail if detail else ''}{tail}"
 
     def when(self, now: datetime | None = None) -> str:
         if not self.applied_at:
@@ -73,7 +91,7 @@ def run_state(status: model.Status) -> RunState:
         verified=str(record.get("verified", "")),
         applied_at=str(record.get("applied_at", "")),
     )
-    for key in _LIMITS:
+    for _label, key, _unit in LIMITS:
         raw = record.get(key)
         try:
             setattr(state, key, int(str(raw)))
@@ -94,13 +112,8 @@ def raising_deltas(running: RunState, profile: model.Profile) -> list[Delta]:
     if not running.applied:
         return []
     deltas = []
-    for label, key, target, unit in (
-        ("Sustained", "stapm_w", profile.stapm_w, "W"),
-        ("Slow PPT", "slow_w", profile.slow_w, "W"),
-        ("Fast PPT", "fast_w", profile.fast_w, "W"),
-        ("Ceiling", "temp_c", profile.temp_c, "C"),
-    ):
-        was = getattr(running, key)
+    for label, key, unit in LIMITS:
+        was, target = getattr(running, key), getattr(profile, key)
         if was is not None and target > was:
             deltas.append(Delta(label, was, target, unit))
     return deltas

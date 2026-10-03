@@ -148,6 +148,28 @@ class PackageShapeTest(unittest.TestCase):
             return False
         return bool(node.args) and all(isinstance(arg, ast.Constant) for arg in node.args)
 
+    def test_every_font_role_is_set_somewhere(self):
+        theme = ast.parse((PACKAGE / "theme.py").read_text(encoding="utf-8"))
+        roles = next(
+            node.value for node in ast.walk(theme)
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "FONT_ROLES"
+        )
+        named = {
+            node.value
+            for path in self.modules() if path.name != "theme.py"
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        inherited = "(1.0, _W.Normal, 100.0, False, False)"
+        for key, value in zip(roles.keys, roles.values):
+            if ast.unparse(value) == inherited:
+                continue
+            with self.subTest(role=key.value):
+                self.assertIn(
+                    key.value, named,
+                    "no widget sets this role any more, so its size is a token nobody sees",
+                )
+
     def test_the_colour_exemption_is_where_the_colours_are(self):
         source = (PACKAGE / "scheme.py").read_text(encoding="utf-8")
         self.assertRegex(

@@ -60,6 +60,36 @@ class RunStateTest(unittest.TestCase):
         self.assertEqual(state.mark(), ("unverified", "WARN"))
         self.assertEqual(state.summary(), "")
 
+    def test_the_spoken_running_line_names_the_profile_the_limits_and_the_mark(self):
+        applied = runstate.RunState(
+            profile="quiet", stapm_w=45, slow_w=50, fast_w=60, temp_c=78, verified="yes"
+        )
+        self.assertEqual(
+            applied.announcement(applied.mark()[0]),
+            "Running now: quiet, 45/50/60 W, 78 C cap, confirmed",
+        )
+        nothing = runstate.run_state(status_with(None))
+        self.assertEqual(
+            nothing.announcement(nothing.mark()[0]),
+            "Running now: firmware defaults, nothing applied since this boot",
+        )
+
+    def test_the_limits_are_one_list_or_none_at_all(self):
+        full = runstate.run_state(model.parse_status(FIXTURE.read_text(encoding="utf-8")))
+        self.assertEqual(full.limits(), [87, 92, 102, 80])
+        partly = runstate.run_state(status_with({"profile": "quiet", "stapm_w": "45"}))
+        self.assertIsNone(partly.limits(), "a readout of three limits would pass for all four")
+        self.assertEqual(partly.summary(), "")
+        self.assertIsNone(runstate.RunState(stapm_w=45, slow_w=50, fast_w=60, temp_c=78).limits())
+        self.assertEqual(
+            [label for label, _key, _unit in runstate.LIMITS],
+            [delta.label for delta in runstate.raising_deltas(
+                runstate.RunState(profile="quiet", stapm_w=1, slow_w=1, fast_w=1, temp_c=1),
+                model.Profile(name="higher", stapm_w=60, slow_w=65, fast_w=70, temp_c=90),
+            )],
+            "the readout and the raise warning name the limits differently",
+        )
+
     def test_the_time_is_relative_only_on_the_day_it_happened(self):
         state = runstate.RunState(
             profile="quiet", applied_at="2026-08-12T12:04:00+03:00"

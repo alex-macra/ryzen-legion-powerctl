@@ -454,6 +454,25 @@ class DerivedTokenContrastTest(unittest.TestCase):
                     if severity != "NEUTRAL":
                         self.assertIn(theme.severity_color(palette, severity).name(), style)
 
+    def test_the_readout_inks_clear_the_text_floor_on_every_palette(self):
+        from legion_powerctl_gui import styles, theme
+
+        for name, palette in self.every_palette().items():
+            _window, base, _text = self.roles(palette)
+            for severity in ("OK", "FAIL"):
+                colours = styles.readout_colors(palette, severity)
+                for part, colour in colours._asdict().items():
+                    with self.subTest(palette=name, severity=severity, part=part):
+                        self.assertGreaterEqual(theme.contrast_ratio(colour, base), AA_TEXT)
+            if name == WORST_CASE:
+                continue
+            fail = styles.readout_colors(palette, "FAIL").value
+            with self.subTest(palette=name, hue="FAIL"):
+                self.assertLessEqual(
+                    hue_distance(fail.getHslF()[0] * 360.0, theme.SEVERITY_HUE["FAIL"]), 1.0,
+                    f"figures that did not take are {fail.name()}, which no longer reads as FAIL",
+                )
+
     def test_a_callout_is_readable_and_still_names_its_severity(self):
         from legion_powerctl_gui import styles, theme
 

@@ -209,7 +209,7 @@ FONT_ROLES = {
     "body": (1.0, _W.Normal, 100.0, False, False),
     "strong": (1.0, _W.DemiBold, 100.0, False, False),
     "title": (1.4, _W.DemiBold, 99.0, False, False),
-    "headline": (1.1, _W.DemiBold, 100.0, False, False),
+    "readout": (1.7, _W.DemiBold, 98.0, False, False),
     "eyebrow": (0.75, _W.ExtraBold, 110.0, True, False),
     "caption": (0.9, _W.Normal, 100.0, False, False),
     "detail-mono": (0.9, _W.Normal, 100.0, False, True),

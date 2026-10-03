@@ -54,6 +54,25 @@ The two are distinct and nothing keeps them in step. The running cell comes from
 `config.conf` that the boot service reads. The word "active" is not used in the
 GUI, because it does not say which of the two it means.
 
+The running cell is the window's readout, and the one loud thing in it. Its top line is
+the apply record - the `confirmed`, `unverified` or `limits did not take` badge and when it
+happened - and under it the running profile's name, at the size of the editor's title,
+sits beside the four limits it is running: sustained, slow PPT, fast PPT and the ceiling,
+each a large tabular figure over a small caps caption. When the readback disagreed the
+figures turn the FAIL colour, because what they show is what was asked for and not what the
+machine holds; before anything has been applied the cell says so in one quiet sentence
+instead. The figures are painted (`strip_widgets.Readout`) on a `QLabel` that keeps the
+summary - `45/50/60 W, 78 C cap` - as its text and its accessible name, so a screen reader
+hears the limits in the same words as on the profile row and the tree gains no node for the
+captions. `AT BOOT` stays a plain name on purpose: the boot profile is a pointer, and its
+limits are one glance away on its row. As the window narrows, the readout first closes the
+gaps between its figures and the `AT BOOT` cell gives up its spare width; when the two cells
+and the actions still do not fit side by side, the boot switch and the checks badge move to a
+row of their own under them. Only after that, at the narrowest sizes, does a long running
+name give way, and when the badge and the time above it still do not fit, the boot name gives
+up the rest. A name that gives way is cut short with an ellipsis on screen while its text and
+accessible name stay whole, so a figure, the badge or the time is never the thing that is cut.
+
 What holds the look together is that **colour is written down in exactly one
 module**. By default the window runs Qt's Fusion style with the Legion scheme: a warm
 paper plane by day, a deep navy plane by night, one teal or mint accent. `scheme.py`
@@ -139,11 +158,11 @@ Three panels are painted rather than laid out, and all three were forced:
   a scheme whose `Highlight` is near-white over a near-black `Base` they want opposite
   lightnesses. One known colour behind a mark is what makes its contrast a number.
 
-Two smaller pieces are painted too, and keep their native roles. The `Re-apply at every
-boot` switch is a `QCheckBox` whose `paintEvent` draws a track and a knob, so AT-SPI
-still reads a check box with its mnemonic. A card's title is an eyebrow painted over a
-`QGroupBox` that keeps the mixed-case title as its accessible name, so a screen reader
-hears each card named once and the tree gains no text node for it.
+Besides the readout, two smaller pieces are painted and keep their native roles. The
+`Re-apply at every boot` switch is a `QCheckBox` whose `paintEvent` draws a track and a
+knob, so AT-SPI still reads a check box with its mnemonic. A card's title is an eyebrow
+painted over a `QGroupBox` that keeps the mixed-case title as its accessible name, so a
+screen reader hears each card named once and the tree gains no text node for it.
 
 ## Privilege architecture
 

@@ -93,6 +93,53 @@ class OffscreenGuiTest(unittest.TestCase):
     def spoken(call) -> str:
         return call[0][1]
 
+    @staticmethod
+    def colours_in_rows(image, top: int, bottom: int) -> set:
+        return {
+            image.pixelColor(x, y).name()
+            for y in range(max(0, top), min(bottom, image.height()))
+            for x in range(image.width())
+        }
+
+    @staticmethod
+    def ink_spans(image, top: int, bottom: int, parting: int) -> list:
+        from collections import Counter
+
+        plane = Counter(
+            image.pixel(x, y) for y in range(image.height()) for x in range(image.width())
+        ).most_common(1)[0][0]
+        rows = range(max(0, top), min(bottom, image.height()))
+        spans, blank = [], parting
+        for x in range(image.width()):
+            if any(image.pixel(x, y) != plane for y in rows):
+                if blank >= parting:
+                    spans.append([x, x])
+                spans[-1][1] = x
+                blank = 0
+            else:
+                blank += 1
+        return spans
+
+    @staticmethod
+    def caption_rows(readout) -> tuple:
+        from legion_powerctl_gui import theme
+        from PySide6.QtGui import QFontMetrics
+
+        eyebrow = QFontMetrics(theme.font("eyebrow", readout.font())).height()
+        return readout.height() - eyebrow, readout.height()
+
+    @staticmethod
+    def readout_inks(readout):
+        from legion_powerctl_gui import theme
+        from PySide6.QtGui import QFontMetrics, QPalette
+
+        palette = readout.palette()
+        base = palette.color(QPalette.ColorRole.Base)
+        ink = theme.fit_contrast(palette.color(QPalette.ColorRole.Text), base)
+        fail = theme.fit_contrast(theme.severity_color(palette, "FAIL"), base)
+        cap = QFontMetrics(theme.font("readout", readout.font())).capHeight()
+        return ink.name(), fail.name(), theme.muted_color(palette, base).name(), cap
+
 
 class MainWindowTest(OffscreenGuiTest):
     def setUp(self):
@@ -1495,6 +1542,157 @@ class MainWindowTest(OffscreenGuiTest):
         self.app.processEvents()
         self.assertEqual(header.height(), wide, "widening again does not restore one row")
 
+    def test_the_strip_reflows_as_soon_as_a_longer_name_arrives(self):
+        import dataclasses
+
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        status = self.window.status
+        partial = dict(status.last_apply, result="partial")
+        for record, wrapped in ((partial, True), (status.last_apply, False)):
+            header.show_status(dataclasses.replace(status, last_apply=record))
+            self.app.processEvents()
+            running_bottom = self._top(header.running_label) + header.running_label.height()
+            with self.subTest(running=header.running_label.text()):
+                self.assertEqual(
+                    self._top(header.checks_button) >= running_bottom, wrapped,
+                    "the strip kept the row it measured before the running name changed",
+                )
+
+    def test_the_strip_is_eighty_tall_at_the_default_size(self):
+        from legion_powerctl_gui import styles
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertEqual(self.header.height(), styles.STRIP_HEIGHT)
+
+    def test_the_readout_paints_the_four_limits_and_keeps_the_summary_as_its_text(self):
+        from legion_powerctl_gui.strip_widgets import Readout
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = self.header.envelope_label
+        self.assertEqual(readout.text(), "87/92/102 W, 80 C cap")
+        self.assertIn(readout.text(), self.accessible_name(readout))
+        self.assertEqual(readout.tiles, [
+            ("87", "W", "SUSTAINED"), ("92", "W", "SLOW PPT"),
+            ("102", "W", "FAST PPT"), ("80", "°C", "CEILING"),
+        ])
+        self.assertEqual(readout.height(), readout.tile_height())
+        widths = sum(readout.tile_widths())
+        self.assertEqual(readout.sizeHint().width(), widths + 3 * Readout.GAP)
+        self.assertEqual(readout.minimumSizeHint().width(), widths + 3 * Readout.MIN_GAP)
+        ink, _fail, muted, cap = self.readout_inks(readout)
+        image = readout.grab().toImage()
+        self.assertIn(ink, self.colours_in_rows(image, 0, cap), "the figures are not in the ink")
+        captions = self.colours_in_rows(image, cap + Readout.CAPTION_GAP, image.height())
+        self.assertIn(muted, captions, "the captions are not in the muted ink")
+        self.assertNotIn(ink, captions, "the captions are as loud as the figures")
+        spans = self.ink_spans(image, *self.caption_rows(readout), Readout.MIN_GAP)
+        self.assertEqual(len(spans), 4, f"the captions run into each other: {spans}")
+        room = (readout.width() - widths) // 3
+        for left, right in zip(spans, spans[1:]):
+            self.assertGreaterEqual(
+                right[0] - left[1] - 1, max(Readout.MIN_GAP, min(Readout.GAP, room)),
+                "the tiles are crowded with room to spare",
+            )
+        right_edge = self.ink_spans(image, 0, image.height(), 1)[-1][1]
+        self.assertGreaterEqual(right_edge, image.width() - 3, "the readout is not flush right")
+
+    def test_the_readout_closes_its_gaps_before_it_cuts_a_figure(self):
+        from legion_powerctl_gui import runstate
+        from legion_powerctl_gui.strip_widgets import Readout
+
+        readout = Readout()
+        self.addCleanup(readout.deleteLater)
+        readout.set_state(runstate.run_state(self.window.status), "OK")
+        least = readout.minimumSizeHint()
+        inked, gaps = {}, {}
+        for width in (least.width() + 120, least.width()):
+            readout.resize(width, least.height())
+            bands = {"figures": (0, readout.tile_height() // 2), "captions": self.caption_rows(readout)}
+            image = readout.grab().toImage()
+            for band, rows in bands.items():
+                spans = self.ink_spans(image, *rows, 1)
+                inked[width, band] = sum(right - left + 1 for left, right in spans)
+            captions = self.ink_spans(image, *bands["captions"], Readout.MIN_GAP)
+            gaps[width] = [right[0] - left[1] - 1 for left, right in zip(captions, captions[1:])]
+            with self.subTest(width=width):
+                self.assertEqual(len(captions), 4, f"the captions run into each other: {captions}")
+                right_edge = self.ink_spans(image, 0, image.height(), 1)[-1][1]
+                self.assertGreaterEqual(right_edge, width - 3, "the readout is not flush right")
+        roomy, tight = least.width() + 120, least.width()
+        for band in bands:
+            with self.subTest(band=band):
+                self.assertEqual(
+                    inked[tight, band], inked[roomy, band],
+                    "at its minimum width the readout cut part of a tile off",
+                )
+        self.assertLess(max(gaps[tight]), Readout.GAP, "the gaps did not close")
+        self.assertGreaterEqual(min(gaps[roomy]), Readout.GAP)
+
+    def test_the_apply_record_sits_on_the_eyebrow_line_and_the_fact_below_it(self):
+        header = self.header
+        mark, when = header.mark_label, header.when_label
+        name, readout = header.running_label, header.envelope_label
+        self.window.show()
+        for size in ((960, 620), (720, 480)):
+            self.window.resize(*size)
+            self.app.processEvents()
+            with self.subTest(size=size):
+                self.assertLess(self._top(mark), self._top(name))
+                self.assertLessEqual(
+                    abs(self._top(mark) + mark.height() // 2
+                        - (self._top(when) + when.height() // 2)), 2,
+                    "the badge and the time are not on one line",
+                )
+                self.assertLess(self._top(readout), self._top(name) + name.height())
+                self.assertLess(self._top(name), self._top(readout) + readout.height())
+                self.assertEqual(
+                    readout.mapTo(header, readout.rect().topRight()).x(),
+                    when.mapTo(header, when.rect().topRight()).x(),
+                    "the readout is not flush with the time above it",
+                )
+
+    def test_the_badge_is_still_read_after_the_facts_it_qualifies(self):
+        from PySide6.QtGui import QAccessible
+
+        header = self.header
+        cell = QAccessible.queryAccessibleInterface(header.run_caption.parentWidget())
+        read = [cell.child(index).object() for index in range(cell.childCount())]
+        self.assertEqual(read, [
+            header.run_caption, header.when_label, header.rail,
+            header.running_label, header.envelope_label, header.mark_label,
+        ])
+
+    def test_the_running_name_is_set_in_the_title_voice(self):
+        from legion_powerctl_gui import theme
+
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        title = theme.font("title")
+        self.assertAlmostEqual(header.running_label.font().pointSizeF(), title.pointSizeF())
+        self.assertEqual(header.running_label.font().weight(), title.weight())
+        self.assertEqual(header.rail.height(), header.envelope_label.tile_height())
+        self.assertEqual(self._top(header.rail), self._top(header.envelope_label))
+
+    def test_the_readout_and_its_rail_follow_the_desktop_font(self):
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        before = header.envelope_label.tile_height()
+        self.use_app_font_size(self.app.font().pointSizeF() + 3)
+        self.app.processEvents()
+        self.assertGreater(header.envelope_label.tile_height(), before)
+        self.assertEqual(header.rail.height(), header.envelope_label.tile_height())
+
     def test_a_palette_change_restyles_the_strip_the_status_bar_and_the_checks(self):
         from legion_powerctl_gui import scheme, theme
         from PySide6.QtCore import QCoreApplication, QEvent
@@ -2139,6 +2337,67 @@ class VariantFixtureTest(OffscreenGuiTest):
         self.window.deleteLater()
         self.app.processEvents()
 
+    def reopen_at_the_desktop_size(self) -> None:
+        from legion_powerctl_gui.app import MainWindow
+
+        self.window.close()
+        self.window.deleteLater()
+        self.use_app_font_size(DESKTOP_POINT_SIZE)
+        self.window = MainWindow()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count >= 1))
+
+    def strip_is_one_row(self) -> bool:
+        from PySide6.QtCore import QPoint
+
+        header, name = self.window.header, self.window.header.running_label
+        bottom = name.mapTo(header, QPoint(0, name.height())).y()
+        return header.checks_button.mapTo(header, QPoint(0, 0)).y() < bottom
+
+    def assert_nothing_in_the_strip_is_cut(self, *elided) -> None:
+        header = self.window.header
+        readout = header.envelope_label
+        labels = (
+            header.run_caption, header.mark_label, header.when_label, header.running_label,
+            header.boot_label, header.same_label,
+        )
+        for label in labels:
+            with self.subTest(label=label.text()):
+                if label in elided:
+                    floor = label.minimumWidth() or label.sizeHint().width()
+                    self.assertGreaterEqual(label.width(), floor, "the layout clipped a name")
+                    if label.width() < label.sizeHint().width():
+                        self.assert_painted_with_an_ellipsis(label)
+                elif label.isVisible():
+                    self.assertGreaterEqual(label.width(), label.sizeHint().width())
+        name = header.running_label
+        if name.width() < name.sizeHint().width():
+            self.assertEqual(
+                readout.width(), readout.minimumSizeHint().width(),
+                "the name lost letters while the readout still had width to give",
+            )
+        self.assertGreaterEqual(readout.width(), readout.minimumSizeHint().width())
+
+    def assert_painted_with_an_ellipsis(self, label) -> None:
+        from legion_powerctl_gui.strip_widgets import ElidedLabel
+        from PySide6.QtCore import Qt
+
+        room = label.contentsRect().width()
+        shown = label.fontMetrics().elidedText(label.text(), Qt.TextElideMode.ElideRight, room)
+        self.assertNotEqual(shown, label.text(), "the label has room for its whole text")
+        twin = ElidedLabel(shown, label.parentWidget())
+        twin.setFont(label.font())
+        twin.setStyleSheet(label.styleSheet())
+        twin.setGeometry(label.geometry())
+        twin.show()
+        try:
+            self.assertTrue(
+                twin.grab().toImage() == label.grab().toImage(),
+                f"{label.text()!r} is clipped at its edge instead of reading {shown!r}",
+            )
+        finally:
+            twin.hide()
+            twin.deleteLater()
+
 
 class BrokenFirstProfileTest(VariantFixtureTest):
     def mutate(self, document):
@@ -2203,6 +2462,290 @@ class ServiceOffVariantTest(VariantFixtureTest):
         )
         cells_bottom = header.running_label.mapTo(header, header.running_label.rect().bottomLeft())
         self.assertGreater(note.mapTo(header, note.rect().topLeft()).y(), cells_bottom.y())
+
+
+class LimitsDidNotTakeVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["verified"] = "no"
+
+    def test_limits_that_did_not_take_are_painted_in_the_fail_ink(self):
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(header.mark_label.text(), "limits did not take")
+        self.assertEqual(readout.severity, "FAIL")
+        ink, fail, _muted, cap = self.readout_inks(readout)
+        figures = self.colours_in_rows(readout.grab().toImage(), 0, cap)
+        self.assertIn(fail, figures, "the figures that did not take are not in the FAIL ink")
+        self.assertNotIn(ink, figures, "a figure that did not take is still in the plain ink")
+
+    def test_at_the_kde_size_a_failure_never_pushes_the_cards_into_a_scroll(self):
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.sidebar.select_by_name("quiet")
+        self.settle(5)
+        self.assertFalse(self.window.editor.advanced.button.isChecked())
+        self.assertEqual(self.window.header.mark_label.text(), "limits did not take")
+        self.assert_nothing_in_the_strip_is_cut()
+        self.assertEqual(
+            self.window.editor_scroll.verticalScrollBar().maximum(), 0,
+            f"a {self.window.header.height()} px failed strip made the cards scroll",
+        )
+
+
+class UnverifiedVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["verified"] = ""
+
+    def test_an_unverified_apply_keeps_its_figures_in_the_plain_ink(self):
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(header.mark_label.text(), "unverified")
+        self.assertEqual(readout.severity, "WARN")
+        ink, fail, _muted, cap = self.readout_inks(readout)
+        figures = self.colours_in_rows(readout.grab().toImage(), 0, cap)
+        self.assertIn(ink, figures, "an unverified figure is not in the plain ink")
+        self.assertNotIn(fail, figures, "an unverified figure reads as a fault")
+
+
+class QuietRunningVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+
+    def test_at_the_kde_size_the_whole_figures_fit_an_eighty_pixel_strip(self):
+        from legion_powerctl_gui import styles, theme
+        from PySide6.QtGui import QFontMetrics
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        header = self.window.header
+        readout = header.envelope_label
+        self.assertTrue(self.strip_is_one_row())
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        self.assertEqual(readout.height(), readout.tile_height())
+        image = readout.grab().toImage()
+        plane = image.pixel(0, image.height() - 1)
+        inked = [any(image.pixel(x, y) != plane for x in range(image.width()))
+                 for y in range(image.height())]
+        top = inked.index(True)
+        drawn = inked.index(False, top) - top
+        metrics = QFontMetrics(theme.font("readout", readout.font()))
+        tallest = max(-metrics.tightBoundingRect(value).top() for value, _u, _c in readout.tiles)
+        self.assertGreaterEqual(
+            drawn, tallest, "the readout box is shorter than its figures and cuts their tops off"
+        )
+
+
+class PartialApplyVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["result"] = "partial"
+
+    def test_at_the_minimum_size_a_long_name_gives_way_before_the_figures(self):
+        import dataclasses
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        header = self.window.header
+        name, readout = header.running_label, header.envelope_label
+        status = self.window.status
+        for record in (status.last_apply, dict(status.last_apply, result="ok")):
+            header.show_status(dataclasses.replace(status, last_apply=record))
+            self.app.processEvents()
+            with self.subTest(running=name.text()):
+                self.assertGreaterEqual(
+                    readout.width(), readout.minimumSizeHint().width(),
+                    "the readout is cut off on its left, so a figure reads as another number",
+                )
+                self.assertIn(name.text(), self.accessible_name(name))
+        self.assertGreaterEqual(
+            name.width(), name.sizeHint().width(),
+            "the name lost letters while the readout still had gaps to give",
+        )
+        header.show_status(status)
+        self.app.processEvents()
+        self.assertEqual(name.text(), "balanced-plus - PARTIALLY APPLIED")
+        self.assertLess(name.width(), name.sizeHint().width(), "the long name did not give way")
+        self.assertGreaterEqual(readout.width(), readout.minimumSizeHint().width())
+
+    def test_the_name_gives_up_exactly_what_the_row_is_short_and_ends_in_an_ellipsis(self):
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.settle(5)
+        header = self.window.header
+        name, readout, boot = header.running_label, header.envelope_label, header.boot_label
+        short = name.sizeHint().width() - name.width()
+        self.assertGreater(short, 0, "the long name fits whole at 720, so this pins nothing")
+        self.assert_painted_with_an_ellipsis(name)
+        self.assertEqual(
+            boot.width(), boot.sizeHint().width(),
+            "the boot name gave way while the running name still had letters to give",
+        )
+        for width, given in ((720 + short - 1, 1), (720 + short, 0)):
+            self.window.resize(width, 480)
+            self.settle(5)
+            with self.subTest(width=width):
+                self.assertFalse(self.strip_is_one_row())
+                self.assertEqual(
+                    name.sizeHint().width() - name.width(), given,
+                    "the name gave up more than the row was short",
+                )
+                self.assertEqual(readout.width(), readout.minimumSizeHint().width())
+                self.assertLess(readout.width(), readout.sizeHint().width())
+
+
+class PerformanceCappedFailureVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"].update(profile="performance-capped", verified="no")
+        document["active_profile"] = "performance-capped"
+
+    def test_at_the_minimum_size_the_boot_name_gives_way_before_the_apply_record_is_cut(self):
+        import dataclasses
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.settle(5)
+        header = self.window.header
+        status = self.window.status
+        partial = dict(status.last_apply, result="partial")
+        long_boot = "performance-capped-on-battery-saver"
+        for record, boot in (
+            (status.last_apply, status.active_profile),
+            (partial, status.active_profile),
+            (status.last_apply, long_boot),
+            (dict(status.last_apply, profile="quiet"), long_boot),
+        ):
+            header.show_status(dataclasses.replace(status, last_apply=record, active_profile=boot))
+            self.settle(5)
+            with self.subTest(running=header.running_label.text(), boot=boot):
+                self.assertEqual(header.mark_label.text(), "limits did not take")
+                self.assertTrue(header.when_label.text().startswith("applied 2026-08-07"))
+                self.assert_nothing_in_the_strip_is_cut(header.running_label, header.boot_label)
+                self.assertEqual(header.boot_label.text(), boot)
+                self.assertEqual(self.accessible_name(header.boot_label), boot)
+
+
+class NothingAppliedVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"] = None
+
+    def test_before_the_first_apply_the_readout_is_the_sentence_and_the_strip_keeps_its_height(
+        self,
+    ):
+        from legion_powerctl_gui import styles, theme
+        from PySide6.QtGui import QFontMetrics
+
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(readout.tiles, [])
+        self.assertEqual(readout.text(), "nothing applied since this boot")
+        self.assertFalse(header.mark_label.isVisible())
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        caption = QFontMetrics(theme.font("caption", readout.font()))
+        self.assertEqual(readout.height(), caption.height(), "the sentence is set at figure size")
+        ink, _fail, muted, _cap = self.readout_inks(readout)
+        image = readout.grab().toImage()
+        painted = self.colours_in_rows(image, 0, image.height())
+        self.assertIn(muted, painted)
+        self.assertNotIn(ink, painted, "the sentence is painted as loud as a figure")
+        self.assertIn(muted, header.rail.styleSheet(), "the rail claims something is running")
+
+    def test_at_the_kde_size_the_boot_cell_narrows_before_the_actions_wrap(self):
+        from legion_powerctl_gui import styles
+        from legion_powerctl_gui.header import BOOT_CELL_WIDTH, WRAP_WIDTH
+
+        self.reopen_at_the_desktop_size()
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertTrue(self.strip_is_one_row(), "before the first apply the strip wraps at 960")
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        self.assert_nothing_in_the_strip_is_cut()
+
+        narrow, wide = 720, 960
+        while wide - narrow > 1:
+            middle = (narrow + wide) // 2
+            self.window.resize(middle, 620)
+            self.app.processEvents()
+            narrow, wide = (narrow, middle) if self.strip_is_one_row() else (middle, wide)
+        self.window.resize(wide, 620)
+        self.app.processEvents()
+        self.assertGreater(header.width(), WRAP_WIDTH, "the wrap floor, not the cells, set this width")
+        self.assert_nothing_in_the_strip_is_cut()
+        self.assertLess(
+            header.boot_label.parentWidget().width(), BOOT_CELL_WIDTH,
+            "the actions wrapped while the boot cell still had width to give",
+        )
+
+
+class LongBootNameVariantTest(VariantFixtureTest):
+    LONG = "performance-capped-overnight-render-queue"
+
+    def mutate(self, document):
+        document["last_apply"].update(profile="quiet", verified="no")
+        document["active_profile"] = self.LONG
+
+    def boot_next(self, name: str) -> None:
+        document = json.loads(Path(self.fixture.name).read_text())
+        document["active_profile"] = name
+        Path(self.fixture.name).write_text(json.dumps(document))
+        before = self.window.refresh_count
+        self.window.refresh()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > before))
+
+    def test_a_squeezed_boot_name_gives_its_width_back_once_the_name_is_short(self):
+        self.reopen_at_the_desktop_size()
+        label = self.window.header.boot_label
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        self.assertGreater(label.given(), 0, "the long name was never squeezed, so this proves nothing")
+
+        self.boot_next("quiet")
+        self.window.resize(960, 620)
+        self.app.processEvents()
+        self.assertEqual(label.minimumSizeHint().width(), label.sizeHint().width())
+        self.assertTrue(self.strip_is_one_row(), "the strip kept the long name's width after it left")
+        self.assert_nothing_in_the_strip_is_cut()
+        widened = self.settled_strip()
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.assertTrue(
+            self.settled_strip() == widened,
+            "the strip remembers a name that left instead of matching a fresh window",
+        )
+
+    def settled_strip(self):
+        self.assertTrue(wait_until(self.app, lambda: self.window.checks.count >= 1))
+        for _ in range(5):
+            self.app.processEvents()
+        return self.window.header.grab().toImage()
+
+    def test_an_empty_strip_label_measures_the_same_before_and_after_it_held_text(self):
+        from legion_powerctl_gui.header import MachineHeader
+
+        fresh = MachineHeader._label("", "caption")
+        used = MachineHeader._label("", "caption")
+        used.setText("(same)")
+        used.setText("")
+        self.assertEqual(fresh.sizeHint(), used.sizeHint(), "an emptied label and a new one size apart")
 
 
 if __name__ == "__main__":

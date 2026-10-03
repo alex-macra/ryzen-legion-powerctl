@@ -67,8 +67,7 @@ class ReportArea(QObject):
         for button in self._offers:
             self._margins[button] = room if shown and button is shown[0] else 0
             sheet = f"{self._sheet} QPushButton {{ margin-left: {self._margins[button]}px; }}"
-            if button.styleSheet() != sheet:
-                button.setStyleSheet(sheet)
+            styles.set_sheet(button, sheet)
 
     def _permanent_edge(self) -> int:
         children = self._bar.findChildren(

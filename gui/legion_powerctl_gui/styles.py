@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QWidget
 
 from . import theme
 
@@ -17,8 +18,9 @@ BADGE_CHROME = 6
 FOOTER_HEIGHT = 44
 STATUS_BAR_HEIGHT = 26
 CARD_MARGINS = (16, 14, 16, 14)
-CELL_MARGINS = (16, 12, 16, 12)
-EYEBROW_GAP = 8
+CELL_MARGINS = (16, 10, 16, 10)
+EYEBROW_GAP = 6
+STRIP_HEIGHT = 80
 
 CARD_SELECTOR = 'QFrame[card="true"], QWidget[card="true"], QGroupBox[card="true"]'
 
@@ -39,6 +41,17 @@ class SwitchColors(NamedTuple):
     label: QColor
     label_disabled: QColor
     focus: QColor
+
+
+class ReadoutColors(NamedTuple):
+    value: QColor
+    unit: QColor
+    caption: QColor
+
+
+def set_sheet(widget: QWidget, sheet: str) -> None:
+    if widget.styleSheet() != sheet:
+        widget.setStyleSheet(sheet)
 
 
 def _base(palette: QPalette) -> QColor:
@@ -231,6 +244,15 @@ def switch_colors(palette: QPalette) -> SwitchColors:
         label_disabled=disabled,
         focus=theme.focus_color(palette),
     )
+
+
+def readout_colors(palette: QPalette, severity: str) -> ReadoutColors:
+    base = _base(palette)
+    value = palette.color(QPalette.ColorRole.Text)
+    if severity == "FAIL":
+        value = theme.severity_color(palette, "FAIL")
+    muted = theme.muted_color(palette, base)
+    return ReadoutColors(theme.fit_contrast(value, base), muted, muted)
 
 
 def app_qss(palette: QPalette) -> str:

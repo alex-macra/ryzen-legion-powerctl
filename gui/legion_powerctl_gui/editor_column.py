@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
 from . import a11y, styles, theme
 from .editor import ProfileEditor
 
-HEADER_GAP = 10
-TITLE_HEIGHT = 28
+HEADER_GAP = 8
+TITLE_HEIGHT = 26
 
 
 class EditorColumn(QFrame):

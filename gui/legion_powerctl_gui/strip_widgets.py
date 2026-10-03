@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QCheckBox, QLabel, QSizePolicy, QStyle, QWidget
 
-from . import styles, theme
+from . import runstate, styles, theme
 
 DOT = 8
 DOT_GAP = 3
+READOUT_UNITS = {"C": "°C"}
+DIGITS = "0123456789"
 POINTER_REASONS = (Qt.FocusReason.MouseFocusReason, Qt.FocusReason.PopupFocusReason)
 RETURN_REASONS = (Qt.FocusReason.ActiveWindowFocusReason, Qt.FocusReason.OtherFocusReason)
 
@@ -63,6 +65,123 @@ class Badge(QLabel):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self.dot)
         painter.drawEllipse(QRectF(self.DOT_LEFT, (self.height() - DOT) / 2, DOT, DOT))
+
+
+class ElidedLabel(QLabel):
+    def sizeHint(self) -> QSize:
+        chrome = self.rect().width() - self.contentsRect().width()
+        width = self.fontMetrics().size(0, self.text()).width() + chrome
+        return QSize(width, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def shrink_by(self, short: int, room: int) -> int:
+        give = max(0, min(short, room))
+        self.setMinimumWidth(max(1, self.sizeHint().width() - give) if give else 0)
+        return short - give
+
+    def given(self) -> int:
+        return self.sizeHint().width() - (self.minimumWidth() or self.minimumSizeHint().width())
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        self.drawFrame(painter)
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        self.style().drawItemText(
+            painter, rect, self.alignment().value, self.palette(), self.isEnabled(), text,
+            self.foregroundRole(),
+        )
+
+
+class Readout(QLabel):
+    GAP = 20
+    MIN_GAP = 8
+    UNIT_GAP = 3
+    CAPTION_GAP = 2
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self.tiles: list[tuple[str, str, str]] = []
+        self.severity = "NEUTRAL"
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def set_state(self, state: runstate.RunState, severity: str) -> None:
+        self.severity = severity
+        self.tiles = [
+            (str(value), READOUT_UNITS.get(unit, unit), label.upper())
+            for value, (label, _key, unit) in zip(state.limits() or [], runstate.LIMITS)
+        ]
+        self.setText(state.summary())
+        self.updateGeometry()
+        self.update()
+
+    def _fonts(self) -> tuple[QFont, QFont, QFont]:
+        return tuple(theme.font(role, self.font()) for role in ("readout", "caption", "eyebrow"))
+
+    def tile_widths(self) -> list[int]:
+        big, small, eyebrow = (QFontMetrics(font) for font in self._fonts())
+        return [
+            max(
+                big.horizontalAdvance(value) + self.UNIT_GAP + small.horizontalAdvance(unit),
+                eyebrow.horizontalAdvance(caption),
+            )
+            for value, unit, caption in self.tiles
+        ]
+
+    @staticmethod
+    def _figure_top(metrics: QFontMetrics) -> int:
+        return max(metrics.capHeight(), -metrics.tightBoundingRect(DIGITS).top())
+
+    def tile_height(self) -> int:
+        big, _small, eyebrow = self._fonts()
+        top = self._figure_top(QFontMetrics(big))
+        return top + self.CAPTION_GAP + QFontMetrics(eyebrow).height()
+
+    def _size(self, gap: int) -> QSize:
+        if not self.tiles:
+            metrics = QFontMetrics(self._fonts()[1])
+            return QSize(metrics.horizontalAdvance(self.text()), metrics.height())
+        widths = self.tile_widths()
+        return QSize(sum(widths) + gap * (len(widths) - 1), self.tile_height())
+
+    def sizeHint(self) -> QSize:
+        return self._size(self.GAP)
+
+    def minimumSizeHint(self) -> QSize:
+        return self._size(self.MIN_GAP)
+
+    def paintEvent(self, _event) -> None:
+        colours = styles.readout_colors(self.palette(), self.severity)
+        big, small, eyebrow = self._fonts()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.tiles:
+            painter.setFont(small)
+            painter.setPen(colours.caption)
+            flags = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            painter.drawText(self.rect(), flags.value, self.text())
+            painter.end()
+            return
+        metrics, eyebrow_metrics = QFontMetrics(big), QFontMetrics(eyebrow)
+        widths = self.tile_widths()
+        spare = self.width() - sum(widths)
+        gap = max(self.MIN_GAP, min(self.GAP, spare // max(1, len(widths) - 1)))
+        x = self.width() - (sum(widths) + gap * (len(widths) - 1))
+        baseline = self._figure_top(metrics)
+        for (value, unit, caption), width in zip(self.tiles, widths):
+            painter.setFont(big)
+            painter.setPen(colours.value)
+            painter.drawText(x, baseline, value)
+            painter.setFont(small)
+            painter.setPen(colours.unit)
+            painter.drawText(x + metrics.horizontalAdvance(value) + self.UNIT_GAP, baseline, unit)
+            painter.setFont(eyebrow)
+            painter.setPen(colours.caption)
+            painter.drawText(x, baseline + self.CAPTION_GAP + eyebrow_metrics.ascent(), caption)
+            x += width + gap
+        painter.end()
 
 
 class Switch(QCheckBox):

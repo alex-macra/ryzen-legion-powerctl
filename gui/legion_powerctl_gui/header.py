@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -11,27 +11,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QSpacerItem,
     QVBoxLayout,
     QWidget,
 )
 
 from . import a11y, checks_view, model, runstate, styles, theme
-from .strip_widgets import DOT, DOT_GAP, Badge, BadgeHeight, Switch, dot_icon
+from .strip_widgets import DOT, DOT_GAP, Badge, BadgeHeight, ElidedLabel, Readout, Switch, dot_icon
 
-STRIP_HEIGHT = 72
 BOOT_CELL_WIDTH = 176
 WRAP_WIDTH = 860 - 2 * styles.GUTTER
-LINE_GAP = 6
+LINE_GAP = 3
 ITEM_GAP = 10
 ACTIONS_GAP = 12
 ACTIONS_MARGINS = (styles.CELL_MARGINS[0] - Switch.RING, *styles.CELL_MARGINS[1:])
 WRAPPED_ACTIONS_MARGINS = (ACTIONS_MARGINS[0], 4, ACTIONS_MARGINS[2], 4)
-RAIL_SIZE = (3, 18)
-
-
-def _set_sheet(widget: QWidget, sheet: str) -> None:
-    if widget.styleSheet() != sheet:
-        widget.setStyleSheet(sheet)
+RAIL_WIDTH = 3
 
 
 class MachineHeader(QFrame):
@@ -55,23 +50,26 @@ class MachineHeader(QFrame):
         self.run_caption = self._label("RUNNING NOW", "eyebrow")
         self.when_label = self._label("", "caption")
         self.rail = QFrame()
-        self.rail.setFixedSize(*RAIL_SIZE)
-        self.running_label = self._label("-", "headline")
-        self.envelope_label = self._label("", "detail-mono")
+        self.running_label = self._label("-", "title", ElidedLabel)
+        self.envelope_label = Readout()
         self.mark_label = Badge()
         self._running = self._cell(
-            (self.run_caption, None, self.when_label),
-            (self.rail, self.running_label, self.envelope_label, None, self.mark_label),
+            (self.run_caption, None, self.mark_label, self.when_label),
+            (self.rail, self.running_label, None, self.envelope_label),
         )
+        # Last among the cell's children, so a screen reader still meets the badge after the
+        # facts it qualifies rather than in the order the two lines are laid out.
+        self.mark_label.raise_()
 
         self.boot_caption = self._label("AT BOOT", "eyebrow")
-        self.boot_label = self._label("-", "strong")
+        self.boot_label = self._label("-", "strong", ElidedLabel)
         self.same_label = self._label("", "caption")
         self._boot = self._cell((self.boot_caption,), (self.boot_label, self.same_label, None))
-        self._boot.setMinimumWidth(BOOT_CELL_WIDTH)
-        self._boot.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self._boot.layout().addItem(
+            QSpacerItem(BOOT_CELL_WIDTH - 2 * styles.CELL_MARGINS[0], 0, QSizePolicy.Policy.Preferred)
+        )
         for cell in (self._running, self._boot):
-            cell.setMinimumHeight(STRIP_HEIGHT - 2)
+            cell.setMinimumHeight(styles.STRIP_HEIGHT - 2)
 
         self.service_check = Switch("&Re-apply at every boot")
         self.service_check.toggled.connect(self._on_service_toggled)
@@ -87,10 +85,9 @@ class MachineHeader(QFrame):
         )
         self._actions.layout().setContentsMargins(*ACTIONS_MARGINS)
 
-        self.volatile_note = QLabel(
-            "Limits are cleared by a power cycle and will not come back on their own."
+        self.volatile_note = self._label(
+            "Limits are cleared by a power cycle and will not come back on their own.", "caption"
         )
-        self.volatile_note.setFont(theme.font("caption"))
         self.volatile_note.setWordWrap(True)
         self.volatile_note.hide()
 
@@ -108,13 +105,13 @@ class MachineHeader(QFrame):
         self._grid.addWidget(self.volatile_note, 3, 0, 1, 5)
         self._grid.setColumnStretch(0, 1)
 
-        self.machine_label = QLabel(f"legion-powerctl GUI {gui_version}")
-        self.machine_label.setFont(theme.font("detail-mono"))
+        self.machine_label = self._label(f"legion-powerctl GUI {gui_version}", "detail-mono")
         self.restyle(self.palette())
 
     @staticmethod
-    def _label(text: str, role: str) -> QLabel:
-        label = QLabel(text)
+    def _label(text: str, role: str, kind: type[QLabel] = QLabel) -> QLabel:
+        label = kind(text or " ")
+        label.setText(text)
         label.setFont(theme.font(role))
         return label
 
@@ -147,20 +144,18 @@ class MachineHeader(QFrame):
     def show_status(self, status: model.Status) -> None:
         state = runstate.run_state(status)
         self.running_label.setText(state.headline())
-        self.envelope_label.setText(state.summary())
         self.when_label.setText(state.when())
         mark, severity = state.mark()
         self.mark_label.setText(mark)
         self._mark_severity = severity
-        self.running_label.setAccessibleName(self._running_name(state, mark))
+        self.envelope_label.set_state(state, severity)
+        self.running_label.setAccessibleName(state.announcement(mark))
 
         self.boot_label.setText(status.active_profile or "-")
         same = bool(status.active_profile) and status.active_profile == state.profile
         self.same_label.setText("(same)" if same else "")
 
-        badge, service_severity = runstate.service_badge(
-            status.service_enabled, status.service_active
-        )
+        badge, service_severity = runstate.service_badge(status.service_enabled, status.service_active)
         enabled = status.service_enabled == "enabled"
         self._updating = True
         self.service_check.setChecked(enabled)
@@ -188,9 +183,7 @@ class MachineHeader(QFrame):
         text, severity = checks_view.checks_chip(report)
         self.checks_button.setText(text)
         self._checks_severity = severity
-        summary = (
-            checks_view.summarise(report, stderr) if report else "System checks: not run yet"
-        )
+        summary = checks_view.summarise(report, stderr) if report else "System checks: not run yet"
         self.checks_button.setAccessibleName(summary)
         if summary != self._checks_summary:
             self._checks_summary = summary
@@ -200,14 +193,6 @@ class MachineHeader(QFrame):
     def set_busy(self, busy: bool) -> None:
         self.service_check.setEnabled(self._service_available and not busy)
         self.checks_button.setEnabled(not busy)
-
-    @staticmethod
-    def _running_name(state: runstate.RunState, mark: str) -> str:
-        if not state.applied:
-            return "Running now: firmware defaults, nothing applied since this boot"
-        detail = state.summary()
-        tail = f", {mark}" if mark else ""
-        return f"Running now: {state.headline()}{', ' + detail if detail else ''}{tail}"
 
     def _on_service_toggled(self, checked: bool) -> None:
         if not self._updating:
@@ -220,10 +205,7 @@ class MachineHeader(QFrame):
 
     def restyle(self, palette: QPalette) -> None:
         muted = styles.caption_style(palette)
-        for label in (
-            self.run_caption, self.boot_caption, self.when_label, self.envelope_label,
-            self.same_label,
-        ):
+        for label in (self.run_caption, self.boot_caption, self.when_label, self.same_label):
             label.setStyleSheet(muted)
         for line in (*self._dividers, self._wrap_rule):
             line.setStyleSheet(styles.cell_style(palette))
@@ -232,9 +214,7 @@ class MachineHeader(QFrame):
             + f" QLabel {{ margin: 0px {styles.GUTTER}px {styles.GAP}px {styles.GUTTER}px; }}"
         )
         plane = palette.color(QPalette.ColorRole.Window)
-        self.machine_label.setStyleSheet(
-            f"color: {theme.muted_color(palette, plane).name()};"
-        )
+        self.machine_label.setStyleSheet(f"color: {theme.muted_color(palette, plane).name()};")
         self.service_check.update()
         self._checks_dot = ""
         self._show_state(palette)
@@ -242,17 +222,19 @@ class MachineHeader(QFrame):
     def _show_state(self, palette: QPalette) -> None:
         muted = theme.muted_color(palette, palette.color(QPalette.ColorRole.Base))
         rail = theme.accent_color(palette) if self._running_applied else muted
-        _set_sheet(self.rail, f"background-color: {rail.name()}; border-radius: 1px;")
-        _set_sheet(
+        styles.set_sheet(self.rail, f"background-color: {rail.name()}; border-radius: 1px;")
+        self.rail.setFixedSize(RAIL_WIDTH, self.envelope_label.tile_height())
+        self.envelope_label.update()
+        styles.set_sheet(
             self.mark_label,
             styles.badge_style(palette, self._mark_severity)
             + f" QLabel {{ padding-left: {Badge.PADDING}px; }}",
         )
         self.mark_label.dot = theme.severity_color(palette, self._mark_severity)
         self.mark_label.setVisible(bool(self.mark_label.text()))
-        _set_sheet(self.service_label, styles.chip_style(palette, self._service_severity))
+        styles.set_sheet(self.service_label, styles.chip_style(palette, self._service_severity))
         self.service_label.setVisible(bool(self.service_label.text()))
-        _set_sheet(
+        styles.set_sheet(
             self.checks_button,
             styles.chip_style(palette, self._checks_severity, "QPushButton"),
         )
@@ -264,13 +246,26 @@ class MachineHeader(QFrame):
             self.checks_button.setIcon(dot_icon(dot, self.devicePixelRatioF()))
         self._reflow()
 
-    def _one_row_width(self) -> int:
-        cells = (self._running, self._boot)
-        width = sum(cell.minimumSizeHint().expandedTo(cell.minimumSize()).width() for cell in cells)
-        return width + self._actions.sizeHint().width() + len(self._dividers) + 2
+    @staticmethod
+    def _line_widths(cell: QFrame, name: ElidedLabel) -> tuple[int, int]:
+        column, margins = cell.layout(), sum(styles.CELL_MARGINS[::2])
+        column.activate()
+        first, second = (column.itemAt(line).minimumSize().width() + margins for line in (1, 2))
+        return first, second + name.given()
+
+    def _row_widths(self) -> tuple[int, int, int, int]:
+        self._actions.layout().activate()
+        record, fact = self._line_widths(self._running, self.running_label)
+        caption, boot = self._line_widths(self._boot, self.boot_label)
+        row = max(record, fact) + max(caption, boot) + self._dividers[0].sizeHint().width() + 2
+        tail = self._actions.sizeHint().width() + self._dividers[1].sizeHint().width()
+        return row + tail, row, fact - record, boot - caption
 
     def _reflow(self) -> None:
-        wrapped = self.width() < max(WRAP_WIDTH, self._one_row_width())
+        one_row, row, running, boot = self._row_widths()
+        wrapped = self.width() < max(WRAP_WIDTH, one_row)
+        short = row - self.width() if wrapped else 0
+        self.boot_label.shrink_by(self.running_label.shrink_by(short, running), boot)
         if wrapped == self._wrapped:
             return
         self._wrapped = wrapped
@@ -287,6 +282,11 @@ class MachineHeader(QFrame):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._reflow()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.FontChange:
+            self._show_state(self.palette())
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
