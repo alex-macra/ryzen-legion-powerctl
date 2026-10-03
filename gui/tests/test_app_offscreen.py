@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 
+import atexit
 import json
 import os
 import tempfile
@@ -31,6 +32,26 @@ def wait_until(app, predicate, timeout=15.0):
     return False
 
 
+GRAYSCALE_FONTCONFIG = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">{base}</include>
+  <match target="font"><edit name="rgba" mode="assign"><const>none</const></edit></match>
+</fontconfig>
+"""
+
+
+def render_text_in_grayscale() -> None:
+    # Subpixel antialiasing tints every glyph edge, so a test that reads a text
+    # colour back would pass or fail with the machine's LCD setting.
+    base = os.environ.get("FONTCONFIG_FILE") or "/etc/fonts/fonts.conf"
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
+    handle.write(GRAYSCALE_FONTCONFIG.format(base=base))
+    handle.close()
+    atexit.register(os.unlink, handle.name)
+    os.environ["FONTCONFIG_FILE"] = handle.name
+
+
 @unittest.skipUnless(HAVE_PYSIDE6, "PySide6 is not installed")
 class OffscreenGuiTest(unittest.TestCase):
     @classmethod
@@ -49,6 +70,8 @@ class OffscreenGuiTest(unittest.TestCase):
 
         from PySide6.QtWidgets import QApplication
 
+        if QApplication.instance() is None:
+            render_text_in_grayscale()
         cls.app = QApplication.instance() or QApplication([])
 
     def settle(self, rounds: int = 20) -> None:
