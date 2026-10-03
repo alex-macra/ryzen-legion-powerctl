@@ -11,6 +11,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 FAKE_CLI = HERE / "fake-legion-powerctl"
 STATUS_FIXTURE = HERE / "fixtures" / "status.json"
+DESKTOP_POINT_SIZE = 10.0
 
 try:
     import PySide6  # noqa: F401
@@ -54,6 +55,16 @@ class OffscreenGuiTest(unittest.TestCase):
         for _ in range(rounds):
             self.app.processEvents()
             time.sleep(0.01)
+
+    def use_app_font_size(self, size: float) -> None:
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtGui import QFont
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        font = QFont(self.app.font())
+        self.addCleanup(self.app.setFont, QFont(font))
+        font.setPointSizeF(size)
+        self.app.setFont(font)
 
     @staticmethod
     def accessible_name(widget) -> str:
@@ -529,7 +540,7 @@ class MainWindowTest(OffscreenGuiTest):
             "return_value": QMessageBox.StandardButton.Cancel
         }
         return unittest.mock.patch(
-            "legion_powerctl_gui.app.QMessageBox.question", **kwargs
+            "legion_powerctl_gui.dialogs.confirm_discard", **kwargs
         )
 
     def test_cancel_on_discard_keeps_editor_and_sidebar_in_agreement(self):
@@ -700,7 +711,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.dialogs = True
         try:
             with unittest.mock.patch(
-                "legion_powerctl_gui.app.QMessageBox.question"
+                "legion_powerctl_gui.dialogs.confirm_discard"
             ) as question:
                 self.window.profile_actions.delete()
                 self.settle(5)
@@ -1194,27 +1205,30 @@ class MainWindowTest(OffscreenGuiTest):
             )
 
     def test_delete_defaults_to_cancel(self):
+        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QMessageBox
+
+        seen = []
+
+        def press_enter():
+            box = self.app.activeModalWidget()
+            seen.append([box.standardButton(button) for button in box.buttons()])
+            seen.append(box.standardButton(box.defaultButton()))
+            QTest.keyClick(box, Qt.Key.Key_Return)
 
         self.window.dialogs = True
         try:
-            with unittest.mock.patch(
-                "legion_powerctl_gui.actions.QMessageBox.question",
-                return_value=QMessageBox.StandardButton.Cancel,
-            ) as question:
-                self.window.profile_actions.delete()
+            QTimer.singleShot(0, press_enter)
+            self.window.profile_actions.delete()
         finally:
             self.window.dialogs = False
-        args = question.call_args[0]
-        self.assertGreaterEqual(
-            len(args), 5,
-            "the dialog names no buttons, so question() supplies Yes/No and defaults to Yes",
-        )
+        self.assertEqual(len(seen), 2, "no confirmation was asked")
+        self.assertIn(QMessageBox.StandardButton.Cancel, seen[0])
         self.assertEqual(
-            args[4], QMessageBox.StandardButton.Cancel,
+            seen[1], QMessageBox.StandardButton.Cancel,
             "Enter on the dialog deletes a profile with no undo",
         )
-        self.assertTrue(args[3] & QMessageBox.StandardButton.Cancel)
         self.settle(5)
         self.assertNotIn("delete", "\n".join(self.read_log()))
 
@@ -1445,6 +1459,202 @@ class MainWindowTest(OffscreenGuiTest):
         spoken = self.accessible_name(header.running_label)
         self.assertIn(header.running_label.text(), spoken)
         self.assertIn("Running now", spoken)
+
+
+    def _top(self, widget) -> int:
+        from PySide6.QtCore import QPoint
+
+        return widget.mapTo(self.header, QPoint(0, 0)).y()
+
+    def test_the_strip_moves_its_actions_below_the_facts_on_a_narrow_window(self):
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        running_bottom = self._top(header.running_label) + header.running_label.height()
+        self.assertLess(
+            self._top(header.checks_button), running_bottom,
+            "at 960 the actions share the row with what is running",
+        )
+        wide = header.height()
+
+        self.window.resize(720, 480)
+        self.app.processEvents()
+        running_bottom = self._top(header.running_label) + header.running_label.height()
+        for control in (header.service_check, header.checks_button):
+            with self.subTest(control=control.text()):
+                self.assertGreaterEqual(
+                    self._top(control), running_bottom,
+                    "at 720 the actions cell still squeezes the running cell",
+                )
+        self.assertGreater(header.height(), wide)
+        right = header.checks_button.mapTo(header, header.checks_button.rect().topRight()).x()
+        self.assertGreater(right, header.width() * 3 // 4, "the wrapped actions are not right aligned")
+
+        self.window.resize(960, 620)
+        self.app.processEvents()
+        self.assertEqual(header.height(), wide, "widening again does not restore one row")
+
+    def test_a_palette_change_restyles_the_strip_the_status_bar_and_the_checks(self):
+        from legion_powerctl_gui import scheme, theme
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtGui import QPalette
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.checks.show()
+        self.assertTrue(self.checks.rows, "no rows to restyle")
+        dark = scheme.palette(True)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.addCleanup(self.app.setPalette, QPalette(self.app.palette()))
+        self.app.setPalette(dark)
+        self.app.setStyleSheet(self.app.styleSheet())
+        self.app.processEvents()
+
+        plane = dark.color(QPalette.ColorRole.Window)
+        surface = self.header.grab().toImage().pixelColor(6, self.header.height() // 2)
+        self.assertEqual(surface.name(), dark.color(QPalette.ColorRole.Base).name())
+        self.assertIn(
+            theme.muted_color(dark, plane).name(), self.header.machine_label.styleSheet()
+        )
+        link = theme.fit_contrast(theme.accent_color(dark), plane, theme.MIN_CONTRAST)
+        for offer in (self.window.reports.go_back_button, self.window.reports.details_button):
+            with self.subTest(offer=offer.text()):
+                self.assertIn(link.name(), offer.styleSheet())
+        for row in self.checks.rows:
+            with self.subTest(row=row.accessibleName()):
+                self.assertIn(
+                    theme.severity_color(dark, row.chip.property("severity")).name(),
+                    row.chip.styleSheet(),
+                )
+                self.assertIn(
+                    theme.secondary_color(dark, plane).name(), row.detail.styleSheet()
+                )
+
+    def test_the_go_back_offer_makes_room_for_the_message_it_follows(self):
+        bar = self.window.statusBar()
+        offer = self.window.reports.go_back_button
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.window.reports.success("Applied 'quiet'.", "balanced-plus")
+        self.app.processEvents()
+        beside = offer.sizeHint().width()
+        bar.clearMessage()
+        self.app.processEvents()
+        alone = offer.sizeHint().width()
+        self.assertGreaterEqual(
+            beside - alone, bar.fontMetrics().horizontalAdvance("Applied 'quiet'."),
+            "the offer is drawn under the message instead of after it",
+        )
+        self.assertFalse(offer.isHidden(), "the offer went away with the message")
+
+    def test_a_long_warning_keeps_its_offer_in_sight(self):
+        reports = self.window.reports
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        reports.warning("Applied 'quiet'.", "WARNING: " + "the limits could not be read back " * 8)
+        self.app.processEvents()
+        details = reports.details_button
+        machine = self.header.machine_label
+        self.assertFalse(details.isHidden())
+        self.assertGreaterEqual(
+            details.width(), details.sizeHint().width(),
+            "the room left for the message squeezes the Details offer out of sight",
+        )
+        self.assertLessEqual(
+            details.geometry().right(), machine.geometry().left(),
+            "the Details offer is drawn over the version it sits beside",
+        )
+
+    def test_the_switch_keeps_its_focus_ring_through_a_busy_spell(self):
+        from PySide6.QtCore import Qt
+
+        switch = self.header.service_check
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.activateWindow()
+        self.settle(5)
+        opened = switch.grab().toImage()
+        switch.clearFocus()
+        self.settle(3)
+        resting = switch.grab().toImage()
+        self.assertEqual(opened, resting, "opening the window paints a keyboard ring")
+        switch.setFocus(Qt.FocusReason.TabFocusReason)
+        self.settle(3)
+        ringed = switch.grab().toImage()
+        self.assertNotEqual(ringed, resting, "keyboard focus draws no ring")
+        self.window._set_busy(True)
+        self.settle(3)
+        self.window._set_busy(False)
+        self.settle(3)
+        self.assertTrue(switch.hasFocus(), "the focus did not come back after the command")
+        self.assertEqual(switch.grab().toImage(), ringed, "the ring did not come back with it")
+        switch.clearFocus()
+        switch.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.settle(3)
+        self.assertEqual(switch.grab().toImage(), resting, "a click draws the keyboard ring")
+        self.window._set_busy(True)
+        self.settle(3)
+        self.window._set_busy(False)
+        self.settle(3)
+        self.assertTrue(switch.hasFocus())
+        self.assertEqual(
+            switch.grab().toImage(), resting, "the refocus after a clicked command draws the ring"
+        )
+
+    def test_the_switch_keeps_its_ring_or_its_absence_across_window_activation(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        switch = self.header.service_check
+        other = QWidget()
+        self.addCleanup(other.deleteLater)
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.activateWindow()
+        self.settle(5)
+        for reason in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.MouseFocusReason):
+            switch.clearFocus()
+            switch.setFocus(reason)
+            self.settle(3)
+            before = switch.grab().toImage()
+            other.show()
+            other.activateWindow()
+            self.settle(3)
+            self.assertFalse(switch.hasFocus(), "the other window never took the focus")
+            self.window.activateWindow()
+            self.settle(3)
+            with self.subTest(reason=reason.name):
+                self.assertTrue(switch.hasFocus(), "activation did not hand the focus back")
+                self.assertEqual(switch.grab().toImage(), before)
+            other.hide()
+
+    def test_an_offer_stays_in_sight_when_the_window_narrows(self):
+        reports = self.window.reports
+        machine = self.header.machine_label
+        self.window.resize(1100, 620)
+        self.window.show()
+        self.settle(5)
+        reports.warning("Applied 'quiet'.", "WARNING: " + "the limits could not be read back " * 8)
+        self.settle(5)
+        for offer, show in (
+            (reports.details_button, lambda: None),
+            (reports.go_back_button, lambda: reports.success("Applied 'quiet'.", "balanced-plus")),
+        ):
+            show()
+            self.window.resize(1100, 620)
+            self.settle(5)
+            self.window.resize(720, 620)
+            self.settle(5)
+            with self.subTest(offer=offer.text()):
+                self.assertFalse(offer.isHidden())
+                self.assertGreaterEqual(
+                    offer.width(), offer.sizeHint().width(),
+                    "the offer keeps the margin it had in a wider window and draws out of sight",
+                )
+                self.assertLessEqual(offer.geometry().right(), machine.geometry().left())
 
 
 class RunnerTimeoutTest(OffscreenGuiTest):
@@ -1773,6 +1983,134 @@ class PanelSeamTest(OffscreenGuiTest):
         self.settle(3)
 
 
+    def test_a_chip_keeps_its_height_on_a_row_that_wraps(self):
+        from legion_powerctl_gui import model, styles
+        from legion_powerctl_gui.dialogs import ChecksDialog
+        from PySide6.QtWidgets import QSizePolicy
+
+        dialog = ChecksDialog()
+        try:
+            dialog.resize(640, 480)
+            dialog.show_report(model.DoctorReport(
+                lines=[
+                    model.DoctorLine("WARN", "SMU-backend", "no ryzen_smu module " * 12),
+                    model.DoctorLine("OK", "CPU", "AMD processor detected"),
+                ],
+                failures=0, warnings=1, exit_code=0,
+            ))
+            dialog.show()
+            self.settle(5)
+            wrapped, single = dialog.rows
+            self.assertGreater(wrapped.height(), single.height(), "the long detail did not wrap")
+            for row in dialog.rows:
+                with self.subTest(row=row.chip.text()):
+                    self.assertEqual(row.chip.height(), styles.BADGE_HEIGHT)
+                    self.assertEqual(
+                        row.chip.sizePolicy().verticalPolicy(), QSizePolicy.Policy.Fixed
+                    )
+            self.assertEqual(
+                wrapped.chip.y(), single.chip.y(), "the chip on the long row is not at its top"
+            )
+        finally:
+            dialog.deleteLater()
+
+    def test_badges_and_chips_grow_with_their_font_rather_than_clipping_it(self):
+        from legion_powerctl_gui import styles
+        from legion_powerctl_gui.checks_view import CheckRow
+        from legion_powerctl_gui.header import MachineHeader
+        from legion_powerctl_gui.model import DoctorLine
+        from PySide6.QtGui import QFont
+
+        header = MachineHeader("9.9.9")
+        row = CheckRow(DoctorLine("WARN", "Conflicts", "tlp.service is active"), self.app.palette())
+        try:
+            badges = (header.mark_label, header.service_label, header.checks_button, row.chip)
+            for badge in badges:
+                self.assertEqual(badge.height(), styles.BADGE_HEIGHT)
+                large = QFont(badge.font())
+                large.setPointSizeF(24.0)
+                badge.setFont(large)
+                with self.subTest(badge=type(badge).__name__):
+                    self.assertGreater(badge.height(), styles.BADGE_HEIGHT)
+                    self.assertGreaterEqual(
+                        badge.height(), badge.fontMetrics().height() + styles.BADGE_CHROME,
+                        "the text is taller than the badge drawn around it",
+                    )
+        finally:
+            header.deleteLater()
+            row.deleteLater()
+
+    def test_a_message_box_marks_the_action_and_keeps_the_safe_default(self):
+        from legion_powerctl_gui import dialogs, runstate
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox, QWidget
+
+        parent = QWidget()
+        seen = {}
+
+        def answer(name):
+            box = self.app.activeModalWidget()
+            seen[name] = (
+                [
+                    b.text().replace("&", "") for b in box.buttons()
+                    if b.property("kind") == "primary"
+                ],
+                box.defaultButton().text().replace("&", ""),
+                box.focusWidget() is box.defaultButton(),
+            )
+            box.button(QMessageBox.StandardButton.Cancel).click()
+
+        cases = {
+            "raise": (lambda: dialogs.confirm_raise(
+                parent, "quiet", [runstate.Delta("Fast PPT", 102, 110, "W")]
+            ), "Apply anyway", "Cancel"),
+            "enable": (lambda: dialogs.confirm_enable(parent, "quiet"), "Enable", "Enable"),
+            "repair": (lambda: dialogs.confirm_repair(parent), "Repair and apply", "Cancel"),
+            "force": (
+                lambda: dialogs.offer_force_enable(parent, "doctor reported failures"),
+                "Enable anyway", "Cancel",
+            ),
+            "discard": (
+                lambda: dialogs.confirm_discard(parent, "quiet", "balanced-plus")
+                != QMessageBox.StandardButton.Cancel,
+                "Discard", "Cancel",
+            ),
+            "delete": (lambda: dialogs.confirm_delete(parent, "quiet"), "Yes", "Cancel"),
+        }
+        try:
+            for name, (run, action, default) in cases.items():
+                with self.subTest(dialog=name):
+                    QTimer.singleShot(0, lambda name=name: answer(name))
+                    self.assertFalse(run(), "Cancel was taken as a yes")
+                    primary, chosen, focused = seen[name]
+                    self.assertEqual(primary, [action])
+                    self.assertEqual(chosen, default, "the default moved to a riskier button")
+                    self.assertTrue(focused, "the default button does not hold the focus")
+        finally:
+            parent.deleteLater()
+
+    def test_the_boot_switch_is_still_a_check_box_to_everyone_but_the_eye(self):
+        from legion_powerctl_gui.header import MachineHeader
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QAccessible
+
+        header = MachineHeader("9.9.9")
+        try:
+            switch = header.service_check
+            switch.resize(switch.sizeHint())
+            interface = QAccessible.queryAccessibleInterface(switch)
+            self.assertEqual(interface.role(), QAccessible.Role.CheckBox)
+            self.assertEqual(interface.text(QAccessible.Text.Name), "Re-apply at every boot")
+            self.assertTrue(switch.isCheckable())
+            self.assertTrue(
+                switch.hitButton(QPoint(switch.width() - 2, switch.height() // 2)),
+                "the label beside the track does not toggle it",
+            )
+            self.assertGreaterEqual(switch.height(), 20)
+        finally:
+            header.deleteLater()
+
+
 class VariantFixtureTest(OffscreenGuiTest):
     def mutate(self, document: dict) -> None:
         raise NotImplementedError
@@ -1839,6 +2177,32 @@ class ServiceBadgeVariantTest(VariantFixtureTest):
             theme.severity_color(self.window.palette(), "WARN").name(),
             label.styleSheet(),
         )
+
+
+class ServiceOffVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["service"] = {"enabled": "disabled", "active": "inactive"}
+
+    def test_a_disabled_boot_service_warns_that_the_limits_will_not_come_back(self):
+        from legion_powerctl_gui import theme
+
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertFalse(header.service_check.isChecked())
+        self.assertEqual(header.service_label.text(), "", "an off service is not a fault")
+        note = header.volatile_note
+        self.assertTrue(note.isVisible())
+        self.assertEqual(
+            note.text(), "Limits are cleared by a power cycle and will not come back on their own."
+        )
+        self.assertIn(
+            theme.severity_color(self.window.palette(), "WARN").name(), note.styleSheet(),
+            "the note reads as plain text, not as a warning callout",
+        )
+        cells_bottom = header.running_label.mapTo(header, header.running_label.rect().bottomLeft())
+        self.assertGreater(note.mapTo(header, note.rect().topLeft()).y(), cells_bottom.y())
 
 
 if __name__ == "__main__":

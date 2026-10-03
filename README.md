@@ -9,7 +9,7 @@ Configurable AMD Ryzen CPU power and thermal limits for Lenovo Legion laptops on
 >
 > Legion is a trademark of Lenovo Group Ltd., used here descriptively. This project is not affiliated with, endorsed by, or supported by Lenovo, AMD, CachyOS, or the RyzenAdj project.
 
-![The control panel: a header reading RUNNING NOW quiet, 45/50/60 W, 78 C ceiling, above AT BOOT balanced-plus; a profile list; and bounded power and temperature controls](docs/design/gui-main-window.png)
+![The control panel: a strip reading RUNNING NOW quiet, 45/50/60 W, 78 C cap, confirmed, beside AT BOOT balanced-plus; a list of four profiles; and the power envelope, thermal ceiling and CPU policy cards above Apply now](docs/design/gui-main-window.png)
 
 The screenshot is captured from the running application offscreen and driven by test fixtures, so it can be regenerated on any machine and cannot go stale.
 

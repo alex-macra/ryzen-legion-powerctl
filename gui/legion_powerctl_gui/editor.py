@@ -4,17 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from . import a11y, fields, model, theme
+from . import a11y, fields, model, styles
 from .advanced import AdvancedFields
 from .envelope import Envelope
+
+SCROLLBAR_GAP = 8
+CALLOUT_GAP = 8
 
 
 class ProfileEditor(QWidget):
@@ -31,12 +28,9 @@ class ProfileEditor(QWidget):
         self._last_problem_text = ""
 
         layout = QVBoxLayout(self)
-        self.profile_title = QLabel("No profile selected")
-        title_font = self.profile_title.font()
-        title_font.setPointSize(title_font.pointSize() + 3)
-        title_font.setBold(True)
-        self.profile_title.setFont(title_font)
-        layout.addWidget(self.profile_title)
+        layout.setContentsMargins(0, 0, SCROLLBAR_GAP, 0)
+        layout.setSpacing(styles.GAP)
+        self.profile_title = QLabel("No profile selected", self)
 
         power, power_form = fields.card(
             "Power envelope", "Sustained <= slow <= fast: moving one past a neighbour moves it too."
@@ -67,7 +61,7 @@ class ProfileEditor(QWidget):
         policy, policy_form = fields.card("CPU policy")
         self.power_profile_combo = fields.combo(model.POWER_PROFILES)
         self.power_profile_combo.activated.connect(self._on_edited)
-        policy_form.addRow("Linux power profile", self.power_profile_combo)
+        fields.add_row(policy_form, "Linux power profile", self.power_profile_combo)
 
         self.advanced = AdvancedFields()
         self.advanced.edited.connect(self._on_edited)
@@ -75,22 +69,20 @@ class ProfileEditor(QWidget):
         self.cards = [power, thermal, policy]
         for group in self.cards:
             layout.addWidget(group)
+        for group, envelope in ((power, self.power_envelope), (thermal, self.thermal_envelope)):
+            envelope.setAccessibleName(group.accessibleName())
         layout.addWidget(self.advanced)
+        fields.align_labels(self.findChildren(QLabel, fields.FORM_LABEL))
 
-        self.problems_label = QLabel("")
+        self.problems_label = QLabel("", self)
         self.problems_label.setWordWrap(True)
-        layout.addWidget(self.problems_label)
+        self.problems_label.setVisible(False)
+        layout.addStretch(1)
 
-        self.dirty_label = QLabel("")
-        self.apply_button = QPushButton("&Apply now")
+        self.dirty_label = QLabel("", self)
+        self.apply_button = QPushButton("&Apply now", self)
         self.apply_button.clicked.connect(self.apply_requested)
         self.buttons = [self.apply_button]
-        actions = QHBoxLayout()
-        actions.addWidget(self.dirty_label)
-        actions.addStretch(1)
-        actions.addWidget(self.apply_button)
-        layout.addLayout(actions)
-        layout.addStretch(1)
 
         self.fields = [
             self.stapm_slider, self.stapm_spin,
@@ -167,18 +159,20 @@ class ProfileEditor(QWidget):
         self._update_actions()
 
     def restyle(self, palette: QPalette) -> None:
-        self.problems_label.setStyleSheet(theme.text_style(palette, "FAIL"))
-        self.dirty_label.setStyleSheet(
-            f"color: {theme.muted_color(palette, palette.color(QPalette.ColorRole.Window)).name()};"
+        self.problems_label.setStyleSheet(
+            f"{styles.problem_style(palette)}"
+            f" QLabel {{ margin: {CALLOUT_GAP}px {SCROLLBAR_GAP}px 0px 0px; }}"
         )
-        self.apply_button.setStyleSheet(theme.primary_button_style(palette))
-        surface = theme.card_style(palette)
+        surface = styles.card_style(palette)
         for group in self.cards:
             group.setStyleSheet(surface)
+        self.advanced.restyle(palette)
         for envelope in self.envelopes:
             envelope.restyle(palette)
         for note in self.findChildren(QLabel, fields.CAPTION):
-            note.setStyleSheet(theme.caption_style(palette))
+            note.setStyleSheet(styles.caption_style(palette))
+        for label in self.findChildren(QLabel, fields.FORM_LABEL):
+            label.setStyleSheet(fields.label_style(palette))
 
     def _set_enabled(self, enabled: bool) -> None:
         for widget in self.fields:
@@ -195,6 +189,7 @@ class ProfileEditor(QWidget):
 
     def _set_problem_text(self, message: str) -> None:
         self.problems_label.setText(message)
+        self.problems_label.setVisible(bool(message))
         if message and message != self._last_problem_text:
             a11y.announce(self.problems_label, message)
         self._last_problem_text = message

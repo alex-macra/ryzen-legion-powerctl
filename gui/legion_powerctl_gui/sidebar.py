@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QPainter, QPalette
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -14,8 +16,47 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import model
-from .profile_delegate import BOOT_ROLE, DETAIL_ROLE, RUNNING_ROLE, ProfileDelegate
+from . import model, styles, theme
+from .profile_delegate import BOOT_ROLE, DETAIL_ROLE, ICON_SIZE, RUNNING_ROLE, ProfileDelegate
+
+BORDER = 1
+HEADER_HEIGHT = 36
+HEADER_PADDING = 16
+FOOTER_PADDING = 12
+FOOTER_GAP = 8
+
+
+class RailHeader(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFixedHeight(HEADER_HEIGHT)
+        self.count = 0
+        row = QHBoxLayout(self)
+        row.setContentsMargins(HEADER_PADDING, 0, HEADER_PADDING, 0)
+        self.title = QLabel("PROFILES")
+        self.title.setFont(theme.font("eyebrow"))
+        row.addWidget(self.title)
+        row.addStretch(1)
+
+    def set_count(self, count: int) -> None:
+        self.count = count
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        palette = self.palette()
+        painter = QPainter(self)
+        painter.setFont(theme.font("detail-mono"))
+        painter.setPen(
+            theme.muted_color(palette, palette.color(QPalette.ColorRole.Base))
+            if self.isEnabled()
+            else theme.disabled_text_color(palette)
+        )
+        painter.drawText(
+            self.rect().adjusted(0, 0, -HEADER_PADDING, 0),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            str(self.count),
+        )
 
 
 class ProfileList(QWidget):
@@ -33,11 +74,20 @@ class ProfileList(QWidget):
         self._drafts: set[str] = set()
         self._rendered: tuple | None = None
 
+        self.setProperty("card", True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(BORDER, BORDER, BORDER, BORDER)
+        layout.setSpacing(0)
+        self.header = RailHeader()
+        layout.addWidget(self.header)
         self.list = QListWidget()
         self.list.setAccessibleName("Profiles")
-        self.list.setIconSize(QSize(18, 18))
+        self.list.setFrameShape(QFrame.Shape.NoFrame)
+        self.list.viewport().setAutoFillBackground(False)
+        self.list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setIconSize(QSize(ICON_SIZE, ICON_SIZE))
         self.delegate = ProfileDelegate(self)
         self.delegate.boot_requested.connect(self.boot_requested)
         self.list.setItemDelegate(self.delegate)
@@ -50,14 +100,33 @@ class ProfileList(QWidget):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._on_context_menu)
         layout.addWidget(self.list, 1)
-        buttons = QHBoxLayout()
+        self.footer = QFrame()
+        self.footer.setObjectName("railFooter")
+        self.footer.setMinimumHeight(styles.FOOTER_HEIGHT)
+        buttons = QHBoxLayout(self.footer)
+        buttons.setContentsMargins(FOOTER_PADDING, 0, FOOTER_PADDING, 0)
+        buttons.setSpacing(FOOTER_GAP)
         self.new_button = QPushButton("&New profile")
         self.new_button.clicked.connect(self.new_requested)
         self.delete_button = QPushButton("De&lete")
         self.delete_button.clicked.connect(self.delete_requested)
-        buttons.addWidget(self.new_button)
-        buttons.addWidget(self.delete_button)
-        layout.addLayout(buttons)
+        buttons.addWidget(self.new_button, 1)
+        buttons.addWidget(self.delete_button, 1)
+        layout.addWidget(self.footer)
+        self.restyle(self.palette())
+
+    def restyle(self, palette: QPalette) -> None:
+        self.setStyleSheet(styles.surface_style(palette))
+        self.header.title.setStyleSheet(
+            f"QLabel {{ {styles.caption_style(palette)} }}"
+            f" QLabel:disabled {{ color: {theme.disabled_text_color(palette).name()}; }}"
+        )
+        self.footer.setStyleSheet(
+            f"{styles.footer_style(palette, 'QFrame#railFooter')}"
+            f" {styles.secondary_button_style(palette)}"
+        )
+        self.header.update()
+        self.list.viewport().update()
 
     def set_delete_enabled(self, enabled: bool) -> None:
         self.delete_button.setEnabled(enabled)
@@ -158,6 +227,7 @@ class ProfileList(QWidget):
             self._set_profile_icon(item, draft)
             self.list.addItem(item)
         self.list.blockSignals(False)
+        self.header.set_count(self.list.count())
         self.select_by_name(select)
 
     def _on_current_changed(self, current: QListWidgetItem | None, _previous=None) -> None:

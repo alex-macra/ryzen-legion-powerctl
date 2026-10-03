@@ -45,9 +45,11 @@ os.environ["FAKE_CLI_STATUS_FIXTURE"] = handle.name
 
 from PySide6.QtWidgets import QApplication  # noqa: E402  (after the env is set)
 
+from legion_powerctl_gui import scheme  # noqa: E402
 from legion_powerctl_gui.app import MainWindow  # noqa: E402
 
 app = QApplication([])
+scheme.install(app)
 window = MainWindow()
 window.resize(960, 620)
 window.show()

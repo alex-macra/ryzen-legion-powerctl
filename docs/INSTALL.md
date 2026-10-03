@@ -149,8 +149,9 @@ legion-powerctl-gui
 ```
 
 `legion-powerctl doctor` has a `GUI` line reporting whether the launcher, PySide6 and the
-polkit policy are all present, so you do not have to click the icon to find out. Native
-Qt follows your desktop colour scheme; see [UI.md](UI.md).
+polkit policy are all present, so you do not have to click the icon to find out. The
+window follows your desktop's light or dark setting in its own colours;
+`LEGION_POWERCTL_GUI_SCHEME=desktop` restores the native look. See [UI.md](UI.md).
 
 ## Widgets and bars
 

@@ -73,6 +73,11 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The GUI has a new look: flat hairline cards with one teal accent, a status strip
+  across the top, a profile rail that marks the running profile, and **Apply now** pinned
+  below the form so it never scrolls away. It is light or dark to follow the desktop's
+  colour scheme and switches live; set `LEGION_POWERCTL_GUI_SCHEME=desktop` to keep the
+  desktop's native style and palette instead.
 - `balanced-plus` ships at 87/92/102 W with an 80 C ceiling, up from 65/70/80 W at
   78 C. That was better for both gaming and work on the development Legion Pro 7. Upgrades
   can keep the old installed profile (pacman keeps an edited one, script installs keep any

@@ -13,6 +13,8 @@ MAX_LINES = 300
 
 LONGER_ALLOWED = {"model.py": 340}
 
+COLOUR_ALLOWED = {"scheme.py"}
+
 
 class PackageShapeTest(unittest.TestCase):
     def modules(self):
@@ -122,10 +124,17 @@ class PackageShapeTest(unittest.TestCase):
             self.assertEqual(action.find(f"defaults/{kind}").text, "auth_admin")
 
     def test_no_module_writes_down_a_colour(self):
-        colour = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
+        colour = re.compile(
+            r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\b(?:rgba?|hsla?)\("
+        )
         for path in self.modules():
+            if path.name in COLOUR_ALLOWED:
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
+                if self.is_literal_qcolor(node):
+                    with self.subTest(module=path.name, line=node.lineno):
+                        self.fail(f"{path.name}:{node.lineno} builds a QColor from literals")
                 if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                     continue
                 if not colour.search(node.value):
@@ -133,9 +142,22 @@ class PackageShapeTest(unittest.TestCase):
                 with self.subTest(module=path.name, line=node.lineno):
                     self.fail(f"{path.name}:{node.lineno} paints {node.value!r}")
 
+    @staticmethod
+    def is_literal_qcolor(node) -> bool:
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "QColor":
+            return False
+        return bool(node.args) and all(isinstance(arg, ast.Constant) for arg in node.args)
+
+    def test_the_colour_exemption_is_where_the_colours_are(self):
+        source = (PACKAGE / "scheme.py").read_text(encoding="utf-8")
+        self.assertRegex(
+            source, r"#[0-9A-Fa-f]{6}\b",
+            "scheme.py holds no colours any more, so its exemption covers nothing",
+        )
+
     def test_every_exemption_still_names_a_module(self):
         names = {path.name for path in self.modules()}
-        for name in LONGER_ALLOWED:
+        for name in (*LONGER_ALLOWED, *COLOUR_ALLOWED):
             with self.subTest(module=name):
                 self.assertIn(
                     name, names,

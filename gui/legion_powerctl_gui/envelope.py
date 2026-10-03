@@ -6,6 +6,7 @@ from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -13,9 +14,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import a11y, fields, theme
+from . import a11y, fields, styles, theme
 
-RADIUS = 4
+RADIUS = 6
 MARKER_WIDTH = 3
 OVERHANG = 3
 HALO = 1
@@ -23,6 +24,7 @@ RING_GAP = 2
 RING_WIDTH = 2
 EDGE = OVERHANG + HALO + RING_GAP + RING_WIDTH
 GAP = 4
+LINE_SPACING = 8
 
 
 class _Stop(QSlider):
@@ -192,6 +194,7 @@ class Envelope(QWidget):
 
         line = QHBoxLayout()
         line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(LINE_SPACING)
         line.addWidget(self.scale[0])
         line.addWidget(self.bar, 1)
         line.addWidget(self.scale[1])
@@ -224,7 +227,9 @@ class Envelope(QWidget):
     def restyle(self, palette: QPalette) -> None:
         background = palette.color(QPalette.ColorRole.Base)
         for swatch, step in self._swatches:
-            swatch.setStyleSheet(theme.swatch_style(palette, background, step))
+            swatch.setStyleSheet(styles.swatch_style(palette, background, step))
         for label in self.scale:
-            label.setStyleSheet(theme.caption_style(palette))
+            label.setStyleSheet(styles.caption_style(palette))
+        for label in self.findChildren(QLabel, fields.LEGEND):
+            label.setStyleSheet(fields.label_style(palette))
         self.bar.update()

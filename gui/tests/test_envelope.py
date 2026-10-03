@@ -217,6 +217,38 @@ class EnvelopeTest(OffscreenGuiTest):
                 self.assertGreater(entry.height(), 0, "the legend row measured itself empty")
                 self.assertGreater(entry.width(), 0)
 
+    def test_a_narrow_legend_wraps_onto_a_second_line(self):
+        from legion_powerctl_gui import fields
+
+        entries = [spin.parentWidget() for spin in self.envelope.spins.values()]
+        one_line = self.envelope.height()
+        self.host.resize(sum(entry.width() for entry in entries[:2]) + 60, 220)
+        self.app.processEvents()
+        rows = sorted({entry.y() for entry in entries})
+        self.assertEqual(len(rows), 2, f"the legend did not wrap to two lines: {rows}")
+        self.assertEqual(entries[2].x(), entries[0].x(), "the wrapped entry is not left aligned")
+        self.assertEqual(rows[1] - rows[0], entries[0].height() + fields.LEGEND_LINE_SPACING)
+        self.assertGreater(self.envelope.height(), one_line, "the wrapped line overlaps the bar")
+
+    def test_a_legend_just_short_of_room_closes_its_gaps_before_it_wraps(self):
+        from legion_powerctl_gui import fields
+
+        entries = [spin.parentWidget() for spin in self.envelope.spins.values()]
+        margins = self.host.layout().contentsMargins()
+        tight = sum(entry.width() for entry in entries) + 2 * fields.LEGEND_MIN_SPACING
+        for room, lines in ((tight + 4, 1), (tight - 1, 2)):
+            self.host.resize(room + margins.left() + margins.right(), 220)
+            self.app.processEvents()
+            with self.subTest(room=room):
+                self.assertEqual(self.envelope.width(), room)
+                self.assertEqual(len({entry.y() for entry in entries}), lines)
+        self.host.resize(tight + 4 + margins.left() + margins.right(), 220)
+        self.app.processEvents()
+        gaps = [after.x() - before.x() - before.width() for before, after in zip(entries, entries[1:])]
+        for gap in gaps:
+            self.assertGreaterEqual(gap, fields.LEGEND_MIN_SPACING)
+            self.assertLess(gap, fields.LEGEND_SPACING)
+
     def ring_color(self) -> str:
         from legion_powerctl_gui import theme
 

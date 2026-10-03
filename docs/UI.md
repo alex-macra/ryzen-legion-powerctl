@@ -31,7 +31,8 @@ starting point.
 
 **PySide6 (LGPL) + Qt Widgets.**
 
-- Native Breeze/CachyOS appearance for free, acceptable on GNOME.
+- Native Breeze/CachyOS appearance for free when it is asked for
+  (`LEGION_POWERCTL_GUI_SCHEME=desktop`), acceptable on GNOME.
 - Python is the closest maintenance fit to a Bash project; no C++/CMake/ECM
   toolchain to carry.
 - Form-heavy UI (sliders, combo boxes, checkboxes) is exactly what Qt Widgets
@@ -43,42 +44,54 @@ and a KCM using KAuth.
 ## Visual language
 
 The window answers one question: **what limits is this machine running right now, and
-will it still be running them tomorrow?** A two-line header holds the answer - line
-one is the apply on record, line two is the boot pointer - and under it sit a sidebar
-of profiles, two cards of limits, one policy row, a disclosure, and one verb.
+will it still be running them tomorrow?** A strip across the top holds the answer in
+two cells - `RUNNING NOW` is the apply on record, `AT BOOT` is the boot pointer - and
+under it sit a rail of profiles, two cards of limits, a policy card, a disclosure, and
+one verb pinned below them.
 
-The two are distinct and nothing keeps them in step. Line one comes from
-`last_apply`, the record the CLI leaves in `/run`; line two is the pointer in
+The two are distinct and nothing keeps them in step. The running cell comes from
+`last_apply`, the record the CLI leaves in `/run`; the boot cell is the pointer in
 `config.conf` that the boot service reads. The word "active" is not used in the
 GUI, because it does not say which of the two it means.
 
-What holds the look together is that **no colour is written down anywhere in the
-package** - `theme.py` derives every one from `QPalette`, and `test_package_shape.py`
-fails the build on a hex literal in any module. A colour in the source is the one
-thing on screen the user's scheme does not get to choose, and it looks correct to
-whoever added it on whatever machine they were using.
+What holds the look together is that **colour is written down in exactly one
+module**. By default the window runs Qt's Fusion style with the Legion scheme: a warm
+paper plane by day, a deep navy plane by night, one teal or mint accent. `scheme.py`
+holds those two palettes as `QPalette` role values, picks one from the desktop's colour
+scheme (or, when the desktop does not say, from the lightness of the palette it handed
+over), and swaps it live when the desktop flips. Every other colour is still derived from
+whichever palette is installed - `theme.py` fits each one to its contrast floor and
+`styles.py` writes it into the stylesheets - and `test_package_shape.py` fails the build
+on a colour literal in any other module. A colour in the source is the one thing on
+screen the user's scheme does not get to choose, so the scheme's colours sit where the
+contrast tests measure them, and `LEGION_POWERCTL_GUI_SCHEME=desktop` hands the choice
+back: the platform style and the desktop's own palette return, and the same derivations
+run on them.
 
 The accent is `QPalette.Highlight`, fitted to the 3:1 non-text floor, and it carries
-exactly three things: **the rail marking what is running**, the primary button, and
-the filled part of a track - whether that is a `QSlider`, which every desktop style
-already draws in the highlight colour so it costs nothing and must not be overridden,
-or the envelope instrument's own tiers. The boot profile deliberately gets no accent:
-it is a different fact, and it wears a `BOOT` pin instead. On CachyOS the accent comes
-out the mint the Waybar mockup was drawn in; on Breeze blue; on a
-high-contrast scheme whatever that scheme chose. Card surfaces come from `Base`,
-hairlines and secondary text from a measured step between `Window` and `WindowText`.
+what is running and what acts: **the rail marking what is running**, in the strip and on
+its row; the primary button and the switch when it is on; the envelope's filled tiers;
+focus rings and the status bar's links. The selected row is a twelve percent tint of
+it. The boot profile deliberately gets no accent: it is a different fact, and it wears
+an ink `BOOT` pin instead. Under the Legion scheme the accent is teal by day and mint
+by night; under `desktop` it is whatever the desktop chose - the mint the Waybar mockup
+was drawn in on CachyOS, blue on Breeze, and on a high-contrast scheme whatever that
+scheme chose. Card surfaces come from `Base`, hairlines and secondary text from a
+measured step between `Window` and `WindowText`.
 
 Three panels are painted rather than laid out, and all three were forced:
 
 - **Profile rows** (`profile_delegate.py`). A `QListWidgetItem` draws one string in
-  one weight, so the rows were separated only by the icon in front of them - and
-  `QIcon.hasThemeIcon` leaves that out on every theme without `power-profile-*`
-  names, which is most of them. The delegate gets the name and its envelope into two
-  weights, the sustained wattage into a monospaced column, the running profile onto
-  an accent rail, and the boot profile onto a `BOOT` pin. It draws its own focus
-  rectangle, because a custom paint replaces the style's (WCAG 2.4.7); it changes
-  nothing the keyboard or a screen reader sees, both of which read the item's roles,
-  and the row's accessible text names both marks in words.
+  one weight, so a plain row cannot set a name apart from its numbers. The delegate
+  paints two lines: the name with the sustained wattage in a monospaced column at the
+  right, and under it the envelope with its pin at the right. The running profile
+  gets a 3 px accent rail on the row's left edge. A theme's `power-profile-*` icon,
+  where the theme has one, sits on the name line just before the wattage, so it never
+  takes width from the envelope: at the default rail width every envelope and its pin
+  fit whole, and the suite checks that with an icon forced in. The delegate draws its
+  own focus rectangle, because a custom paint replaces the style's (WCAG 2.4.7); it
+  changes nothing the keyboard or a screen reader sees, both of which read the item's
+  roles, and the row's accessible text names both marks in words.
 
   **The pin is a click target, not a control.** Painted things have no AT-SPI node
   and Tab cannot land on them, so the real control is a `QAction` on the list - the
@@ -90,8 +103,8 @@ Three panels are painted rather than laid out, and all three were forced:
   nailed to the bottom of the window. On a healthy Legion that strip permanently
   showed two or three orange chips - historically a second `ryzenadj` on `PATH` and a
   missing `ryzen_smu` module - none of which a user acts on, and a window that always
-  shows warnings teaches its user to stop reading them on the first day. One chip in the
-  header carries the count and its severity; the list is one click behind it, worst
+  shows warnings teaches its user to stop reading them on the first day. One badge at the
+  top of the window carries the count and its severity; the list is one click behind it, worst
   first. Those two examples are no longer warnings at all: the doctor now reports a
   resolved `ryzenadj` shadow as `OK`, and reports the module state as one
   `SMU-backend` line rather than two rows for one cause.
@@ -114,8 +127,10 @@ Three panels are painted rather than laid out, and all three were forced:
   The values sit in spin boxes under the bar rather than painted at the stops. At
   60/65/75 on the CLI's 5-200 W range three labels sit two and a half percent apart,
   so they collide and have to be pushed off the stops they name; and a spin box is
-  the only thing here anyone can type an exact wattage into. The row wraps
-  (`flow.py`) for the same reason the action row does.
+  the only thing here anyone can type an exact wattage into. Each box is as wide as
+  its widest value. On a narrow window the row wraps (`flow.py`), but it closes its gaps
+  first, so a scroll bar appearing cannot by itself push a value onto a second line -
+  which would make the card taller and keep the scroll bar there.
 
   Nothing is drawn straight onto the fills. Each stop marker, and the focus ring
   around it, sits on a plate of the card's own colour, and the ends of the scale are
@@ -123,6 +138,12 @@ Three panels are painted rather than laid out, and all three were forced:
   backgrounds and no single colour is guaranteed to clear the floor against both - on
   a scheme whose `Highlight` is near-white over a near-black `Base` they want opposite
   lightnesses. One known colour behind a mark is what makes its contrast a number.
+
+Two smaller pieces are painted too, and keep their native roles. The `Re-apply at every
+boot` switch is a `QCheckBox` whose `paintEvent` draws a track and a knob, so AT-SPI
+still reads a check box with its mnemonic. A card's title is an eyebrow painted over a
+`QGroupBox` that keeps the mixed-case title as its accessible name, so a screen reader
+hears each card named once and the tree gains no text node for it.
 
 ## Privilege architecture
 
@@ -172,7 +193,11 @@ fixed per severity and the lightness is walked away from the window colour until
 the contrast clears 4.5:1; the focus ring clears the 3:1 non-text floor. This is
 always solvable: the hardest possible background sits at relative luminance 0.179,
 where black and white both reach 4.58:1. Nothing is a colour alone - the doctor
-chips print `OK`/`WARN`/`FAIL` in their text and the service badge does too.
+chips print `OK`/`WARN`/`FAIL` in their text and the service badge does too. Fusion
+draws the frames of spin boxes, combo boxes and line edits, and the edges of a scroll
+bar's thumb, from the palette's `Window` rather than from any role meant for them, so
+under the Legion scheme those classes get a palette of their own whose `Window` lands
+those edges at 3:1. The suite measures that on rendered pixels, not on the palette.
 
 **Announcements.** Qt Widgets has no live region. Saves, doctor results and
 validation errors go through one helper that posts Qt 6.8's announcement event,
@@ -187,7 +212,11 @@ fifteen-second poll re-selects the same row and would otherwise repeat it foreve
 labels deliberately have none, because a label that names a stop has no focus to hand
 it. Each stop answers the arrow keys, Page Up/Down and Home/End, and pushing one past
 a neighbour moves the neighbour - so the constraint the bar draws is reachable without
-a mouse. Its focus ring is painted, because a custom paint replaces the style's own.
+a mouse. Its focus ring is painted, because a custom paint replaces the style's own;
+so are the rings of the two frameless scroll areas, the editor and the checks list,
+which would otherwise take focus and show nothing, and the boot switch's, which shows
+for any focus the pointer did not cause and keeps its state when the window hands the
+focus back, after a command or on reactivation.
 Setting a boot profile is a `QAction` on the list, so the Menu key reaches it; the
 painted pin is a mouse shortcut to the same signal. Saving without applying is
 `Ctrl+S` and a `Save` button on the discard prompt, which is the moment work would
@@ -198,8 +227,12 @@ one thing a user needs when reporting a problem. Its row text is selectable by m
 but not by keyboard, so selecting does not add two tab stops per row, and `Ctrl+C` was
 deliberately left to that selection rather than bound to the button.
 
-**Reflow.** Minimum 720x480, so the window fits a 200%-scaled 1080p desktop, and the
-editor column scrolls.
+**Reflow.** Minimum 720x480, so the window fits a 200%-scaled 1080p desktop. The editor
+column scrolls between a title above and, below, the problems callout and `Apply now`,
+which stay put, so the verb and the reason it is unavailable are on screen at every
+size, and the field being typed in is scrolled back into view when the callout appears; at the default 960x620 the form fits without scrolling until Advanced is opened.
+A rail dragged wide cannot squeeze the editor below its own minimum, and at a font too
+large for the window the editor scrolls sideways rather than cutting anything off.
 
 Known gaps, deliberately not addressed yet:
 
@@ -214,13 +247,15 @@ Known gaps, deliberately not addressed yet:
 The main-window image is captured from the running PySide6 application with
 representative profile and diagnostic data - offscreen (`QT_QPA_PLATFORM=offscreen`),
 driven by the test fixtures, so it can be regenerated on any machine and cannot go
-stale in the way the previous one did. Two things follow from that and are worth
-knowing when reading it: the widget chrome is Fusion, because the container has no
-Breeze, and the scheme is a Breeze-dark-like palette, so the accent shows as blue.
+stale in the way the previous one did. Three things follow from that and are worth
+knowing when reading it: it shows the default look, Fusion with the Legion scheme; in
+its light palette, because offscreen the desktop's colour scheme reads as unknown and
+the palette it falls back to is light; and without power-profile icons, because
+offscreen there is no icon theme to find them in.
 The Waybar image remains a design mockup drawn in Breeze Dark with the CachyOS
 Emerald accent.
 
 | Image | Type and implementation status |
 |---|---|
-| [gui-main-window.png](design/gui-main-window.png) | real application screenshot, rendered offscreen under Fusion; implemented as `legion-powerctl-gui` |
+| [gui-main-window.png](design/gui-main-window.png) | real application screenshot, rendered offscreen under Fusion with the Legion scheme; implemented as `legion-powerctl-gui` |
 | [waybar.png](design/waybar.png) | design mockup; implemented as `status --waybar` |
