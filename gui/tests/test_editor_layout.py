@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: MIT
 
+import json
 import os
 import unittest
+from pathlib import Path
 
-from test_app_offscreen import DESKTOP_POINT_SIZE, HAVE_PYSIDE6, OffscreenGuiTest, wait_until
+from test_app_offscreen import (
+    DESKTOP_POINT_SIZE,
+    HAVE_PYSIDE6,
+    OffscreenGuiTest,
+    VariantFixtureTest,
+    wait_until,
+)
 
 CARD_NAMES = ["Power envelope", "Thermal ceiling", "CPU policy"]
 LINE_EDIT_MARGIN = 2
@@ -324,6 +332,368 @@ class EditorLayoutTest(OffscreenGuiTest):
                 self.assertGreater(inked, 0, "no eyebrow was painted in the muted colour")
                 first = min(child.y() for child in card.children() if child.isWidgetType())
                 self.assertGreater(first, rect.bottom(), "the card's content covers its eyebrow")
+
+
+class RunningReferenceTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"].update(
+            profile="quiet", stapm_w="45", slow_w="50", fast_w="60", temp_c="78"
+        )
+        document["active_profile"] = "balanced-plus"
+
+    def setUp(self):
+        super().setUp()
+        self.editor = self.window.editor
+        self.show_at(960, 620)
+
+    def show_at(self, width: int, height: int) -> None:
+        self.window.resize(width, height)
+        self.window.show()
+        self.settle(5)
+
+    def open_profile(self, name: str) -> None:
+        self.window.sidebar.select_by_name(name)
+        self.settle(3)
+        self.assertEqual(self.editor.current_name, name)
+
+    def record(self, **limits) -> None:
+        document = json.loads(Path(self.fixture.name).read_text())
+        document["last_apply"].update(limits)
+        Path(self.fixture.name).write_text(json.dumps(document))
+        before = self.window.refresh_count
+        self.window.refresh()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > before))
+        self.settle(3)
+
+    @staticmethod
+    def on_base(widget, derive) -> str:
+        from PySide6.QtGui import QPalette
+
+        palette = widget.palette()
+        return derive(palette, palette.color(QPalette.ColorRole.Base)).name()
+
+    def muted_in(self, card, left: int) -> int:
+        from legion_powerctl_gui import theme
+
+        image = card.grab().toImage()
+        rect = card.eyebrow_rect()
+        muted = self.on_base(card, theme.muted_color)
+        return sum(
+            image.pixelColor(x, y).name() == muted
+            for y in range(max(0, rect.top() - 4), rect.bottom() + 1)
+            for x in range(left, rect.right() + 1)
+        )
+
+    def test_the_envelope_cards_name_the_running_limits_beside_their_eyebrow(self):
+        from PySide6.QtGui import QAccessible
+
+        self.open_profile("quiet")
+        cards = self.editor.cards
+        self.assertEqual(
+            [card.aside for card in cards], ["running 45/50/60 W", "running 78 °C", ""]
+        )
+        power = cards[0]
+        right = power.eyebrow_rect().center().x()
+        self.assertGreater(self.muted_in(power, right), 0, "the running limits are not painted")
+        for card, name in zip(cards, CARD_NAMES):
+            interface = QAccessible.queryAccessibleInterface(card)
+            with self.subTest(card=name):
+                self.assertEqual(interface.role(), QAccessible.Role.Grouping)
+                self.assertEqual(interface.text(QAccessible.Text.Name), name)
+                spoken = []
+                pending = [interface.child(index) for index in range(interface.childCount())]
+                while pending:
+                    node = pending.pop()
+                    spoken.append(node.text(QAccessible.Text.Name))
+                    pending += [node.child(index) for index in range(node.childCount())]
+                self.assertFalse(
+                    [text for text in spoken if "running" in text],
+                    "the painted aside became a node the strip already speaks for",
+                )
+        power.set_aside("")
+        self.assertEqual(self.muted_in(power, right), 0, "something else is painted there")
+
+    def test_the_bars_carry_the_running_limits_and_the_editor_cannot_move_them(self):
+        from legion_powerctl_gui import theme
+
+        self.open_profile("quiet")
+        bar = self.editor.power_envelope.bar
+        self.assertEqual(bar.reference, (45, 50, 60))
+        self.assertEqual(self.editor.thermal_envelope.bar.reference, (78,))
+        self.editor.stapm_spin.setValue(35)
+        self.editor._on_edited()
+        self.settle(3)
+        self.assertTrue(self.editor.dirty)
+        self.assertEqual(bar.reference, (45, 50, 60), "an edit moved the mark of what runs")
+        image = bar.grab().toImage()
+        self.assertEqual(
+            image.pixelColor(bar.x_for(45), bar.height() - 2).name(),
+            self.on_base(bar, theme.secondary_color),
+        )
+        self.assertEqual(
+            image.pixelColor(bar.x_for(35), bar.height() // 2).name(),
+            self.on_base(bar, theme.marker_color),
+        )
+
+    def test_a_new_apply_record_moves_the_marks_and_an_unchanged_one_repaints_nothing(self):
+        import unittest.mock
+
+        self.open_profile("performance-capped")
+        power, thermal = self.editor.cards[:2]
+        bar = self.editor.power_envelope.bar
+        with unittest.mock.patch.object(bar, "update") as repaint, unittest.mock.patch.object(
+            power, "update"
+        ) as reword:
+            self.record()
+            repaint.assert_not_called()
+            reword.assert_not_called()
+        self.record(stapm_w="65", slow_w="70", fast_w="75", temp_c="85")
+        self.assertEqual(bar.reference, (65, 70, 75))
+        self.assertEqual(self.editor.thermal_envelope.bar.reference, (85,))
+        self.assertEqual((power.aside, thermal.aside), ("running 65/70/75 W", "running 85 °C"))
+        self.assertEqual(self.editor.title_aside.text(), "")
+
+    def test_a_running_ceiling_above_a_capped_scale_is_named_but_not_marked(self):
+        from legion_powerctl_gui import theme
+
+        self.record(temp_c="85")
+        self.open_profile("balanced-plus")
+        bar = self.editor.thermal_envelope.bar
+        self.assertEqual(bar.reference, (85,))
+        self.assertEqual(self.editor.cards[1].aside, "running 85 °C")
+        image = bar.grab().toImage()
+        self.assertNotIn(
+            self.on_base(bar, theme.secondary_color),
+            self.colours_in_rows(image, bar.height() // 2 + 1, bar.height()),
+            "a mark is drawn for a ceiling the scale cannot show",
+        )
+        power = self.editor.power_envelope.bar
+        self.assertEqual(
+            power.grab().toImage().pixelColor(power.x_for(45), power.height() - 2).name(),
+            self.on_base(power, theme.secondary_color),
+        )
+
+    def baseline(self, label) -> int:
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QFontMetrics
+
+        bottom = label.height() - label.contentsMargins().bottom()
+        header = self.window.editor_column.header
+        return label.mapTo(header, QPoint(0, bottom)).y() - QFontMetrics(label.font()).descent()
+
+    def test_the_title_says_how_the_profile_relates_to_the_machine(self):
+        from legion_powerctl_gui.editor_column import HEADER_GAP, TITLE_HEIGHT
+        from PySide6.QtCore import Qt
+
+        title, aside = self.editor.profile_title, self.editor.title_aside
+        for name, words in (
+            ("quiet", "running now"), ("balanced-plus", "boot profile"), ("performance-capped", "")
+        ):
+            self.open_profile(name)
+            with self.subTest(profile=name):
+                self.assertEqual(aside.text(), words)
+                self.assertEqual(aside.isVisible(), bool(words))
+        for size in ((960, 620), (720, 480)):
+            self.show_at(*size)
+            self.open_profile("quiet")
+            with self.subTest(size=size):
+                header = self.window.editor_column.header
+                self.assertEqual(header.height(), TITLE_HEIGHT + HEADER_GAP)
+                for label in (title, aside):
+                    self.assertTrue(label.alignment() & Qt.AlignmentFlag.AlignBottom)
+                self.assertLessEqual(abs(self.baseline(title) - self.baseline(aside)), 1)
+                self.assertEqual(aside.width(), aside.sizeHint().width(), "the aside was cut short")
+                self.assertGreater(aside.x(), title.geometry().right(), "the aside covers the title")
+
+    def test_the_title_and_its_aside_keep_one_baseline_when_either_font_changes(self):
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        self.open_profile("quiet")
+        title, aside = self.editor.profile_title, self.editor.title_aside
+        for label in (title, aside):
+            font = QFont(label.font())
+            font.setPointSizeF(font.pointSizeF() * 2)
+            label.setFont(font)
+            self.settle(3)
+            drop = QFontMetrics(title.font()).descent() - QFontMetrics(aside.font()).descent()
+            with self.subTest(grown=label.text()):
+                self.assertEqual(aside.contentsMargins().bottom(), max(0, drop))
+                self.assertLessEqual(abs(self.baseline(title) - self.baseline(aside)), 1)
+
+    def test_the_title_aside_is_inked_in_the_muted_colour_of_the_plane_in_both_schemes(self):
+        from legion_powerctl_gui import scheme, theme
+        from PySide6.QtGui import QColor, QPalette
+
+        self.open_profile("quiet")
+        aside = self.editor.title_aside
+        self.addCleanup(self.app.setPalette, QPalette(self.app.palette()))
+        for dark in (False, True, False):
+            self.app.setPalette(scheme.palette(dark))
+            self.app.setStyleSheet(self.app.styleSheet())
+            self.settle(3)
+            plane = self.window.palette().color(QPalette.ColorRole.Window)
+            muted = theme.muted_color(self.window.palette(), plane)
+            image = aside.grab().toImage()
+            inks = {
+                image.pixelColor(x, y).name()
+                for y in range(image.height())
+                for x in range(image.width())
+            }
+            with self.subTest(dark=dark):
+                self.assertGreaterEqual(theme.contrast_ratio(muted, plane), theme.MIN_CONTRAST)
+                self.assertEqual(
+                    max(inks, key=lambda ink: theme.contrast_ratio(QColor(ink), plane)),
+                    muted.name(),
+                    "the aside is not inked in the muted colour of the plane it sits on",
+                )
+
+    def painted_aside(self, card, text: str):
+        from legion_powerctl_gui import theme
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QFontMetrics, QPainter
+
+        rect = card.eyebrow_rect()
+        font = theme.font("detail-mono", card.font())
+        left = rect.right() + 1 - QFontMetrics(font).horizontalAdvance(text)
+        card.set_aside("")
+        pixmap = card.grab()
+        painter = QPainter(pixmap)
+        painter.setFont(font)
+        painter.setPen(QColor(self.on_base(card, theme.muted_color)))
+        painter.drawText(
+            QPointF(left, rect.top() + QFontMetrics(card.eyebrow_font()).ascent()), text
+        )
+        painter.end()
+        return pixmap.toImage()
+
+    def test_the_card_aside_ends_flush_right_on_the_eyebrow_baseline_and_elides_from_the_left(self):
+        from legion_powerctl_gui import fields, styles, theme
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QFontMetrics
+
+        self.open_profile("quiet")
+        power = self.editor.cards[0]
+        words = power.aside
+        whole = self.painted_aside(power, words)
+        power.set_aside(words)
+        self.assertTrue(power.grab().toImage() == whole, "the aside is off the eyebrow's line")
+
+        chrome = power.width() - power.eyebrow_rect().width()
+        eyebrow = QFontMetrics(power.eyebrow_font()).horizontalAdvance(power.eyebrow)
+        mono = QFontMetrics(theme.font("detail-mono", power.font()))
+        room = mono.horizontalAdvance(words) // 2
+        narrow = fields.Card(power.eyebrow)
+        self.addCleanup(narrow.deleteLater)
+        narrow.setStyleSheet(styles.card_style(self.window.palette()))
+        narrow.resize(chrome + eyebrow + fields.ASIDE_GAP + room, power.height())
+        shown = mono.elidedText(words, Qt.TextElideMode.ElideLeft, room)
+        self.assertTrue(shown.startswith("\u2026") and shown.endswith("60 W"), shown)
+        cut = self.painted_aside(narrow, shown)
+        narrow.set_aside(words)
+        image = narrow.grab().toImage()
+        self.assertTrue(image == cut, f"a narrow card does not read {shown!r}")
+        band = image.copy(narrow.eyebrow_rect().adjusted(0, -4, 0, 0))
+        self.assertEqual(
+            len(self.ink_spans(band, 0, band.height(), fields.ASIDE_GAP)), 2,
+            "the aside runs into the eyebrow",
+        )
+
+        narrow.resize(chrome + eyebrow, power.height())
+        narrow.set_aside("")
+        bare = narrow.grab().toImage()
+        narrow.set_aside(words)
+        self.assertTrue(narrow.grab().toImage() == bare, "an aside with no room was painted")
+
+    def test_the_title_aside_is_one_text_node_shown_only_while_it_says_something(self):
+        from PySide6.QtGui import QAccessible
+
+        text = QAccessible.Role.StaticText
+        header = self.window.editor_column.header
+        for name, shown in (
+            ("quiet", [(text, "quiet"), (text, "running now")]),
+            ("performance-capped", [(text, "performance-capped")]),
+        ):
+            self.open_profile(name)
+            interface = QAccessible.queryAccessibleInterface(header)
+            children = [interface.child(index) for index in range(interface.childCount())]
+            with self.subTest(profile=name):
+                self.assertEqual(len(children), 2, "the header gained more than the aside")
+                self.assertEqual(
+                    [
+                        (child.role(), child.text(QAccessible.Text.Name))
+                        for child in children
+                        if not child.state().invisible
+                    ],
+                    shown,
+                )
+
+    def test_the_title_aside_uses_the_words_its_row_already_speaks(self):
+        from PySide6.QtCore import Qt
+
+        for name in ("quiet", "balanced-plus"):
+            self.open_profile(name)
+            row = self.window.sidebar.list.currentItem()
+            with self.subTest(profile=name):
+                self.assertIn(
+                    f", {self.editor.title_aside.text()}, ",
+                    row.data(Qt.ItemDataRole.AccessibleTextRole),
+                )
+
+    def test_a_long_title_cuts_the_aside_short_before_it_widens_the_header(self):
+        from legion_powerctl_gui.editor_column import TITLE_GAP
+        from legion_powerctl_gui.fields import Aside
+        from PySide6.QtCore import Qt
+
+        self.show_at(720, 480)
+        self.open_profile("quiet")
+        title, aside = self.editor.profile_title, self.editor.title_aside
+        header = self.window.editor_column.header
+        room = header.width() - TITLE_GAP - aside.sizeHint().width() // 2
+        name = "quiet-"
+        while title.fontMetrics().horizontalAdvance(f"{name}q") < room:
+            name += "q"
+        title.setText(name)
+        self.settle(3)
+        self.assertEqual(title.width(), title.sizeHint().width(), "the title gave way first")
+        self.assertEqual(
+            header.minimumSizeHint().width(), title.minimumSizeHint().width() + TITLE_GAP,
+            "the aside raised the width the header needs",
+        )
+        self.assertGreater(aside.width(), 0)
+        self.assertLess(aside.width(), aside.sizeHint().width(), "the aside still fits whole")
+        shown = aside.fontMetrics().elidedText(
+            aside.text(), Qt.TextElideMode.ElideRight, aside.contentsRect().width()
+        )
+        twin = Aside(shown, aside.parentWidget())
+        self.addCleanup(twin.deleteLater)
+        twin.setFont(aside.font())
+        twin.setStyleSheet(aside.styleSheet())
+        twin.setAlignment(aside.alignment())
+        twin.setContentsMargins(aside.contentsMargins())
+        twin.setGeometry(aside.geometry())
+        twin.show()
+        self.assertNotEqual(shown, aside.text())
+        self.assertTrue(
+            twin.grab().toImage() == aside.grab().toImage(),
+            f"{aside.text()!r} is clipped at its edge instead of reading {shown!r}",
+        )
+        twin.hide()
+
+
+
+class NoBootPinVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"] = None
+        document["active_profile"] = ""
+
+    def test_a_cleared_editor_claims_neither_running_nor_booting(self):
+        editor = self.window.editor
+        self.assertTrue(wait_until(self.app, lambda: self.window.checks.count >= 1))
+        editor.clear()
+        self.settle(3)
+        self.assertEqual(editor.current_name, "")
+        self.assertEqual(editor.title_aside.text(), "")
+        self.assertTrue(editor.title_aside.isHidden())
 
 
 if __name__ == "__main__":

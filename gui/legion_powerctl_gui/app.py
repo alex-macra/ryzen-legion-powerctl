@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid
 
-from . import __version__, dialogs, model, styles, theme
+from . import __version__, dialogs, model, runstate, styles, theme
 from .actions import ProfileActions
 from .editor import ProfileEditor
 from .editor_column import EditorColumn
@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.sidebar.set_profiles(
             status.profiles, status.active_profile, self.editor.current_name, running
         )
+        self.editor.set_context(runstate.run_state(status), status.active_profile)
         if self._pending_open:
             name, self._pending_open = self._pending_open, ""
             self.sidebar.select_by_name(name)

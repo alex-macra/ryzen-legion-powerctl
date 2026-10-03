@@ -249,6 +249,134 @@ class EnvelopeTest(OffscreenGuiTest):
             self.assertGreaterEqual(gap, fields.LEGEND_MIN_SPACING)
             self.assertLess(gap, fields.LEGEND_SPACING)
 
+    def secondary(self) -> str:
+        from legion_powerctl_gui import theme
+
+        return theme.secondary_color(self.bar.palette(), self.base()).name()
+
+    def test_a_reference_mark_hangs_under_the_bar_at_the_running_value(self):
+        from legion_powerctl_gui import theme
+
+        self.envelope.set_reference((60, 90, 150))
+        self.assertEqual(self.bar.reference, (60, 90, 150))
+        image = self.image()
+        x, height = self.bar.x_for(90), self.bar.height()
+        empty = image.pixelColor(x, 0).name()
+        tier = theme.tier_color(self.bar.palette(), self.base(), theme.tier_step(1)).name()
+        self.assertEqual(
+            image.pixelColor(x, height - 2).name(), self.secondary(), "no mark at the running value"
+        )
+        self.assertEqual(image.pixelColor(x, height // 2).name(), tier, "the mark is on the fill")
+        self.assertEqual(
+            image.pixelColor(x, height - 1).name(), empty, "the mark spills out of the bar's margin"
+        )
+        self.envelope.set_reference(None)
+        self.assertEqual(self.bar.reference, ())
+        self.assertEqual(
+            self.image().pixelColor(x, height - 2).name(), empty, "the mark outlived its reference"
+        )
+
+    def test_a_reference_under_a_stop_keeps_the_plate_and_the_ring(self):
+        self.envelope.set_reference((60, 120, 150))
+        self.test_the_ring_closes_on_all_four_sides_of_the_stop()
+        self.test_the_marks_are_drawn_on_the_card_and_not_on_the_fills()
+        self.test_the_fills_step_down_from_the_sustained_tier_outwards()
+        self.stops[1].setFocus()
+        image = self.image()
+        for stop in (self.stops[0], self.stops[2]):
+            with self.subTest(foot=stop.accessibleName()):
+                self.assertEqual(
+                    image.pixelColor(self.bar.x_for(stop.value()), self.bar.height() - 2).name(),
+                    self.secondary(), "the stop hides the mark it sits on",
+                )
+
+    def test_a_reference_mark_is_a_foot_wider_than_the_plate_of_a_stop(self):
+        from legion_powerctl_gui import envelope
+
+        bare = self.image()
+        self.envelope.set_reference((90,))
+        image = self.image()
+        x, row = self.bar.x_for(90), self.bar.height() - 2
+        half = envelope.TICK_WIDTH // 2
+        inked = [
+            column for column in range(image.width())
+            if image.pixel(column, row) != bare.pixel(column, row)
+        ]
+        self.assertEqual(inked, list(range(x - half, x + half + 1)))
+        self.assertGreater(
+            len(inked), envelope.MARKER_WIDTH + 2 * envelope.HALO,
+            "a foot no wider than the plate reads as the stem running on",
+        )
+
+    def test_running_limits_that_coincide_draw_one_mark_not_a_heavier_one(self):
+        self.envelope.set_reference((90,))
+        single = self.image()
+        self.envelope.set_reference((90, 90, 90))
+        self.assertEqual(self.bar.reference, (90, 90, 90))
+        self.assertTrue(self.image() == single, "coincident limits darken the mark they share")
+
+    def mark_ink(self, value: int) -> float:
+        from legion_powerctl_gui import envelope
+
+        self.envelope.set_reference(())
+        bare = self.image()
+        self.envelope.set_reference((value,))
+        image = self.image()
+        x, reach = self.bar.x_for(value), envelope.TICK_WIDTH // 2 + 1
+        return sum(
+            abs(image.pixelColor(column, y).lightnessF() - bare.pixelColor(column, y).lightnessF())
+            for y in range(self.bar.height() - envelope.EDGE, self.bar.height())
+            for column in range(x - reach, x + reach + 1)
+        )
+
+    def test_a_focused_stop_leaves_the_running_mark_it_is_nudged_around_in_sight(self):
+        from legion_powerctl_gui import envelope
+
+        free = self.mark_ink(90)
+        stop = self.stops[1]
+        stop.setFocus()
+        ring_row = self.bar.height() - 1 - (
+            envelope.EDGE - envelope.OVERHANG - envelope.HALO - envelope.RING_GAP
+        )
+        for nudge in (-1, 0, 1):
+            with self.subTest(nudge=nudge):
+                self.assertGreater(
+                    self.mark_ink(stop.value() + nudge), free / 4,
+                    "the focused stop wipes the running mark under its ring",
+                )
+                self.assertTrue(stop.hasFocus())
+                self.assertEqual(
+                    self.image().pixelColor(self.bar.x_for(stop.value()), ring_row).name(),
+                    self.ring_color(),
+                )
+
+    def test_a_reference_beyond_the_scale_is_not_drawn(self):
+        from legion_powerctl_gui import envelope
+
+        bare = self.image()
+        self.envelope.set_reference((LOW - 1, HIGH + 50))
+        self.assertEqual(self.bar.reference, (LOW - 1, HIGH + 50))
+        image = self.image()
+        rows = envelope.TICK_GAP + envelope.TICK_HEIGHT + 1
+        height = image.height()
+        self.assertNotIn(self.secondary(), self.colours_in_rows(image, height - rows, height))
+        self.assertTrue(image == bare, "a reference off the scale left a mark")
+        self.envelope.set_reference((HIGH,))
+        self.assertEqual(
+            self.image().pixelColor(self.bar.x_for(HIGH), height - 2).name(), self.secondary(),
+            "the end of the scale is still on it",
+        )
+
+    def test_an_unchanged_reference_does_not_repaint_the_bar(self):
+        import unittest.mock
+
+        self.envelope.set_reference([60, 120])
+        with unittest.mock.patch.object(self.bar, "update") as update:
+            self.envelope.set_reference((60, 120))
+            update.assert_not_called()
+            self.envelope.set_reference((60,))
+            update.assert_called_once_with()
+
     def ring_color(self) -> str:
         from legion_powerctl_gui import theme
 

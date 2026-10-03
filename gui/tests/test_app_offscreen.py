@@ -250,6 +250,22 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertNotIn("running now", quiet)
         self.assertNotIn("boot profile", quiet)
 
+    def test_the_editor_measures_every_profile_against_what_runs(self):
+        cards = self.editor.cards
+        self.assertEqual(self.editor.title_aside.text(), "running now, boot profile")
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(self.editor.thermal_envelope.bar.reference, (80,))
+        self.assertEqual(
+            [card.aside for card in cards], ["running 87/92/102 W", "running 80 °C", ""]
+        )
+        self.sidebar.list.setCurrentRow(self._row_of("broken"))
+        self.assertEqual(self.editor.title_aside.text(), "")
+        self.assertFalse(self.editor.title_aside.isVisibleTo(self.window))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(
+            cards[0].aside, "running 87/92/102 W", "the machine's facts left with the file"
+        )
+
     def test_slider_order_is_enforced_live(self):
         self.editor.stapm_spin.setValue(110)
         self.assertEqual(self.editor.stapm_spin.value(), 110)
@@ -2495,6 +2511,18 @@ class LimitsDidNotTakeVariantTest(VariantFixtureTest):
             f"a {self.window.header.height()} px failed strip made the cards scroll",
         )
 
+    def test_limits_that_did_not_take_are_not_marked_as_running_in_the_editor(self):
+        editor = self.window.editor
+        for name, words in (("balanced-plus", "running now, boot profile"), ("quiet", "")):
+            self.window.sidebar.select_by_name(name)
+            self.settle(3)
+            with self.subTest(profile=name):
+                self.assertEqual(editor.current_name, name)
+                self.assertEqual(editor.power_envelope.bar.reference, ())
+                self.assertEqual(editor.thermal_envelope.bar.reference, ())
+                self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
+                self.assertEqual(editor.title_aside.text(), words, "the row and the title disagree")
+
 
 class UnverifiedVariantTest(VariantFixtureTest):
     def mutate(self, document):
@@ -2663,6 +2691,14 @@ class NothingAppliedVariantTest(VariantFixtureTest):
         self.assertIn(muted, painted)
         self.assertNotIn(ink, painted, "the sentence is painted as loud as a figure")
         self.assertIn(muted, header.rail.styleSheet(), "the rail claims something is running")
+
+    def test_before_the_first_apply_the_editor_has_nothing_to_measure_against(self):
+        editor = self.window.editor
+        self.assertEqual(editor.current_name, "balanced-plus")
+        self.assertEqual(editor.power_envelope.bar.reference, ())
+        self.assertEqual(editor.thermal_envelope.bar.reference, ())
+        self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
+        self.assertEqual(editor.title_aside.text(), "boot profile")
 
     def test_at_the_kde_size_the_boot_cell_narrows_before_the_actions_wrap(self):
         from legion_powerctl_gui import styles

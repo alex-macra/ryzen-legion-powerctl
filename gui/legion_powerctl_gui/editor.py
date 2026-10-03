@@ -6,7 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from . import a11y, fields, model, styles
+from . import a11y, fields, model, runstate, styles, theme
 from .advanced import AdvancedFields
 from .envelope import Envelope
 
@@ -26,11 +26,16 @@ class ProfileEditor(QWidget):
         self._updating = False
         self._busy = False
         self._last_problem_text = ""
+        self._running: runstate.RunState | None = None
+        self._boot = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, SCROLLBAR_GAP, 0)
         layout.setSpacing(styles.GAP)
         self.profile_title = QLabel("No profile selected", self)
+        self.title_aside = fields.Aside("", self)
+        self.title_aside.setFont(theme.font("caption"))
+        self.title_aside.hide()
 
         power, power_form = fields.card(
             "Power envelope", "Sustained <= slow <= fast: moving one past a neighbour moves it too."
@@ -115,6 +120,7 @@ class ProfileEditor(QWidget):
         self._set_problem_text("")
         self._updating = False
         self._update_actions()
+        self._show_context()
 
     def collect(self) -> model.Profile:
         assert self.editing is not None
@@ -143,10 +149,16 @@ class ProfileEditor(QWidget):
             f"Problem: '{name}' is not a readable profile. Run legion-powerctl "
             f"doctor to see why, or use New profile with the same name to replace it."
         )
+        self._show_context()
 
     def clear(self) -> None:
         self.editing = None
         self.current_name = ""
+        self._show_context()
+
+    def set_context(self, running: runstate.RunState, boot: str) -> None:
+        self._running, self._boot = running, boot
+        self._show_context()
 
     def mark_saved(self, profile: model.Profile) -> None:
         if self.editing is not None and self.collect() == profile:
@@ -173,6 +185,22 @@ class ProfileEditor(QWidget):
             note.setStyleSheet(styles.caption_style(palette))
         for label in self.findChildren(QLabel, fields.FORM_LABEL):
             label.setStyleSheet(fields.label_style(palette))
+
+    def _show_context(self) -> None:
+        state = self._running
+        limits = state.limits() if state is not None and state.mark()[1] != "FAIL" else None
+        power, thermal, _policy = self.cards
+        self.power_envelope.set_reference(limits[:3] if limits else None)
+        self.thermal_envelope.set_reference(limits[3:] if limits else None)
+        power.set_aside(f"running {limits[0]}/{limits[1]}/{limits[2]} W" if limits else "")
+        thermal.set_aside(f"running {limits[3]} °C" if limits else "")
+        parts = []
+        if state is not None and state.applied and self.current_name == state.profile:
+            parts.append("running now")
+        if self.current_name and self.current_name == self._boot:
+            parts.append("boot profile")
+        self.title_aside.setText(", ".join(parts))
+        self.title_aside.setVisible(bool(parts))
 
     def _set_enabled(self, enabled: bool) -> None:
         for widget in self.fields:

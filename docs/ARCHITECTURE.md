@@ -73,7 +73,7 @@ length ceiling below.
 | `editor_column.py` | the frame around the form: the profile's title above the scrolling cards, and the problems callout and `Apply now` below them, so neither scrolls away |
 | `advanced.py` | the collapsed disclosure holding boost, EPP and the frequency range |
 | `envelope.py` | the power instrument: three linked stops on one track, and the temperature ceiling |
-| `fields.py` | the widget vocabulary the editor is built from - cards, value entries, combo boxes |
+| `fields.py` | the widget vocabulary the editor is built from - cards, value entries, combo boxes, the title aside |
 | `flow.py` | a wrapping layout, because Qt ships none |
 | `sidebar.py` | the profile list, including rows for profiles that have never been written |
 | `profile_delegate.py` | how one profile row is painted: the running rail, the boot pin, and the pin's hit test |

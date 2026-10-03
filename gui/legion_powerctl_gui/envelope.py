@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QPainter, QPainterPath, QPalette, QPen
+from collections.abc import Iterable
+
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QPainter, QPainterPath, QPalette, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -25,6 +27,9 @@ RING_WIDTH = 2
 EDGE = OVERHANG + HALO + RING_GAP + RING_WIDTH
 GAP = 4
 LINE_SPACING = 8
+TICK_WIDTH = 7
+TICK_HEIGHT = 5
+TICK_GAP = 2
 
 
 class _Stop(QSlider):
@@ -46,6 +51,7 @@ class EnvelopeBar(QWidget):
         self._low = low
         self._high = high
         self.stops: list[_Stop] = []
+        self.reference: tuple[int, ...] = ()
         self._dragging: _Stop | None = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -59,6 +65,12 @@ class EnvelopeBar(QWidget):
         stop.setGeometry(self._bar_rect())
         self.stops.append(stop)
         return stop
+
+    def set_reference(self, values: Iterable[int] | None) -> None:
+        values = tuple(values or ())
+        if values != self.reference:
+            self.reference = values
+            self.update()
 
     def bar_height(self) -> int:
         return self.fontMetrics().height()
@@ -94,6 +106,7 @@ class EnvelopeBar(QWidget):
             )
         painter.setClipping(False)
 
+        self._draw_reference(painter, bar)
         for stop in self.stops:
             self._draw_marker(painter, stop, background)
         painter.end()
@@ -137,6 +150,21 @@ class EnvelopeBar(QWidget):
             return self.stops[tied[0]]
         return self.stops[tied[-1] if x >= self.x_for(self.stops[tied[0]].value()) else tied[0]]
 
+    def _draw_reference(self, painter: QPainter, bar: QRect) -> None:
+        palette = self.palette()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(theme.secondary_color(palette, palette.color(QPalette.ColorRole.Base)))
+        top = bar.bottom() + 1 + TICK_GAP
+        half = TICK_WIDTH / 2
+        for value in dict.fromkeys(self.reference):
+            if not self._low <= value <= self._high:
+                continue
+            x = self.x_for(value) + 0.5
+            painter.drawPolygon(QPolygonF([
+                QPointF(x, top), QPointF(x - half, top + TICK_HEIGHT),
+                QPointF(x + half, top + TICK_HEIGHT),
+            ]))
+
     def _draw_marker(self, painter: QPainter, stop: _Stop, background) -> None:
         centre = self.x_for(stop.value())
         bar = self._bar_rect()
@@ -147,7 +175,8 @@ class EnvelopeBar(QWidget):
         box = halo.adjusted(-RING_GAP, -RING_GAP, RING_GAP, RING_GAP)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(background)
-        painter.drawRoundedRect(box.adjusted(-1, -1, 1, 1) if stop.hasFocus() else halo, 3, 3)
+        plate = box.adjusted(-1, -1, 1, marker.bottom() - box.bottom()) if stop.hasFocus() else halo
+        painter.drawRoundedRect(plate, 3, 3)
         painter.setBrush(theme.marker_color(self.palette(), background))
         painter.drawRoundedRect(marker, 1, 1)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -223,6 +252,9 @@ class Envelope(QWidget):
                 self._low, high, self._note,
             )
         self.bar.update()
+
+    def set_reference(self, values: Iterable[int] | None) -> None:
+        self.bar.set_reference(values)
 
     def restyle(self, palette: QPalette) -> None:
         background = palette.color(QPalette.ColorRole.Base)

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, QTimer
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtGui import QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -18,6 +18,7 @@ from .editor import ProfileEditor
 
 HEADER_GAP = 8
 TITLE_HEIGHT = 26
+TITLE_GAP = 10
 
 
 class EditorColumn(QFrame):
@@ -33,9 +34,18 @@ class EditorColumn(QFrame):
         self.header.setObjectName("editorHeader")
         header_row = QHBoxLayout(self.header)
         header_row.setContentsMargins(0, 0, 0, HEADER_GAP)
+        header_row.setSpacing(TITLE_GAP)
+        bottom = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
         editor.profile_title.setFont(theme.font("title"))
         editor.profile_title.setMinimumHeight(TITLE_HEIGHT)
+        editor.profile_title.setAlignment(bottom)
+        editor.title_aside.setAlignment(bottom)
         header_row.addWidget(editor.profile_title)
+        header_row.addWidget(editor.title_aside, 0, Qt.AlignmentFlag.AlignBottom)
+        header_row.addStretch(1)
+        self._fit_aside()
+        for label in (editor.profile_title, editor.title_aside):
+            label.installEventFilter(self)
         layout.addWidget(self.header)
 
         self.scroll = QScrollArea()
@@ -62,9 +72,18 @@ class EditorColumn(QFrame):
         self.restyle(self.palette())
 
     def eventFilter(self, watched, event) -> bool:
-        if event.type() in (QEvent.Type.Show, QEvent.Type.Hide):
+        if event.type() == QEvent.Type.FontChange:
+            self._fit_aside()
+        elif watched is self.editor.problems_label and event.type() in (
+            QEvent.Type.Show, QEvent.Type.Hide
+        ):
             QTimer.singleShot(0, self, self._keep_focus_in_view)
         return False
+
+    def _fit_aside(self) -> None:
+        title, aside = self.editor.profile_title, self.editor.title_aside
+        drop = QFontMetrics(title.font()).descent() - QFontMetrics(aside.font()).descent()
+        aside.setContentsMargins(0, 0, 0, max(0, drop))
 
     def _keep_focus_in_view(self) -> None:
         focused = QApplication.focusWidget()
@@ -79,7 +98,7 @@ class EditorColumn(QFrame):
     def restyle(self, palette: QPalette) -> None:
         window = palette.color(QPalette.ColorRole.Window)
         self.footer.setStyleSheet(styles.footer_style(palette))
-        self.editor.dirty_label.setStyleSheet(
-            f"color: {theme.muted_color(palette, window).name()};"
-        )
+        muted = f"color: {theme.muted_color(palette, window).name()};"
+        self.editor.dirty_label.setStyleSheet(muted)
+        self.editor.title_aside.setStyleSheet(muted)
         self.editor.apply_button.setStyleSheet(styles.primary_button_style(palette))

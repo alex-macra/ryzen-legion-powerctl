@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
@@ -19,11 +19,13 @@ from PySide6.QtWidgets import (
 
 from . import styles, theme
 from .flow import FlowLayout
+from .strip_widgets import ElidedLabel
 
 CAPTION = "caption"
 FORM_LABEL = "formLabel"
 LEGEND = "legend"
 EYEBROW_TOP = 12
+ASIDE_GAP = 12
 CARD_SPACING = 6
 FORM_SPACING = 12
 ROW_SPACING = 8
@@ -40,12 +42,18 @@ class Card(QGroupBox):
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.eyebrow = title
+        self.aside = ""
         self.setProperty("card", True)
         self.setTitle("")
         self.setAccessibleName(title)
         self.column = QVBoxLayout(self)
         self.column.setSpacing(CARD_SPACING)
         self._fit_margins()
+
+    def set_aside(self, text: str) -> None:
+        if text != self.aside:
+            self.aside = text
+            self.update()
 
     def eyebrow_font(self) -> QFont:
         return theme.font("eyebrow", self.font())
@@ -67,20 +75,38 @@ class Card(QGroupBox):
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         palette = self.palette()
+        rect = self.eyebrow_rect()
         painter = QPainter(self)
         painter.setFont(self.eyebrow_font())
         painter.setPen(theme.muted_color(palette, palette.color(QPalette.ColorRole.Base)))
         painter.drawText(
-            self.eyebrow_rect(),
+            rect,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             self.eyebrow,
         )
+        eyebrow = QFontMetrics(self.eyebrow_font())
+        room = rect.width() - eyebrow.horizontalAdvance(self.eyebrow) - ASIDE_GAP
+        if self.aside and room > 0:
+            font = theme.font("detail-mono", self.font())
+            metrics = QFontMetrics(font)
+            text = metrics.elidedText(self.aside, Qt.TextElideMode.ElideLeft, room)
+            painter.setFont(font)
+            painter.drawText(
+                QPointF(rect.right() + 1 - metrics.horizontalAdvance(text),
+                        rect.top() + eyebrow.ascent()),
+                text,
+            )
         painter.end()
 
     def _fit_margins(self) -> None:
         left, top, right, bottom = styles.CARD_MARGINS
         height = QFontMetrics(self.eyebrow_font()).height()
         self.column.setContentsMargins(left, top + height + styles.EYEBROW_GAP, right, bottom)
+
+
+class Aside(ElidedLabel):
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.sizeHint().height())
 
 
 class ValueSpin(QSpinBox):

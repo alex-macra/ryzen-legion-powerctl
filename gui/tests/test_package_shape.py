@@ -123,6 +123,15 @@ class PackageShapeTest(unittest.TestCase):
         for kind in ("allow_any", "allow_inactive", "allow_active"):
             self.assertEqual(action.find(f"defaults/{kind}").text, "auth_admin")
 
+    def test_the_editor_form_does_not_import_the_frame_that_hosts_it(self):
+        tree = ast.parse((PACKAGE / "editor.py").read_text(encoding="utf-8"))
+        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        self.assertNotIn(
+            "editor_column", imported,
+            "editor_column.py frames the form and imports it, so the form reaching back "
+            "into its frame is a cycle",
+        )
+
     def test_no_module_writes_down_a_colour(self):
         colour = re.compile(
             r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\b(?:rgba?|hsla?)\("

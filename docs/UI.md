@@ -73,6 +73,21 @@ name give way, and when the badge and the time above it still do not fit, the bo
 up the rest. A name that gives way is cut short with an ellipsis on screen while its text and
 accessible name stay whole, so a figure, the badge or the time is never the thing that is cut.
 
+The editor measures against the same record. Each bar carries the running limits as small
+ticks under its track, so the distance between a stop and its tick is exactly what an Apply
+would change; editing moves the stops and never the ticks, which follow only the next status
+refresh. Each envelope card names those limits beside its eyebrow in the muted monospaced
+voice of the rail's count - `running 45/50/60 W`, `running 78 °C` - and the editor's title
+says how the open profile relates to the machine, `running now`, `boot profile` or both, in
+the words its row already speaks. The ticks and the card asides are painted, because the strip
+already speaks the running limits; the title's aside is the one text node, beside the title and
+shown only while it says something. None of it adds height: the asides sit in bands that were
+empty and the ticks in the bar's own margin. Ticks and card asides are both hidden while the
+apply record is in doubt - when the limits did not take, or took only in part, the record holds
+what was asked for rather than what the machine holds - though the title still says `running
+now`, as the row does. A running ceiling above a capped thermal scale is named on its card but
+has no tick.
+
 What holds the look together is that **colour is written down in exactly one
 module**. By default the window runs Qt's Fusion style with the Legion scheme: a warm
 paper plane by day, a deep navy plane by night, one teal or mint accent. `scheme.py`
