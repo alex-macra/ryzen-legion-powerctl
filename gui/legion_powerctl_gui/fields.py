@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QSpinBox,
     QStyle,
@@ -21,7 +20,6 @@ from . import styles, theme
 from .flow import FlowLayout
 from .strip_widgets import ElidedLabel
 
-CAPTION = "caption"
 FORM_LABEL = "formLabel"
 LEGEND = "legend"
 EYEBROW_TOP = 12
@@ -30,12 +28,13 @@ CARD_SPACING = 6
 FORM_SPACING = 12
 ROW_SPACING = 8
 LEGEND_SPACING = 16
-# Room to absorb a scroll bar, so its arrival alone cannot wrap the legend and keep itself shown.
 LEGEND_MIN_SPACING = 8
 LEGEND_LINE_SPACING = 6
 ENTRY_SPACING = 6
 SWATCH_SIZE = 10
 VALUE_PADDING = 8
+FIGURE_PADDING = 2
+SCALE_TEMPLATE = "100 °C"
 
 
 class Card(QGroupBox):
@@ -127,14 +126,8 @@ class ValueSpin(QSpinBox):
         return QSize(hint.width() - field.width() + widest + 2 * VALUE_PADDING, hint.height())
 
 
-def card(title: str, caption: str = "") -> tuple[Card, QFormLayout]:
+def card(title: str) -> tuple[Card, QFormLayout]:
     group = Card(title)
-    if caption:
-        note = QLabel(caption)
-        note.setObjectName(CAPTION)
-        note.setWordWrap(True)
-        note.setFont(theme.font("caption"))
-        group.column.addWidget(note)
     form = form_layout()
     group.column.addLayout(form)
     return group, form
@@ -168,9 +161,11 @@ def label_style(palette: QPalette) -> str:
     return f"color: {theme.secondary_color(palette, base).name()};"
 
 
-def scale_label(text: str) -> QLabel:
+def scale_label(text: str, align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignRight) -> QLabel:
     label = QLabel(text)
     label.setFont(theme.font("detail-mono"))
+    label.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+    label.setMinimumWidth(QFontMetrics(label.font()).horizontalAdvance(SCALE_TEMPLATE))
     return label
 
 
@@ -178,27 +173,6 @@ def value_row() -> FlowLayout:
     return FlowLayout(
         spacing=LEGEND_SPACING, line_spacing=LEGEND_LINE_SPACING, min_spacing=LEGEND_MIN_SPACING
     )
-
-
-def value_entry(caption: str, low: int, high: int, suffix: str):
-    host = QWidget()
-    line = QHBoxLayout(host)
-    line.setContentsMargins(0, 0, 0, 0)
-    line.setSpacing(ENTRY_SPACING)
-    swatch = QLabel()
-    swatch.setFixedSize(SWATCH_SIZE, SWATCH_SIZE)
-    spin = ValueSpin()
-    spin.setRange(low, high)
-    spin.setSuffix(suffix)
-    spin.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    spin.setKeyboardTracking(False)
-    line.addWidget(swatch)
-    if caption:
-        legend = QLabel(caption)
-        legend.setObjectName(LEGEND)
-        line.addWidget(legend)
-    line.addWidget(spin)
-    return host, swatch, spin
 
 
 VALUE_LABELS = {

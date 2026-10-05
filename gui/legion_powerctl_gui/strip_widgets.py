@@ -16,6 +16,10 @@ POINTER_REASONS = (Qt.FocusReason.MouseFocusReason, Qt.FocusReason.PopupFocusRea
 RETURN_REASONS = (Qt.FocusReason.ActiveWindowFocusReason, Qt.FocusReason.OtherFocusReason)
 
 
+def figure_top(metrics: QFontMetrics) -> int:
+    return max(metrics.capHeight(), -metrics.tightBoundingRect(DIGITS).top())
+
+
 def dot_icon(colour: QColor, ratio: float) -> QIcon:
     pixmap = QPixmap(round((DOT + DOT_GAP) * ratio), round(DOT * ratio))
     pixmap.setDevicePixelRatio(ratio)
@@ -130,13 +134,9 @@ class Readout(QLabel):
             for value, unit, caption in self.tiles
         ]
 
-    @staticmethod
-    def _figure_top(metrics: QFontMetrics) -> int:
-        return max(metrics.capHeight(), -metrics.tightBoundingRect(DIGITS).top())
-
     def tile_height(self) -> int:
         big, _small, eyebrow = self._fonts()
-        top = self._figure_top(QFontMetrics(big))
+        top = figure_top(QFontMetrics(big))
         return top + self.CAPTION_GAP + QFontMetrics(eyebrow).height()
 
     def _size(self, gap: int) -> QSize:
@@ -169,7 +169,7 @@ class Readout(QLabel):
         spare = self.width() - sum(widths)
         gap = max(self.MIN_GAP, min(self.GAP, spare // max(1, len(widths) - 1)))
         x = self.width() - (sum(widths) + gap * (len(widths) - 1))
-        baseline = self._figure_top(metrics)
+        baseline = figure_top(metrics)
         for (value, unit, caption), width in zip(self.tiles, widths):
             painter.setFont(big)
             painter.setPen(colours.value)

@@ -31,13 +31,13 @@ def announce(widget, message: str, interrupt: bool = False) -> None:
 
 def name_range(
     slider: QSlider, spin: QSpinBox, label: str, unit: str, low: int, high: int,
-    note: str = "",
+    note: str = "", aside: str = "",
 ) -> None:
     slider.setAccessibleName(label)
     spin.setAccessibleName(f"{label} in {unit}")
     described = f"{low} to {high} {unit}"
     slider.setAccessibleDescription(f"{described}{note}")
-    spin.setAccessibleDescription(described)
+    spin.setAccessibleDescription(f"{described}; {aside}" if aside else described)
 
 
 class FocusRing(QWidget):

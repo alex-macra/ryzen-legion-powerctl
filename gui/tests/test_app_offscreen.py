@@ -289,6 +289,96 @@ class MainWindowTest(OffscreenGuiTest):
             cards[0].aside, "running 87/92/102 W", "the machine's facts left with the file"
         )
 
+    def test_the_title_says_edited_while_there_are_unsaved_changes(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        aside = self.editor.title_aside
+        self.assertEqual(aside.text(), "running now, boot profile")
+        self.editor.stapm_spin.setValue(55)
+        self.editor._on_edited()
+        self.assertEqual(aside.text(), "running now, boot profile, edited")
+        self.assertEqual(self.editor.dirty_label.text(), "Unsaved changes")
+        with unittest.mock.patch.object(self.window, "refresh"):
+            self.window.profile_actions.save()
+            self.assertTrue(
+                wait_until(self.app, lambda: not self.editor.dirty), "the save never landed"
+            )
+            self.assertEqual(
+                aside.text(), "running now, boot profile",
+                "the title still says edited once the CLI has written the profile",
+            )
+        self.editor.stapm_spin.setValue(54)
+        self.editor._on_edited()
+        self.assertEqual(aside.text(), "running now, boot profile, edited")
+        self.window.dialogs = True
+        try:
+            with unittest.mock.patch(
+                "legion_powerctl_gui.dialogs.confirm_discard",
+                return_value=QMessageBox.StandardButton.Discard,
+            ):
+                self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        finally:
+            self.window.dialogs = False
+        self.assertEqual(self.editor.profile_title.text(), "quiet")
+        self.assertEqual(aside.text(), "", "the discarded edits followed the title")
+        self.assertEqual(self.editor.dirty_label.text(), "")
+
+    def test_the_cards_end_where_the_strip_and_apply_end_unless_a_bar_is_shown(self):
+        from legion_powerctl_gui.editor import SCROLLBAR_GAP
+        from PySide6.QtCore import QPoint
+
+        def right(widget) -> int:
+            return widget.mapTo(self.window, QPoint(widget.width(), 0)).x()
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        self.settle(5)
+        card, scroll = self.editor.cards[0], self.window.editor_scroll
+        bar, margins = scroll.verticalScrollBar(), self.editor.layout().contentsMargins
+        for advanced in (False, True, False):
+            self.editor.advanced.button.setChecked(advanced)
+            self.settle(5)
+            with self.subTest(advanced=advanced):
+                self.assertEqual(bar.isVisible(), advanced)
+                if advanced:
+                    self.assertEqual(margins().right(), SCROLLBAR_GAP)
+                    self.assertEqual(
+                        right(card), right(scroll.viewport()) - SCROLLBAR_GAP,
+                        "the cards run up against the scroll bar",
+                    )
+                else:
+                    self.assertEqual(margins().right(), 0)
+                    self.assertEqual(
+                        (right(card), right(card)),
+                        (right(self.header), right(self.editor.apply_button)),
+                        "the cards stop short of the strip and Apply with nothing to scroll",
+                    )
+
+    def test_the_delta_is_spoken_with_its_unit(self):
+        tiles = {
+            **self.editor.power_envelope.tiles, **self.editor.thermal_envelope.tiles
+        }
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(tiles["stapm"].delta.text(), "-42")
+        self.assertEqual(tiles["stapm"].delta.accessibleName(), "-42 W vs running")
+        self.editor.fast_spin.setValue(122)
+        self.editor.temp_spin.setValue(86)
+        self.editor._on_edited()
+        self.assertEqual(tiles["fast"].delta.text(), "+20")
+        self.assertEqual(tiles["fast"].delta.accessibleName(), "+20 W vs running")
+        self.assertEqual(self.accessible_name(tiles["fast"].delta), "+20 W vs running")
+        self.assertEqual(tiles["temp"].delta.text(), "+6")
+        self.assertEqual(tiles["temp"].delta.accessibleName(), "+6 °C vs running")
+        labels = {
+            name: self.accessible_label(widget) for name, widget in self._form_controls().items()
+        }
+        self.assertEqual(len(set(labels.values())), len(labels), labels)
+        for name, label in labels.items():
+            with self.subTest(control=name):
+                self.assertNotIn("vs running", label, "a delta took over a control's label")
+
     def test_slider_order_is_enforced_live(self):
         self.editor.stapm_spin.setValue(110)
         self.assertEqual(self.editor.stapm_spin.value(), 110)
@@ -2416,6 +2506,14 @@ class VariantFixtureTest(OffscreenGuiTest):
             )
         self.assertGreaterEqual(readout.width(), readout.minimumSizeHint().width())
 
+    @staticmethod
+    def deltas(editor) -> list:
+        return [
+            tile.delta.text()
+            for envelope in editor.envelopes
+            for tile in envelope.tiles.values()
+        ]
+
     def assert_painted_with_an_ellipsis(self, label) -> None:
         from legion_powerctl_gui.strip_widgets import ElidedLabel
         from PySide6.QtCore import Qt
@@ -2545,6 +2643,7 @@ class LimitsDidNotTakeVariantTest(VariantFixtureTest):
                 self.assertEqual(editor.thermal_envelope.bar.reference, ())
                 self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
                 self.assertEqual(editor.title_aside.text(), words, "the row and the title disagree")
+                self.assertEqual(self.deltas(editor), ["", "", "", ""])
 
 
 class UnverifiedVariantTest(VariantFixtureTest):
@@ -2722,6 +2821,7 @@ class NothingAppliedVariantTest(VariantFixtureTest):
         self.assertEqual(editor.thermal_envelope.bar.reference, ())
         self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
         self.assertEqual(editor.title_aside.text(), "boot profile")
+        self.assertEqual(self.deltas(editor), ["", "", "", ""])
 
     def test_at_the_kde_size_the_boot_cell_narrows_before_the_actions_wrap(self):
         from legion_powerctl_gui import styles

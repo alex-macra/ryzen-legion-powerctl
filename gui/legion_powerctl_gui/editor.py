@@ -12,6 +12,7 @@ from .envelope import Envelope
 
 SCROLLBAR_GAP = 8
 CALLOUT_GAP = 8
+ORDER_RULE = "Sustained ≤ slow ≤ fast: moving one past a neighbour moves it too."
 
 
 class ProfileEditor(QWidget):
@@ -30,21 +31,21 @@ class ProfileEditor(QWidget):
         self._boot = ""
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, SCROLLBAR_GAP, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(styles.GAP)
         self.profile_title = QLabel("No profile selected", self)
         self.title_aside = fields.Aside("", self)
         self.title_aside.setFont(theme.font("caption"))
         self.title_aside.hide()
 
-        power, power_form = fields.card(
-            "Power envelope", "Sustained <= slow <= fast: moving one past a neighbour moves it too."
-        )
+        power, power_form = fields.card("Power envelope")
         self.power_envelope = Envelope(
             (("stapm", "Sustained (STAPM)"), ("slow", "Slow PPT"), ("fast", "Fast PPT")),
             model.POWER_MIN_W, model.POWER_MAX_W, " W", "watts",
             note="; a limit cannot pass its neighbour, which moves instead",
+            captions=tuple(label for label, _key, _unit in runstate.LIMITS[:3]),
         )
+        self.power_envelope.setToolTip(ORDER_RULE)
         power_form.addRow(self.power_envelope)
         self.stapm_slider, self.slow_slider, self.fast_slider = self.power_envelope.stops.values()
         self.stapm_spin, self.slow_spin, self.fast_spin = self.power_envelope.spins.values()
@@ -164,6 +165,23 @@ class ProfileEditor(QWidget):
         if self.editing is not None and self.collect() == profile:
             self.dirty = False
             self._update_actions()
+            self._show_context()
+
+    def set_scrollbar_gap(self, shown: bool) -> None:
+        gap = SCROLLBAR_GAP if shown else 0
+        if self.layout().contentsMargins().right() != gap:
+            self.layout().setContentsMargins(0, 0, gap, 0)
+
+    def width_beside_a_bar(self) -> int:
+        return self.minimumSizeHint().width() + self._missing_gap()
+
+    def height_beside_a_bar(self, width: int) -> int:
+        least = self.minimumSizeHint()
+        width = max(width - self._missing_gap(), least.width())
+        return max(self.heightForWidth(width), least.height())
+
+    def _missing_gap(self) -> int:
+        return SCROLLBAR_GAP - self.layout().contentsMargins().right()
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -173,7 +191,7 @@ class ProfileEditor(QWidget):
     def restyle(self, palette: QPalette) -> None:
         self.problems_label.setStyleSheet(
             f"{styles.problem_style(palette)}"
-            f" QLabel {{ margin: {CALLOUT_GAP}px {SCROLLBAR_GAP}px 0px 0px; }}"
+            f" QLabel {{ margin: {CALLOUT_GAP}px 0px 0px 0px; }}"
         )
         surface = styles.card_style(palette)
         for group in self.cards:
@@ -181,8 +199,6 @@ class ProfileEditor(QWidget):
         self.advanced.restyle(palette)
         for envelope in self.envelopes:
             envelope.restyle(palette)
-        for note in self.findChildren(QLabel, fields.CAPTION):
-            note.setStyleSheet(styles.caption_style(palette))
         for label in self.findChildren(QLabel, fields.FORM_LABEL):
             label.setStyleSheet(fields.label_style(palette))
 
@@ -190,8 +206,9 @@ class ProfileEditor(QWidget):
         state = self._running
         limits = state.limits() if state is not None and state.mark()[1] != "FAIL" else None
         power, thermal, _policy = self.cards
-        self.power_envelope.set_reference(limits[:3] if limits else None)
-        self.thermal_envelope.set_reference(limits[3:] if limits else None)
+        measured = self.editing is not None
+        self.power_envelope.set_reference(limits[:3] if limits else None, measured)
+        self.thermal_envelope.set_reference(limits[3:] if limits else None, measured)
         power.set_aside(f"running {limits[0]}/{limits[1]}/{limits[2]} W" if limits else "")
         thermal.set_aside(f"running {limits[3]} °C" if limits else "")
         parts = []
@@ -199,6 +216,8 @@ class ProfileEditor(QWidget):
             parts.append("running now")
         if self.current_name and self.current_name == self._boot:
             parts.append("boot profile")
+        if self.dirty and self.editing is not None:
+            parts.append("edited")
         self.title_aside.setText(", ".join(parts))
         self.title_aside.setVisible(bool(parts))
 
@@ -261,3 +280,4 @@ class ProfileEditor(QWidget):
         self.dirty = True
         self._set_problem_text("\n".join(f"Problem: {p}" for p in self.problems()))
         self._update_actions()
+        self._show_context()

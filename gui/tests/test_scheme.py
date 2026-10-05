@@ -307,6 +307,37 @@ class SchemeSwitchTest(SchemeTestCase):
                         image, fresh[name], f"part of the {name} kept the scheme it flipped from"
                     )
 
+    def test_a_figure_that_cannot_be_edited_keeps_the_scheme_s_card_surface(self):
+        from collections import Counter
+
+        from legion_powerctl_gui import scheme
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPalette
+
+        window = self.window
+        window.resize(960, 620)
+        window.show()
+        window.sidebar.select_by_name("broken")
+        self.settle(3)
+        spin = window.editor.stapm_spin
+        self.assertFalse(spin.isEnabled(), "the broken profile left the editor armed")
+        self.assertFalse(self.controller.dark)
+        for dark in (False, True):
+            if dark:
+                self.switch(Qt.ColorScheme.Dark)
+                self.settle(3)
+            image = spin.grab().toImage()
+            dominant = Counter(
+                image.pixel(x, y) for y in range(image.height()) for x in range(image.width())
+            ).most_common(1)[0][0]
+            with self.subTest(dark=dark):
+                self.assertEqual(
+                    QColor(dominant).name(),
+                    scheme.palette(dark).color(QPalette.ColorRole.Base).name(),
+                    "the figure that cannot be edited sits in a well instead of on the card",
+                )
+        window.hide()
+
     def test_apply_stays_outside_the_scroll_area(self):
         editor = self.window.editor
         self.assertTrue(self.window.editor_scroll.isAncestorOf(editor.stapm_spin))

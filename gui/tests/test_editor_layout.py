@@ -137,6 +137,27 @@ class EditorLayoutTest(OffscreenGuiTest):
         self.settle(3)
         self.assertFalse(label.isVisible(), "the callout outlived the problem")
 
+    def test_the_problem_callout_ends_where_apply_ends(self):
+        from legion_powerctl_gui.editor import CALLOUT_GAP
+        from PySide6.QtCore import QPoint
+
+        def right(widget) -> int:
+            return widget.mapTo(self.window, QPoint(widget.width(), 0)).x()
+
+        self.show_at(960, 620)
+        label = self.editor.problems_label
+        self.editor.advanced.min_freq_edit.setCurrentText("99")
+        self.editor._on_edited()
+        self.settle(3)
+        self.assertTrue(label.isVisible(), "no problem was raised")
+        self.assertEqual(right(label), right(self.editor.apply_button))
+        image = label.grab().toImage()
+        self.assertEqual(
+            image.pixelColor(label.width() - 1, (label.height() + CALLOUT_GAP) // 2).name(),
+            image.pixelColor(label.width() // 2, CALLOUT_GAP).name(),
+            "the callout's edge stops short of Apply's",
+        )
+
     def test_both_scroll_areas_show_where_the_keyboard_is(self):
         from legion_powerctl_gui import theme
         from PySide6.QtCore import Qt
@@ -279,11 +300,94 @@ class EditorLayoutTest(OffscreenGuiTest):
         )
         self.assert_every_part_of_the_editor_can_be_reached()
 
+    def test_a_scroll_bar_arriving_beside_a_squeezed_column_cannot_push_it_sideways(self):
+        from legion_powerctl_gui.app import SIDEBAR_MAX_WIDTH
+
+        self.show_at(720, 1000)
+        self.window.splitter.setSizes([SIDEBAR_MAX_WIDTH, 300])
+        self.settle(3)
+        column, bar = self.window.editor_column, self.scroll.verticalScrollBar()
+        floor = column.minimumSizeHint().width()
+        self.assertEqual(column.width(), floor, "the rail did not squeeze the column to its stop")
+        heights = []
+        for advanced in (True, False):
+            self.editor.advanced.button.setChecked(advanced)
+            self.settle(3)
+            heights.append(self.editor.heightForWidth(self.scroll.viewport().width()))
+        opened, closed = heights
+        self.show_at(720, 1000 - self.scroll.viewport().height() + (opened + closed) // 2)
+        self.assertFalse(bar.isVisible(), "the closed form already scrolls, so nothing is proven")
+        self.editor.advanced.button.setChecked(True)
+        self.settle(5)
+        self.assertTrue(bar.isVisible(), "the open form does not scroll, so nothing is proven")
+        self.assertEqual(column.minimumSizeHint().width(), floor, "the bar moved the column's stop")
+        self.assertEqual(
+            self.scroll.horizontalScrollBar().maximum(), 0,
+            "the bar's arrival left the editor wider than its viewport",
+        )
+
+    def test_a_scroll_bar_cannot_keep_itself_shown_by_wrapping_the_tiles(self):
+        from legion_powerctl_gui import fields, model
+        from legion_powerctl_gui.editor import SCROLLBAR_GAP, ProfileEditor
+        from legion_powerctl_gui.editor_column import EditorColumn
+
+        self.use_app_font_size(DESKTOP_POINT_SIZE)
+        editor = ProfileEditor()
+        column = EditorColumn(editor)
+        self.addCleanup(self.close_window, column)
+        editor.load(model.Profile(name="quiet"))
+        column.resize(column.minimumSizeHint().width(), 1000)
+        column.show()
+        self.settle(3)
+        envelope, bar = editor.power_envelope, column.scroll.verticalScrollBar()
+        self.assertFalse(bar.isVisible())
+        tiles = list(envelope.tiles.values())
+        one_line = sum(tile.width() for tile in tiles) + (len(tiles) - 1) * fields.LEGEND_MIN_SPACING
+        band = bar.sizeHint().width() + SCROLLBAR_GAP
+        low, high = max(one_line, envelope.width()), one_line + band - 1
+        self.assertLessEqual(low, high, "the column's stop keeps the tiles clear of the wrap")
+        column.resize(column.width() + (low + high) // 2 - envelope.width(), 1000)
+        self.settle(3)
+        self.assertLessEqual(one_line, envelope.width(), "the tiles wrap even without a bar")
+        self.assertGreater(one_line, envelope.width() - band, "a bar would not wrap the tiles")
+
+        def state(height: int) -> tuple:
+            column.resize(column.width(), height)
+            for _ in range(4):
+                self.app.processEvents()
+            return bar.isVisible(), len({tile.y() for tile in tiles})
+
+        heights = range(300, 1000, 4)
+        shrinking = {height: state(height) for height in reversed(heights)}
+        growing = {height: state(height) for height in heights}
+        self.assertEqual(
+            set(shrinking.values()), {(False, 1), (True, 2)},
+            f"the sweep never crossed the wrap: {shrinking}",
+        )
+        self.assertEqual(
+            {h: v for h, v in shrinking.items() if v != growing[h]}, {},
+            "the same size settles differently depending on the way it was reached",
+        )
+
     def test_at_a_large_font_the_editor_scrolls_sideways_rather_than_clipping(self):
         self.use_app_font_size(16.0)
         self.open_window()
         self.show_at(720, 480)
         self.assert_every_part_of_the_editor_can_be_reached()
+
+    def test_at_a_large_font_a_squeezed_editor_shows_a_bar_only_for_real_overflow(self):
+        self.use_app_font_size(14.0)
+        self.open_window()
+        bar = self.scroll.verticalScrollBar()
+        for advanced in (False, True):
+            self.editor.advanced.button.setChecked(advanced)
+            for height in range(480, 820, 12):
+                self.show_at(720, height)
+                with self.subTest(advanced=advanced, height=height):
+                    overflow = max(0, self.editor.height() - self.scroll.viewport().height())
+                    self.assertEqual(bar.maximum(), overflow, "the bar's range is not the overflow")
+                    if bar.isVisible():
+                        self.assertGreater(bar.maximum(), 0, "a bar is shown with nothing to scroll")
 
     def test_a_value_box_is_as_wide_as_its_widest_value_and_no_wider(self):
         from legion_powerctl_gui import fields
@@ -297,7 +401,7 @@ class EditorLayoutTest(OffscreenGuiTest):
             with self.subTest(value=spin.text()):
                 self.assertGreaterEqual(room, needed, "the widest value is cut off")
                 self.assertLessEqual(
-                    room - needed, 2 * fields.VALUE_PADDING, "the box is wider than its value"
+                    room - needed, 2 * fields.FIGURE_PADDING, "the box is wider than its value"
                 )
 
     def test_the_cards_paint_their_eyebrow_and_keep_a_mixed_case_name(self):
@@ -332,6 +436,46 @@ class EditorLayoutTest(OffscreenGuiTest):
                 self.assertGreater(inked, 0, "no eyebrow was painted in the muted colour")
                 first = min(child.y() for child in card.children() if child.isWidgetType())
                 self.assertGreater(first, rect.bottom(), "the card's content covers its eyebrow")
+
+    def test_the_two_bars_share_a_left_edge(self):
+        from PySide6.QtCore import QPoint
+
+        for size in ((960, 620), (720, 480)):
+            self.show_at(*size)
+            power, thermal = (
+                envelope.bar.mapTo(self.window, QPoint(0, 0)) for envelope in self.editor.envelopes
+            )
+            with self.subTest(size=size):
+                self.assertEqual(power.x(), thermal.x(), "the bars start at different places")
+
+    def test_the_power_card_has_no_caption_row_and_says_the_rule_on_hover(self):
+        self.show_at(960, 620)
+        power = self.editor.cards[0]
+        self.assertEqual(
+            [child for child in power.children() if child.isWidgetType()],
+            [self.editor.power_envelope], "the ordering rule still takes a row",
+        )
+        tip = self.editor.power_envelope.toolTip()
+        self.assertIn("neighbour", tip)
+        self.assertIn("≤", tip)
+        first = min(child.y() for child in power.children() if child.isWidgetType())
+        self.assertGreater(first, power.eyebrow_rect().bottom(), "the bar covers the eyebrow")
+
+    def test_the_figures_in_the_editor_match_the_strip_s_figures(self):
+        from legion_powerctl_gui import theme
+
+        for size in (None, DESKTOP_POINT_SIZE):
+            if size is not None:
+                self.use_app_font_size(size)
+                self.open_window()
+            self.show_at(960, 620)
+            strip = theme.font("readout", self.window.header.envelope_label.font())
+            for spin in (*self.editor.power_envelope.spins.values(), self.editor.temp_spin):
+                with self.subTest(size=size, spin=spin.accessibleName()):
+                    self.assertEqual(spin.font().pointSizeF(), strip.pointSizeF())
+        self.assertIsNone(
+            self.editor.thermal_envelope.tiles["temp"].caption, "the lone ceiling grew a legend"
+        )
 
 
 class RunningReferenceTest(VariantFixtureTest):
@@ -452,6 +596,86 @@ class RunningReferenceTest(VariantFixtureTest):
         self.assertEqual(self.editor.thermal_envelope.bar.reference, (85,))
         self.assertEqual((power.aside, thermal.aside), ("running 65/70/75 W", "running 85 °C"))
         self.assertEqual(self.editor.title_aside.text(), "")
+
+    def deltas(self) -> list:
+        return [
+            tile.delta.text()
+            for envelope in self.editor.envelopes
+            for tile in envelope.tiles.values()
+        ]
+
+    def test_each_tile_says_how_far_it_is_from_what_runs(self):
+        self.open_profile("quiet")
+        self.assertEqual(self.deltas(), ["", "", "", ""], "the running profile differs from itself")
+        self.open_profile("performance-capped")
+        self.assertEqual(self.deltas(), ["+20", "+20", "+15", "+7"])
+        self.open_profile("quiet")
+        bar = self.editor.power_envelope.bar
+        self.editor.stapm_spin.setValue(35)
+        self.editor._on_edited()
+        self.settle(3)
+        self.assertEqual(self.deltas(), ["-10", "", "", ""])
+        self.assertEqual(bar.reference, (45, 50, 60), "an edit moved what the delta measures")
+        self.record(stapm_w="35")
+        self.assertEqual(self.editor.stapm_spin.value(), 35)
+        self.assertEqual(self.deltas(), ["", "", "", ""], "the delta did not follow the apply")
+
+    def test_an_unreadable_profile_measures_nothing_against_what_runs(self):
+        self.open_profile("performance-capped")
+        self.assertEqual(self.deltas(), ["+20", "+20", "+15", "+7"])
+        self.open_profile("broken")
+        self.assertIsNone(self.editor.editing)
+        self.assertEqual(
+            self.deltas(), ["", "", "", ""], "a profile with no values claims what Apply would do"
+        )
+        for envelope in self.editor.envelopes:
+            for key, tile in envelope.tiles.items():
+                with self.subTest(tile=key):
+                    self.assertEqual(tile.delta.accessibleName(), "")
+                    self.assertNotIn("vs running", envelope.spins[key].accessibleDescription())
+        self.assertEqual(
+            self.editor.power_envelope.bar.reference, (45, 50, 60), "the ticks left with the file"
+        )
+        self.open_profile("performance-capped")
+        self.assertEqual(self.deltas(), ["+20", "+20", "+15", "+7"])
+
+    def test_a_figure_is_described_with_its_delta_and_an_empty_delta_is_not_shown(self):
+        from PySide6.QtGui import QAccessible
+
+        editor = self.editor
+        spins = (editor.stapm_spin, editor.slow_spin, editor.fast_spin, editor.temp_spin)
+
+        def described() -> list:
+            return [spin.accessibleDescription() for spin in spins]
+
+        def hidden() -> list:
+            return [
+                tile.delta.isHidden()
+                and QAccessible.queryAccessibleInterface(tile.delta).state().invisible
+                for envelope in self.editor.envelopes
+                for tile in envelope.tiles.values()
+            ]
+
+        self.open_profile("quiet")
+        self.assertEqual(
+            described(), ["5 to 200 watts"] * 3 + ["50 to 100 degrees Celsius"]
+        )
+        self.assertEqual(hidden(), [True] * 4, "an empty delta is still a node")
+        self.open_profile("performance-capped")
+        self.assertEqual(described(), [
+            "5 to 200 watts; +20 W vs running", "5 to 200 watts; +20 W vs running",
+            "5 to 200 watts; +15 W vs running", "50 to 100 degrees Celsius; +7 °C vs running",
+        ])
+        self.assertEqual(hidden(), [False] * 4)
+        self.open_profile("balanced-plus")
+        self.assertEqual(
+            described()[3], "50 to 80 degrees Celsius; +2 °C vs running",
+            "the capped scale dropped the delta from the description",
+        )
+        self.open_profile("quiet")
+        self.assertEqual(
+            described(), ["5 to 200 watts"] * 3 + ["50 to 100 degrees Celsius"]
+        )
 
     def test_a_running_ceiling_above_a_capped_scale_is_named_but_not_marked(self):
         from legion_powerctl_gui import theme
@@ -693,6 +917,17 @@ class NoBootPinVariantTest(VariantFixtureTest):
         self.settle(3)
         self.assertEqual(editor.current_name, "")
         self.assertEqual(editor.title_aside.text(), "")
+        self.assertTrue(editor.title_aside.isHidden())
+
+    def test_a_cleared_editor_takes_the_edited_mark_with_the_edits(self):
+        editor = self.window.editor
+        self.assertTrue(wait_until(self.app, lambda: self.window.checks.count >= 1))
+        editor.stapm_spin.setValue(52)
+        editor._on_edited()
+        self.assertEqual(editor.title_aside.text(), "edited")
+        editor.clear()
+        self.settle(3)
+        self.assertEqual(editor.title_aside.text(), "", "the title claims edits to nothing at all")
         self.assertTrue(editor.title_aside.isHidden())
 
 

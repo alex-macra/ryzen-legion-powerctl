@@ -400,6 +400,260 @@ class EnvelopeTest(OffscreenGuiTest):
         self.assertGreater(self.bar.sizeHint().height(), before)
         self.assertGreaterEqual(self.bar.bar_height(), self.bar.fontMetrics().height())
 
+    def set_figures(self, *values):
+        for spin, value in zip(self.envelope.spins.values(), values):
+            spin.setValue(value)
+        self.app.processEvents()
+
+    @staticmethod
+    def dominant(image) -> str:
+        from collections import Counter
+
+        return Counter(
+            image.pixelColor(x, y).name() for y in range(image.height()) for x in range(image.width())
+        ).most_common(1)[0][0]
+
+    def inked_rows(self, widget) -> list:
+        image = widget.grab().toImage()
+        plane = self.dominant(image)
+        rows = [
+            y for y in range(image.height())
+            if any(image.pixelColor(x, y).name() != plane for x in range(image.width()))
+        ]
+        self.assertTrue(rows, f"{widget.metaObject().className()} painted nothing")
+        return rows
+
+    def last_inked_row(self, widget) -> int:
+        return widget.y() + self.inked_rows(widget)[-1]
+
+    def test_the_figures_are_the_spins_set_in_the_readout_voice(self):
+        from legion_powerctl_gui import theme, tiles
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QAbstractSpinBox, QSpinBox
+
+        self.set_figures(60, 120, 150)
+        for spin in self.envelope.spins.values():
+            with self.subTest(spin=spin.accessibleName()):
+                self.assertIsInstance(spin, QSpinBox)
+                self.assertEqual(spin.buttonSymbols(), QAbstractSpinBox.ButtonSymbols.NoButtons)
+                self.assertFalse(spin.hasFrame(), "the figure is boxed like a form field")
+                self.assertEqual(spin.font().pointSizeF(), theme.font("readout").pointSizeF())
+                self.assertEqual(spin.height(), spin.figure_top() + 2 * tiles.FIGURE_V_PAD)
+                before = spin.value()
+                QTest.keyClick(spin, Qt.Key.Key_Up)
+                self.assertEqual(spin.value(), before + 1, "the arrow key no longer steps the figure")
+
+    def test_a_tile_names_its_limit_in_the_strip_s_words_and_wears_its_tier_swatch(self):
+        from legion_powerctl_gui import theme
+        from legion_powerctl_gui.envelope import Envelope
+        from PySide6.QtGui import QFont
+
+        tiles = list(self.envelope.tiles.values())
+        self.assertEqual([tile.caption.text() for tile in tiles], [label for _key, label in TIERS])
+        palette, base = self.bar.palette(), self.base()
+        eyebrow = theme.font("eyebrow")
+        for index, tile in enumerate(tiles):
+            image = tile.grab().toImage()
+            swatch = tile.swatch.geometry().center()
+            with self.subTest(tile=tile.caption.text()):
+                font = tile.caption.font()
+                self.assertEqual(font.capitalization(), QFont.Capitalization.AllUppercase)
+                self.assertEqual(font.pointSizeF(), eyebrow.pointSizeF())
+                self.assertEqual(
+                    image.pixelColor(swatch).name(),
+                    theme.tier_color(palette, base, theme.tier_step(index)).name(),
+                )
+                for below in (tile.swatch, tile.caption):
+                    self.assertGreater(below.y(), tile.spin.geometry().bottom())
+        named = Envelope(TIERS, LOW, HIGH, " W", "watts", captions=("Sustained", "Slow", "Fast"))
+        self.addCleanup(named.deleteLater)
+        self.assertEqual(
+            [tile.caption.text() for tile in named.tiles.values()], ["Sustained", "Slow", "Fast"]
+        )
+        self.assertEqual(
+            [stop.accessibleName() for stop in named.stops.values()],
+            [label for _key, label in TIERS], "the caption renamed the control",
+        )
+        single = Envelope(TIERS[:1], LOW, HIGH, " W", "watts", captions=("Sustained",))
+        self.addCleanup(single.deleteLater)
+        self.assertIsNone(single.tiles["stapm"].caption, "a lone figure grew a legend")
+        self.assertIsNone(single.tiles["stapm"].swatch)
+
+    def test_a_delta_is_shown_only_against_a_reference_and_only_when_it_differs(self):
+        tiles = self.envelope.tiles
+        widths = []
+
+        def deltas():
+            self.app.processEvents()
+            widths.append([tile.width() for tile in tiles.values()])
+            return [tile.delta.text() for tile in tiles.values()]
+
+        self.set_figures(60, 120, 150)
+        self.envelope.set_reference((60, 120, 150))
+        self.assertEqual(deltas(), ["", "", ""], "a figure equal to what runs shows a change")
+        self.envelope.spins["slow"].setValue(137)
+        self.assertEqual(deltas(), ["", "+17", ""])
+        self.assertEqual(
+            [tile.delta.isVisibleTo(tile) for tile in tiles.values()], [False, True, False]
+        )
+        self.assertEqual(tiles["slow"].delta.accessibleName(), "+17 W vs running")
+        self.envelope.spins["slow"].setValue(100)
+        self.assertEqual(deltas(), ["", "-20", ""])
+        self.assertEqual(tiles["slow"].delta.accessibleName(), "-20 W vs running")
+        self.envelope.set_reference((60, 120, 150), measured=False)
+        self.assertEqual(deltas(), ["", "", ""], "a figure that cannot be applied claims a change")
+        self.assertEqual(self.bar.reference, (60, 120, 150), "the ticks went with the deltas")
+        self.envelope.set_reference((60, 120, 150))
+        self.assertEqual(deltas(), ["", "-20", ""])
+        self.envelope.set_reference(None)
+        self.assertEqual(deltas(), ["", "", ""], "a delta outlived the reference it measured")
+        self.assertEqual(tiles["slow"].delta.accessibleName(), "")
+        self.assertEqual(len({tuple(row) for row in widths}), 1, f"a delta moved its tile: {widths}")
+
+    def test_a_figure_is_described_by_its_scale_and_its_delta(self):
+        self.set_figures(60, 120, 150)
+        self.envelope.set_reference((60, 120, 150))
+        self.envelope.spins["slow"].setValue(137)
+        self.envelope.set_high(150)
+
+        def described() -> list:
+            return [spin.accessibleDescription() for spin in self.envelope.spins.values()]
+
+        self.assertEqual(
+            described(), ["5 to 150 watts", "5 to 150 watts; +17 W vs running", "5 to 150 watts"],
+            "a new scale dropped the delta, or a delta kept the old scale",
+        )
+        self.assertEqual(
+            [stop.accessibleDescription() for stop in self.stops], ["5 to 150 watts"] * 3
+        )
+        self.envelope.set_reference(None)
+        self.assertEqual(described(), ["5 to 150 watts"] * 3)
+
+    def test_the_delta_sits_on_the_figure_s_baseline(self):
+        self.set_figures(62, 120, 150)
+        self.envelope.set_reference((45, 120, 150))
+        tile = self.envelope.tiles["stapm"]
+        self.assertEqual(tile.delta.text(), "+17")
+        for grown in (False, True):
+            if grown:
+                font = tile.spin.font()
+                font.setPointSizeF(font.pointSizeF() * 1.5)
+                tile.spin.setFont(font)
+                self.settle(3)
+            figure, delta = self.last_inked_row(tile.spin), self.last_inked_row(tile.delta)
+            with self.subTest(grown=grown):
+                self.assertEqual(tile.delta.height(), tile.spin.height())
+                self.assertLessEqual(
+                    abs(figure - delta), 1, f"the figure ends on row {figure} and its delta on {delta}"
+                )
+                self.assertLess(
+                    delta - tile.delta.y(), tile.delta.height() - 1,
+                    "the delta is inked down to its last row, so its foot may be cut off",
+                )
+
+    def test_a_figure_shows_a_rule_at_rest_and_a_ring_when_it_has_the_keyboard(self):
+        import unittest.mock
+
+        from legion_powerctl_gui import theme, tiles
+        from PySide6.QtGui import QPalette
+
+        tile = self.envelope.tiles["slow"]
+        spin, box = tile.spin, tile.spin.geometry()
+        palette = tile.palette()
+        base = palette.color(QPalette.ColorRole.Base)
+        ring = theme.fit_contrast(
+            theme.focus_color(palette), base, theme.MIN_NON_TEXT_CONTRAST
+        ).name()
+        rule = theme.edge_strong_color(palette, base).name()
+        centre = box.center()
+        band = box.adjusted(-tiles.RING_SPACE, -tiles.RING_SPACE, tiles.RING_SPACE, tiles.RING_SPACE)
+
+        def at_rest():
+            image = tile.grab().toImage()
+            self.assertEqual(image.pixelColor(centre.x(), box.bottom() + 2).name(), rule)
+            self.assertNotIn(ring, {
+                image.pixelColor(x, y).name()
+                for y in range(band.top(), band.bottom() + 1)
+                for x in range(band.left(), band.right() + 1)
+                if not box.contains(x, y)
+            }, "a figure without the keyboard is ringed")
+
+        at_rest()
+        with unittest.mock.patch.object(tile, "update") as repaint:
+            spin.setFocus()
+            self.app.processEvents()
+            repaint.assert_called_with()
+        self.assertTrue(spin.hasFocus())
+        image = tile.grab().toImage()
+        for side, (x, y) in (
+            ("top", (centre.x(), box.top() - 2)),
+            ("bottom", (centre.x(), box.bottom() + 2)),
+            ("left", (box.left() - 2, centre.y())),
+            ("right", (box.right() + 2, centre.y())),
+        ):
+            with self.subTest(side=side):
+                self.assertEqual(image.pixelColor(x, y).name(), ring)
+        with unittest.mock.patch.object(tile, "update") as repaint:
+            spin.clearFocus()
+            self.app.processEvents()
+            repaint.assert_called_with()
+        at_rest()
+
+    def test_a_disabled_figure_keeps_the_card_surface_behind_it(self):
+        from legion_powerctl_gui import scheme, theme
+        from PySide6.QtGui import QPalette
+        from shiboken6 import delete
+
+        self.addCleanup(self.app.setPalette, QPalette(self.app.palette()))
+        self.addCleanup(self.app.setStyleSheet, self.app.styleSheet())
+        controller = scheme.LegionScheme(self.app, QPalette(self.app.palette()))
+        self.addCleanup(delete, controller)
+        self.set_figures(60, 120, 150)
+        for spin in self.envelope.spins.values():
+            spin.setEnabled(False)
+        for dark in (False, True):
+            controller.apply(dark)
+            self.envelope.restyle(self.app.palette())
+            self.app.processEvents()
+            base = self.app.palette().color(QPalette.ColorRole.Base)
+            for key, tile in self.envelope.tiles.items():
+                box = tile.spin.geometry()
+                with self.subTest(dark=dark, tile=key):
+                    self.assertEqual(
+                        self.dominant(tile.spin.grab().toImage()), base.name(),
+                        "a figure that cannot be edited sits in a grey well",
+                    )
+                    self.assertEqual(
+                        tile.grab().toImage().pixelColor(box.center().x(), box.bottom() + 2).name(),
+                        theme.edge_color(tile.palette()).name(),
+                    )
+
+    def test_both_scale_labels_share_one_gutter(self):
+        from legion_powerctl_gui import fields, theme
+        from legion_powerctl_gui.envelope import Envelope
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtGui import QFontMetrics
+
+        gutter = QFontMetrics(theme.font("detail-mono")).horizontalAdvance(fields.SCALE_TEMPLATE)
+        low, high = self.envelope.scale
+        for label in (low, high):
+            with self.subTest(label=label.text()):
+                self.assertEqual(label.minimumWidth(), gutter)
+        self.assertTrue(low.alignment() & Qt.AlignmentFlag.AlignRight, "the low end is not flush")
+        self.assertTrue(high.alignment() & Qt.AlignmentFlag.AlignLeft)
+        thermal = Envelope(
+            (("temp", "Temperature ceiling"),), 50, 100, " °C", "degrees Celsius"
+        )
+        thermal.restyle(self.app.palette())
+        self.host.layout().addWidget(thermal)
+        self.app.processEvents()
+        self.assertEqual(
+            thermal.bar.mapTo(self.host, QPoint(0, 0)).x(),
+            self.bar.mapTo(self.host, QPoint(0, 0)).x(),
+            "the two bars start at different places",
+        )
+
 
 @unittest.skipUnless(HAVE_PYSIDE6, "PySide6 is not installed")
 class EnvelopeInTheEditorTest(OffscreenGuiTest):

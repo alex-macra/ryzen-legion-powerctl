@@ -50,6 +50,14 @@ class PackageShapeTest(unittest.TestCase):
                     length, limit, f"{path.name} is {length} lines, the limit is {limit}"
                 )
 
+    def test_the_architecture_notes_name_every_module(self):
+        notes = (REPO / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+        listed = set(re.findall(r"^\| `([a-z0-9_]+\.py)` \|", notes, re.MULTILINE))
+        self.assertEqual(
+            {path.name for path in self.modules()} - {"__init__.py"}, listed,
+            "docs/ARCHITECTURE.md's module table and the package disagree",
+        )
+
     def test_only_one_module_builds_a_privileged_command(self):
         call = re.compile(r"(?<![A-Za-z_])privileged_command\(")
         callers = set()

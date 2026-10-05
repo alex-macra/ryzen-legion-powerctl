@@ -88,6 +88,29 @@ what was asked for rather than what the machine holds - though the title still s
 now`, as the row does. A running ceiling above a capped thermal scale is named on its card but
 has no tick.
 
+The editor's figures are the strip's figures. Each limit is a tile: the value set in the
+readout's face, over the strip's own caps caption - `SUSTAINED`, `SLOW PPT`, `FAST PPT` - and
+its tier's swatch, with a signed delta beside it in the muted monospaced voice. `+17` is what
+an Apply would raise that limit by; the delta is blank when the two agree, while the apply
+record is in doubt, as the ticks are, and while the open profile cannot be read, since then
+there is nothing to apply. A screen reader hears it with its unit and its meaning, `+17 W vs
+running`, both in the figure's own description, where focus lands, and as text beside it; a
+blank delta is hidden, so it leaves no empty node. The figure is still the `QSpinBox` the
+keyboard types into, and the arrow keys and the wheel still step it, but it is drawn without
+its frame or arrow buttons: the bar is the mouse's instrument and the figure the keyboard's.
+A 1 px ledger rule under the figure says it takes input, and becomes a 2 px focus ring when it
+has the keyboard. While there are unsaved changes the title's aside adds `edited` - `running
+now, edited` - and drops it on a save or a discard. The ordering rule, `Sustained ≤ slow ≤
+fast`, no longer takes a line under the eyebrow: it is the power envelope's tooltip and every
+stop's accessible description, and the stops enforce it as they move. That is a trade-off for
+a sighted keyboard user, who never sees a tooltip: they learn the rule from the neighbour that
+moves when a limit is pushed past it, not from a sentence. Both bars share one scale gutter, as
+wide as `100 °C`, so they start at the same x, and the 8 px gap that keeps the cards off the
+scroll bar is reserved only while a scroll bar is shown, so with nothing to scroll the cards
+end flush with the strip and with `Apply now`. The column's narrowest width always counts that
+gap, so a bar arriving beside a squeezed column cannot leave the cards wider than their
+viewport.
+
 What holds the look together is that **colour is written down in exactly one
 module**. By default the window runs Qt's Fusion style with the Legion scheme: a warm
 paper plane by day, a deep navy plane by night, one teal or mint accent. `scheme.py`
@@ -162,9 +185,13 @@ Three panels are painted rather than laid out, and all three were forced:
   60/65/75 on the CLI's 5-200 W range three labels sit two and a half percent apart,
   so they collide and have to be pushed off the stops they name; and a spin box is
   the only thing here anyone can type an exact wattage into. Each box is as wide as
-  its widest value. On a narrow window the row wraps (`flow.py`), but it closes its gaps
-  first, so a scroll bar appearing cannot by itself push a value onto a second line -
-  which would make the card taller and keep the scroll bar there.
+  its widest value. On a narrow window the row wraps (`flow.py`), closing its gaps first.
+  A scroll bar and its gap take more width than closing the gaps gives back, so near
+  the wrap a bar's arrival can push a value onto a second line - which makes the card
+  taller and so keeps the bar there. Qt decides on the bar at the width it already has,
+  which would let one size settle either way depending on how it was reached; the
+  editor column instead decides from how the cards lay out beside a bar, so a size has
+  one layout.
 
   Nothing is drawn straight onto the fills. Each stop marker, and the focus ring
   around it, sits on a plate of the card's own colour, and the ends of the scale are
@@ -218,7 +245,7 @@ Both count, and the offscreen suite asserts every form control has one of them.
 The distinction matters: Qt on Linux deliberately reports a combo box's *value*
 as its accessible name and hands the label over as a relation. The four stops and
 four spin boxes have no `QLabel` of their own for that search to find, so those carry
-explicit names. The legend's visible label is deliberately not their buddy: Qt would
+explicit names. A tile's visible caption is deliberately not their buddy: Qt would
 then hand a screen reader the same one string for a stop and for the spin box beside
 it, which is exactly what tells them apart.
 

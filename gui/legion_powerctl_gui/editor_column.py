@@ -54,6 +54,9 @@ class EditorColumn(QFrame):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setWidget(editor)
         self.focus_ring = a11y.FocusRing(self.scroll)
+        self.scroll.verticalScrollBar().rangeChanged.connect(self._fit_gap)
+        for watched in (self.scroll, editor):
+            watched.installEventFilter(self)
         layout.addWidget(self.scroll, 1)
         layout.addWidget(editor.problems_label)
         editor.problems_label.installEventFilter(self)
@@ -72,9 +75,13 @@ class EditorColumn(QFrame):
         self.restyle(self.palette())
 
     def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.Type.FontChange:
+        kind = event.type()
+        if watched in (self.scroll, self.editor):
+            if kind in (QEvent.Type.Resize, QEvent.Type.LayoutRequest):
+                self._fit_bar()
+        elif kind == QEvent.Type.FontChange:
             self._fit_aside()
-        elif watched is self.editor.problems_label and event.type() in (
+        elif watched is self.editor.problems_label and kind in (
             QEvent.Type.Show, QEvent.Type.Hide
         ):
             QTimer.singleShot(0, self, self._keep_focus_in_view)
@@ -85,6 +92,23 @@ class EditorColumn(QFrame):
         drop = QFontMetrics(title.font()).descent() - QFontMetrics(aside.font()).descent()
         aside.setContentsMargins(0, 0, 0, max(0, drop))
 
+    def _fit_bar(self) -> None:
+        # Qt measures at the current viewport, so a bar that wraps the tiles would justify itself.
+        room = self.scroll.contentsRect().size()
+        beside = room.width() - self.scroll.verticalScrollBar().sizeHint().width()
+        policy = (
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+            if self.editor.height_beside_a_bar(beside) > room.height()
+            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        if self.scroll.verticalScrollBarPolicy() != policy:
+            self.scroll.setVerticalScrollBarPolicy(policy)
+        self._fit_gap()
+
+    def _fit_gap(self, *_range) -> None:
+        kept = self.scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        self.editor.set_scrollbar_gap(kept or self.scroll.verticalScrollBar().maximum() > 0)
+
     def _keep_focus_in_view(self) -> None:
         focused = QApplication.focusWidget()
         if focused is not None and self.editor.isAncestorOf(focused):
@@ -93,7 +117,7 @@ class EditorColumn(QFrame):
     def minimumSizeHint(self) -> QSize:
         hint = super().minimumSizeHint()
         bar = self.scroll.verticalScrollBar().sizeHint().width()
-        return QSize(max(hint.width(), self.editor.minimumSizeHint().width() + bar), hint.height())
+        return QSize(max(hint.width(), self.editor.width_beside_a_bar() + bar), hint.height())
 
     def restyle(self, palette: QPalette) -> None:
         window = palette.color(QPalette.ColorRole.Window)
