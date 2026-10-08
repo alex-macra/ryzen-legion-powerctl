@@ -14,7 +14,10 @@ class CommandRunner(QObject):
         super().__init__(parent)
         self.processes: list[QProcess] = []
 
-    def run(self, argv: list[str], on_done, timeout_ms: int | None = None) -> None:
+    def run(
+        self, argv: list[str], on_done, timeout_ms: int | None = None,
+        on_start_failed=None,
+    ) -> None:
         process = QProcess(self)
         self.processes.append(process)
 
@@ -34,6 +37,8 @@ class CommandRunner(QObject):
             if err == QProcess.ProcessError.FailedToStart and process in self.processes:
                 self.processes.remove(process)
                 process.deleteLater()
+                if on_start_failed is not None:
+                    on_start_failed()
                 self.failed.emit(f"Could not run {argv[0]}: {process.errorString()}")
 
         def timed_out() -> None:

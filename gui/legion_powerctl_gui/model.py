@@ -98,8 +98,8 @@ class DoctorReport:
 def parse_status(payload: str) -> Status:
     try:
         data = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise StatusParseError(f"status --json produced invalid JSON: {exc}") from exc
+    except ValueError as exc:
+        raise StatusParseError(f"status --json could not be parsed: {exc}") from exc
     if not isinstance(data, dict):
         raise StatusParseError("status --json did not produce a JSON object.")
     schema = data.get("schema_version")
@@ -117,21 +117,26 @@ def parse_status(payload: str) -> Status:
             profiles.append(Profile(name=str(entry["name"]), valid=False))
             continue
         try:
+            numbers = {
+                key: entry[key]
+                for key in ("stapm_w", "slow_w", "fast_w", "temp_c")
+            }
+            if any(type(value) is not int for value in numbers.values()):
+                raise TypeError("profile numbers must be integers")
+            profile = Profile(
+                name=str(entry["name"]),
+                valid=True,
+                description=str(entry.get("description", "")),
+                **numbers,
+                power_profile=str(entry.get("power_profile", "unchanged")),
+                min_freq_mhz=str(entry.get("min_freq_mhz", "unchanged")),
+                max_freq_mhz=str(entry.get("max_freq_mhz", "unchanged")),
+                boost=str(entry.get("boost", "unchanged")),
+                epp=str(entry.get("epp", "unchanged")),
+            )
             profiles.append(
-                Profile(
-                    name=str(entry["name"]),
-                    valid=True,
-                    description=str(entry.get("description", "")),
-                    stapm_w=int(entry["stapm_w"]),
-                    slow_w=int(entry["slow_w"]),
-                    fast_w=int(entry["fast_w"]),
-                    temp_c=int(entry["temp_c"]),
-                    power_profile=str(entry.get("power_profile", "unchanged")),
-                    min_freq_mhz=str(entry.get("min_freq_mhz", "unchanged")),
-                    max_freq_mhz=str(entry.get("max_freq_mhz", "unchanged")),
-                    boost=str(entry.get("boost", "unchanged")),
-                    epp=str(entry.get("epp", "unchanged")),
-                )
+                profile if not validate_profile(profile)
+                else Profile(name=profile.name, valid=False)
             )
         except (KeyError, TypeError, ValueError):
             profiles.append(Profile(name=str(entry["name"]), valid=False))

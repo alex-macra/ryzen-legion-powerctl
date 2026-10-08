@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -55,6 +56,44 @@ class ParseStatusTest(unittest.TestCase):
             '"fast_w":75,"temp_c":82}]}'
         )
         status = model.parse_status(payload)
+        self.assertFalse(status.profiles[0].valid)
+
+    def test_profile_with_nonfinite_number_becomes_invalid(self):
+        payload = (
+            '{"schema_version":1,"profiles":'
+            '[{"name":"x","valid":true,"stapm_w":1e400,"slow_w":65,'
+            '"fast_w":75,"temp_c":82}]}'
+        )
+        status = model.parse_status(payload)
+        self.assertFalse(status.profiles[0].valid)
+
+    def test_profile_with_coerced_numeric_field_becomes_invalid(self):
+        numbers = {"stapm_w": 60, "slow_w": 65, "fast_w": 75, "temp_c": 82}
+        for field in numbers:
+            for value in (True, 60.9, "60", None):
+                with self.subTest(field=field, value=value):
+                    profile = {"name": "x", "valid": True, **numbers, field: value}
+                    payload = json.dumps({"schema_version": 1, "profiles": [profile]})
+                    self.assertFalse(model.parse_status(payload).profiles[0].valid)
+
+    def test_profile_with_out_of_range_number_becomes_invalid(self):
+        profile = {
+            "name": "x", "valid": True, "stapm_w": 1000, "slow_w": 1001,
+            "fast_w": 1002, "temp_c": 82,
+        }
+        payload = json.dumps({"schema_version": 1, "profiles": [profile]})
+        self.assertFalse(model.parse_status(payload).profiles[0].valid)
+
+    def test_huge_json_integer_does_not_raise_raw_value_error(self):
+        payload = (
+            '{"schema_version":1,"profiles":'
+            '[{"name":"x","valid":true,"stapm_w":'
+            + "9" * 4301 + ',"slow_w":65,"fast_w":75,"temp_c":82}]}'
+        )
+        try:
+            status = model.parse_status(payload)
+        except model.StatusParseError:
+            return
         self.assertFalse(status.profiles[0].valid)
 
     def test_a_machine_with_nothing_configured_yet_still_parses(self):

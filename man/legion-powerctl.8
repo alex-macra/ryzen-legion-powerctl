@@ -63,8 +63,9 @@ Refuses when doctor reports failures unless --force is supplied.
 Disable the boot service. Existing hardware state remains until firmware or a
 reboot changes it.
 .TP
-.B restore-frequency [--boost on|off|unchanged]
+.B restore-frequency [--boost on|off|unchanged] [--dry-run]
 Restore the hardware-reported CPUFreq minimum and maximum.
+Use --dry-run to preview the writes without changing controls.
 .TP
 .B baseline [--capture|--show]
 Record the firmware's own SMU limits, or print the recorded ones. The capture happens
