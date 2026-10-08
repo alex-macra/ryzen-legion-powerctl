@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QPalette, qGray
 
 SEVERITIES = ("OK", "WARN", "FAIL", "NEUTRAL")
 
 MIN_CONTRAST = 4.5
 MIN_NON_TEXT_CONTRAST = 3.0
 
-SEVERITY_HUE = {"OK": 145.0, "WARN": 35.0, "FAIL": 2.0}
+SEVERITY_HUE = {"OK": 122.0, "WARN": 38.0, "FAIL": 4.0}
 SEVERITY_SATURATION = 0.70
 SEED_LIGHTNESS = 0.45
+SEED_LIGHTNESS_DARK = 0.62
+
+EDGE_BLEND = 0.12
+SECONDARY_BLEND = 0.24
+MUTED_BLEND = 0.38
+EDGE_STRONG_BLEND = 0.30
+SELECTION_TINT = 0.12
+SEVERITY_TINT = 0.10
+FUSION_OUTLINE = 140
+FUSION_SCROLL_ALPHA = 180 / 255
 
 _NEUTRAL_LUMINANCE = 0.1791
 
@@ -37,13 +48,17 @@ def contrast_ratio(one: QColor, other: QColor) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def _is_dark_background(background: QColor) -> bool:
+    return relative_luminance(background) <= _NEUTRAL_LUMINANCE
+
+
 def fit_contrast(color: QColor, background: QColor, target: float = MIN_CONTRAST) -> QColor:
     if contrast_ratio(color, background) >= target:
         return color
     hue, saturation, lightness, alpha = color.getHslF()
     if hue < 0:
         hue, saturation = 0.0, 0.0
-    step = -0.02 if relative_luminance(background) > _NEUTRAL_LUMINANCE else 0.02
+    step = 0.02 if _is_dark_background(background) else -0.02
     candidate = color
     for _ in range(51):
         lightness = min(1.0, max(0.0, lightness + step))
@@ -64,7 +79,8 @@ def severity_color(palette: QPalette, severity: str) -> QColor:
     hue = SEVERITY_HUE.get(severity)
     if hue is None:
         return fit_contrast(palette.color(QPalette.ColorRole.WindowText), background)
-    seed = QColor.fromHslF(hue / 360.0, SEVERITY_SATURATION, SEED_LIGHTNESS, 1.0)
+    seed_lightness = SEED_LIGHTNESS_DARK if _is_dark_background(background) else SEED_LIGHTNESS
+    seed = QColor.fromHslF(hue / 360.0, SEVERITY_SATURATION, seed_lightness, 1.0)
     return fit_contrast(seed, background)
 
 
@@ -94,16 +110,65 @@ def blend(color: QColor, other: QColor, amount: float) -> QColor:
     )
 
 
+def tint_color(background: QColor, color: QColor, amount: float = SEVERITY_TINT) -> QColor:
+    return blend(background, color, amount)
+
+
 def muted_color(palette: QPalette, background: QColor) -> QColor:
-    stepped = blend(palette.color(QPalette.ColorRole.Text), background, 0.38)
+    stepped = blend(palette.color(QPalette.ColorRole.Text), background, MUTED_BLEND)
     return fit_contrast(stepped, background, MIN_CONTRAST)
+
+
+def secondary_color(palette: QPalette, background: QColor) -> QColor:
+    stepped = blend(palette.color(QPalette.ColorRole.Text), background, SECONDARY_BLEND)
+    return fit_contrast(stepped, background, MIN_CONTRAST)
+
+
+def disabled_text_color(palette: QPalette) -> QColor:
+    return palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
 
 
 def edge_color(palette: QPalette) -> QColor:
     return blend(
         palette.color(QPalette.ColorRole.Window),
         palette.color(QPalette.ColorRole.WindowText),
-        0.22,
+        EDGE_BLEND,
+    )
+
+
+def edge_strong_color(palette: QPalette, background: QColor) -> QColor:
+    stepped = blend(background, palette.color(QPalette.ColorRole.Text), EDGE_STRONG_BLEND)
+    return fit_contrast(stepped, background, MIN_NON_TEXT_CONTRAST)
+
+
+# Fusion draws input frames in Window.darker(140) and a scroll bar's edges at alpha 180
+# over its groove; these invert that so what lands on screen is edge_strong_color.
+def fusion_window(outline: QColor) -> QColor:
+    return outline.lighter(FUSION_OUTLINE)
+
+
+def fusion_groove_color(palette: QPalette, background: QColor) -> QColor:
+    if max(background.red(), background.green(), background.blue()) < 128:
+        return background.lighter(157)
+    button = palette.color(QPalette.ColorRole.Button)
+    tone = button.lighter(100 + max(1, (180 - qGray(button.rgb())) // 6))
+    tone.setHsv(tone.hue(), int(tone.saturation() * 0.75), tone.value(), tone.alpha())
+    return tone.darker(107)
+
+
+def scroll_outline_color(palette: QPalette) -> QColor:
+    groove = fusion_groove_color(palette, palette.color(QPalette.ColorRole.Base))
+    shown = edge_strong_color(palette, groove)
+    under = 1.0 - FUSION_SCROLL_ALPHA
+    return QColor(*(
+        max(0, min(255, round((wanted - under * behind) / FUSION_SCROLL_ALPHA)))
+        for wanted, behind in zip(shown.getRgb()[:3], groove.getRgb()[:3])
+    ))
+
+
+def selection_color(palette: QPalette) -> QColor:
+    return tint_color(
+        palette.color(QPalette.ColorRole.Base), accent_color(palette), SELECTION_TINT
     )
 
 
@@ -132,64 +197,46 @@ def wash_color(palette: QPalette, background: QColor) -> QColor:
     return blend(background, accent_color(palette), 0.16)
 
 
-def swatch_style(palette: QPalette, background: QColor, step: float) -> str:
-    return (
-        f"background-color: {tier_color(palette, background, step).name()};"
-        f" border: 1px solid {track_color(palette, background).name()};"
-        f" border-radius: 2px;"
-    )
+def is_dark(scheme: Qt.ColorScheme, palette: QPalette) -> bool:
+    if scheme == Qt.ColorScheme.Unknown:
+        return palette.color(QPalette.ColorRole.Window).lightness() < 128
+    return scheme == Qt.ColorScheme.Dark
 
 
-def caption_style(palette: QPalette) -> str:
-    return f"color: {muted_color(palette, palette.color(QPalette.ColorRole.Base)).name()};"
+MIN_POINT_SIZE = 7.0
+_W = QFont.Weight
+FONT_ROLES = {
+    "body": (1.0, _W.Normal, 100.0, False, False),
+    "strong": (1.0, _W.DemiBold, 100.0, False, False),
+    "title": (1.4, _W.DemiBold, 99.0, False, False),
+    "readout": (1.7, _W.DemiBold, 98.0, False, False),
+    "eyebrow": (0.75, _W.ExtraBold, 110.0, True, False),
+    "caption": (0.9, _W.Normal, 100.0, False, False),
+    "detail-mono": (0.9, _W.Normal, 100.0, False, True),
+    "badge": (0.8, _W.Bold, 100.0, False, False),
+    "pin": (0.75, _W.Bold, 106.0, True, False),
+}
 
 
-def card_style(palette: QPalette) -> str:
-    return (
-        f"QGroupBox {{ background-color: {palette.color(QPalette.ColorRole.Base).name()};"
-        f" border: 1px solid {edge_color(palette).name()}; border-radius: 6px;"
-        f" margin-top: 10px; padding: 12px 12px 8px 12px; }}"
-        f" QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;"
-        f" left: 10px; padding: 0 4px; }}"
-    )
+def font(role: str, base: QFont | None = None) -> QFont:
+    scale, weight, spacing, uppercase, mono = FONT_ROLES[role]
+    reference = QFont(base) if base is not None else QGuiApplication.font()
+    size = reference.pointSizeF() if reference.pointSizeF() > 0 else 10.0
+    if mono:
+        result = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    else:
+        result = QFont(reference)
+    result.setPointSizeF(max(MIN_POINT_SIZE, size * scale) if scale < 1.0 else size * scale)
+    result.setWeight(weight)
+    if spacing != 100.0:
+        result.setLetterSpacing(QFont.SpacingType.PercentageSpacing, spacing)
+    if uppercase:
+        result.setCapitalization(QFont.Capitalization.AllUppercase)
+    return result
 
 
-def primary_button_style(palette: QPalette) -> str:
-    accent = accent_color(palette)
-    on_accent = on_accent_color(palette)
-    disabled = palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText)
-    return (
-        f"QPushButton {{ background-color: {accent.name()}; color: {on_accent.name()};"
-        f" border: 1px solid {accent.name()}; border-radius: 3px; padding: 5px 14px; }}"
-        f" QPushButton:hover {{ background-color: {blend(accent, on_accent, 0.12).name()}; }}"
-        f" QPushButton:pressed {{ background-color: {blend(accent, on_accent, 0.24).name()}; }}"
-        f" QPushButton:focus {{ border: 2px solid {on_accent.name()}; padding: 4px 13px; }}"
-        f" QPushButton:disabled {{ background-color: {palette.color(QPalette.ColorRole.Button).name()};"
-        f" color: {disabled.name()}; border: 1px solid {edge_color(palette).name()}; }}"
-    )
-
-
-def focus_ring_style(palette: QPalette, selector: str = "QFrame") -> str:
-    return (
-        f"{selector} {{ border: 2px solid transparent; border-radius: 4px; }}"
-        f" {selector}:focus {{ border: 2px solid {focus_color(palette).name()}; }}"
-    )
-
-
-def text_style(palette: QPalette, severity: str) -> str:
-    return f"color: {severity_color(palette, severity).name()};"
-
-
-def chip_style(palette: QPalette, severity: str, selector: str = "QLabel") -> str:
-    color = severity_color(palette, severity).name()
-    hover = blend(
-        palette.color(QPalette.ColorRole.Window), severity_color(palette, severity), 0.12
-    )
-    return (
-        f"{selector} {{ background-color: transparent;"
-        f" border: 1px solid {color}; border-radius: 9px;"
-        f" padding: 2px 8px; color: {color}; }}"
-        f" {selector}:hover {{ background-color: {hover.name()}; }}"
-        f" {selector}:focus {{ border: 2px solid {focus_color(palette).name()};"
-        f" padding: 1px 7px; }}"
-    )
+def repolish(widget) -> None:
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()

@@ -4,17 +4,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from . import a11y, fields, model, theme
+from . import a11y, fields, model, runstate, styles, theme
 from .advanced import AdvancedFields
 from .envelope import Envelope
+
+SCROLLBAR_GAP = 8
+CALLOUT_GAP = 8
+ORDER_RULE = "Sustained ≤ slow ≤ fast: moving one past a neighbour moves it too."
 
 
 class ProfileEditor(QWidget):
@@ -29,23 +27,25 @@ class ProfileEditor(QWidget):
         self._updating = False
         self._busy = False
         self._last_problem_text = ""
+        self._running: runstate.RunState | None = None
+        self._boot = ""
 
         layout = QVBoxLayout(self)
-        self.profile_title = QLabel("No profile selected")
-        title_font = self.profile_title.font()
-        title_font.setPointSize(title_font.pointSize() + 3)
-        title_font.setBold(True)
-        self.profile_title.setFont(title_font)
-        layout.addWidget(self.profile_title)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(styles.GAP)
+        self.profile_title = QLabel("No profile selected", self)
+        self.title_aside = fields.Aside("", self)
+        self.title_aside.setFont(theme.font("caption"))
+        self.title_aside.hide()
 
-        power, power_form = fields.card(
-            "Power envelope", "Sustained <= slow <= fast: moving one past a neighbour moves it too."
-        )
+        power, power_form = fields.card("Power envelope")
         self.power_envelope = Envelope(
             (("stapm", "Sustained (STAPM)"), ("slow", "Slow PPT"), ("fast", "Fast PPT")),
             model.POWER_MIN_W, model.POWER_MAX_W, " W", "watts",
             note="; a limit cannot pass its neighbour, which moves instead",
+            captions=tuple(label for label, _key, _unit in runstate.LIMITS[:3]),
         )
+        self.power_envelope.setToolTip(ORDER_RULE)
         power_form.addRow(self.power_envelope)
         self.stapm_slider, self.slow_slider, self.fast_slider = self.power_envelope.stops.values()
         self.stapm_spin, self.slow_spin, self.fast_spin = self.power_envelope.spins.values()
@@ -67,7 +67,7 @@ class ProfileEditor(QWidget):
         policy, policy_form = fields.card("CPU policy")
         self.power_profile_combo = fields.combo(model.POWER_PROFILES)
         self.power_profile_combo.activated.connect(self._on_edited)
-        policy_form.addRow("Linux power profile", self.power_profile_combo)
+        fields.add_row(policy_form, "Linux power profile", self.power_profile_combo)
 
         self.advanced = AdvancedFields()
         self.advanced.edited.connect(self._on_edited)
@@ -75,22 +75,20 @@ class ProfileEditor(QWidget):
         self.cards = [power, thermal, policy]
         for group in self.cards:
             layout.addWidget(group)
+        for group, envelope in ((power, self.power_envelope), (thermal, self.thermal_envelope)):
+            envelope.setAccessibleName(group.accessibleName())
         layout.addWidget(self.advanced)
+        fields.align_labels(self.findChildren(QLabel, fields.FORM_LABEL))
 
-        self.problems_label = QLabel("")
+        self.problems_label = QLabel("", self)
         self.problems_label.setWordWrap(True)
-        layout.addWidget(self.problems_label)
+        self.problems_label.setVisible(False)
+        layout.addStretch(1)
 
-        self.dirty_label = QLabel("")
-        self.apply_button = QPushButton("&Apply now")
+        self.dirty_label = QLabel("", self)
+        self.apply_button = QPushButton("&Apply now", self)
         self.apply_button.clicked.connect(self.apply_requested)
         self.buttons = [self.apply_button]
-        actions = QHBoxLayout()
-        actions.addWidget(self.dirty_label)
-        actions.addStretch(1)
-        actions.addWidget(self.apply_button)
-        layout.addLayout(actions)
-        layout.addStretch(1)
 
         self.fields = [
             self.stapm_slider, self.stapm_spin,
@@ -123,6 +121,7 @@ class ProfileEditor(QWidget):
         self._set_problem_text("")
         self._updating = False
         self._update_actions()
+        self._show_context()
 
     def collect(self) -> model.Profile:
         assert self.editing is not None
@@ -151,15 +150,38 @@ class ProfileEditor(QWidget):
             f"Problem: '{name}' is not a readable profile. Run legion-powerctl "
             f"doctor to see why, or use New profile with the same name to replace it."
         )
+        self._show_context()
 
     def clear(self) -> None:
         self.editing = None
         self.current_name = ""
+        self._show_context()
+
+    def set_context(self, running: runstate.RunState, boot: str) -> None:
+        self._running, self._boot = running, boot
+        self._show_context()
 
     def mark_saved(self, profile: model.Profile) -> None:
         if self.editing is not None and self.collect() == profile:
             self.dirty = False
             self._update_actions()
+            self._show_context()
+
+    def set_scrollbar_gap(self, shown: bool) -> None:
+        gap = SCROLLBAR_GAP if shown else 0
+        if self.layout().contentsMargins().right() != gap:
+            self.layout().setContentsMargins(0, 0, gap, 0)
+
+    def width_beside_a_bar(self) -> int:
+        return self.minimumSizeHint().width() + self._missing_gap()
+
+    def height_beside_a_bar(self, width: int) -> int:
+        least = self.minimumSizeHint()
+        width = max(width - self._missing_gap(), least.width())
+        return max(self.heightForWidth(width), least.height())
+
+    def _missing_gap(self) -> int:
+        return SCROLLBAR_GAP - self.layout().contentsMargins().right()
 
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -167,18 +189,37 @@ class ProfileEditor(QWidget):
         self._update_actions()
 
     def restyle(self, palette: QPalette) -> None:
-        self.problems_label.setStyleSheet(theme.text_style(palette, "FAIL"))
-        self.dirty_label.setStyleSheet(
-            f"color: {theme.muted_color(palette, palette.color(QPalette.ColorRole.Window)).name()};"
+        self.problems_label.setStyleSheet(
+            f"{styles.problem_style(palette)}"
+            f" QLabel {{ margin: {CALLOUT_GAP}px 0px 0px 0px; }}"
         )
-        self.apply_button.setStyleSheet(theme.primary_button_style(palette))
-        surface = theme.card_style(palette)
+        surface = styles.card_style(palette)
         for group in self.cards:
             group.setStyleSheet(surface)
+        self.advanced.restyle(palette)
         for envelope in self.envelopes:
             envelope.restyle(palette)
-        for note in self.findChildren(QLabel, fields.CAPTION):
-            note.setStyleSheet(theme.caption_style(palette))
+        for label in self.findChildren(QLabel, fields.FORM_LABEL):
+            label.setStyleSheet(fields.label_style(palette))
+
+    def _show_context(self) -> None:
+        state = self._running
+        limits = state.limits() if state is not None and state.mark()[1] != "FAIL" else None
+        power, thermal, _policy = self.cards
+        measured = self.editing is not None
+        self.power_envelope.set_reference(limits[:3] if limits else None, measured)
+        self.thermal_envelope.set_reference(limits[3:] if limits else None, measured)
+        power.set_aside(f"running {limits[0]}/{limits[1]}/{limits[2]} W" if limits else "")
+        thermal.set_aside(f"running {limits[3]} °C" if limits else "")
+        parts = []
+        if state is not None and state.applied and self.current_name == state.profile:
+            parts.append("running now")
+        if self.current_name and self.current_name == self._boot:
+            parts.append("boot profile")
+        if self.dirty and self.editing is not None:
+            parts.append("edited")
+        self.title_aside.setText(", ".join(parts))
+        self.title_aside.setVisible(bool(parts))
 
     def _set_enabled(self, enabled: bool) -> None:
         for widget in self.fields:
@@ -195,6 +236,7 @@ class ProfileEditor(QWidget):
 
     def _set_problem_text(self, message: str) -> None:
         self.problems_label.setText(message)
+        self.problems_label.setVisible(bool(message))
         if message and message != self._last_problem_text:
             a11y.announce(self.problems_label, message)
         self._last_problem_text = message
@@ -238,3 +280,4 @@ class ProfileEditor(QWidget):
         self.dirty = True
         self._set_problem_text("\n".join(f"Problem: {p}" for p in self.problems()))
         self._update_actions()
+        self._show_context()

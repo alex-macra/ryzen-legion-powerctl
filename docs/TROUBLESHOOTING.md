@@ -71,10 +71,8 @@ sudo ./bin/legion-powerctl repair balanced-plus
 
 Recovery backs up the original profile, boot selection, last apply record and
 existing module configuration under `/var/lib/legion-powerctl/backups/repair-*`.
-It applies **60/65/75 W at 78 C**, balanced platform policy, boost on, stock
-frequency bounds and `balance_performance` EPP. This starts from the previously
-successful manual wattages; it does not prove that gaming or VM performance is
-restored at the lower temperature ceiling.
+It applies the shipped **87/92/102 W at 80 C**, balanced platform policy, boost on,
+stock frequency bounds and `balance_performance` EPP.
 
 When the compatible module is incomplete, recovery requires known lockdown
 `none` and `/dev/mem`, then tries a normal `modprobe -r ryzen_smu`. An in-use
@@ -98,7 +96,7 @@ module returns on reboot. The installer respects the recovery blacklist.
 
 To undo recovery, use the exact backup directory printed by the command. Restore
 the desired profile files, remove the recovery blacklist, and restore the old
-module-loading file if it existed. The original profile may still exceed 78 C;
+module-loading file if it existed. The original profile may still exceed 80 C;
 correct that value before applying it. Re-enable the optional driver only when
 its PM-table support works on this CPU.
 

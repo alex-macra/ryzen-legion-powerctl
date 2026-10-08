@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QMessageBox
 
 from . import dialogs, model, runstate
 
@@ -130,16 +129,8 @@ class ProfileActions(QObject):
             self._editor.clear()
             self._sidebar.discard_draft(name)
             return
-        if self._window.dialogs:
-            answer = QMessageBox.question(
-                self._window,
-                "Delete profile",
-                f"Delete profile '{name}'? This cannot be undone.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+        if self._window.dialogs and not dialogs.confirm_delete(self._window, name):
+            return
         self._run(model.build_delete_args(name), f"Deleted profile '{name}'.")
 
     def set_service(self, enabled: bool) -> None:

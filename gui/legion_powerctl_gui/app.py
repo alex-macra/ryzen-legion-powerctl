@@ -6,22 +6,21 @@ import os
 from collections import deque
 
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QIcon, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QMainWindow,
     QMessageBox,
-    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 from shiboken6 import isValid
 
-from . import __version__, dialogs, model
+from . import __version__, dialogs, model, runstate, styles, theme
 from .actions import ProfileActions
 from .editor import ProfileEditor
+from .editor_column import EditorColumn
 from .header import MachineHeader
 from .reports import ReportArea
 from .runner import CommandRunner
@@ -29,6 +28,9 @@ from .sidebar import ProfileList
 
 REFRESH_INTERVAL_MS = 15000
 POLL_TIMEOUT_MS = 10000
+SIDEBAR_MIN_WIDTH = 220
+SIDEBAR_MAX_WIDTH = 360
+SPLITTER_SIZES = [264, 652]
 
 
 class MainWindow(QMainWindow):
@@ -63,26 +65,33 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         outer = QVBoxLayout(central)
+        gutter = styles.GUTTER
+        outer.setContentsMargins(gutter, gutter, gutter, gutter)
+        outer.setSpacing(styles.GAP)
 
         self.header = MachineHeader(__version__)
         outer.addWidget(self.header)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        outer.addWidget(splitter, 1)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setHandleWidth(styles.GAP)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStyleSheet(styles.splitter_style())
+        outer.addWidget(self.splitter, 1)
         self.sidebar = ProfileList()
-        splitter.addWidget(self.sidebar)
+        self.sidebar.setMinimumWidth(SIDEBAR_MIN_WIDTH)
+        self.sidebar.setMaximumWidth(SIDEBAR_MAX_WIDTH)
+        self.splitter.addWidget(self.sidebar)
         self.editor = ProfileEditor()
-        self.editor_scroll = QScrollArea()
-        self.editor_scroll.setAccessibleName("Profile settings")
-        self.editor_scroll.setWidgetResizable(True)
-        self.editor_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.editor_scroll.setWidget(self.editor)
-        splitter.addWidget(self.editor_scroll)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([260, 700])
+        self.editor_column = EditorColumn(self.editor)
+        self.editor_scroll = self.editor_column.scroll
+        self.splitter.addWidget(self.editor_column)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes(SPLITTER_SIZES)
 
         self.setCentralWidget(central)
+        self.statusBar().setMinimumHeight(styles.STATUS_BAR_HEIGHT)
+        self.statusBar().setFont(theme.font("caption"))
         self.reports = ReportArea(self.statusBar(), self.dialogs, self)
         self.reports.go_back_requested.connect(self._on_go_back)
         self.statusBar().addPermanentWidget(self.header.machine_label)
@@ -92,6 +101,7 @@ class MainWindow(QMainWindow):
         self._save_shortcut.activated.connect(self.profile_actions.save)
         self._connect()
         self._built = True
+        self.restyle(self.palette())
 
     def _connect(self) -> None:
         self.sidebar.profile_chosen.connect(self._on_profile_chosen)
@@ -187,6 +197,7 @@ class MainWindow(QMainWindow):
         self.sidebar.set_profiles(
             status.profiles, status.active_profile, self.editor.current_name, running
         )
+        self.editor.set_context(runstate.run_state(status), status.active_profile)
         if self._pending_open:
             name, self._pending_open = self._pending_open, ""
             self.sidebar.select_by_name(name)
@@ -208,31 +219,30 @@ class MainWindow(QMainWindow):
     def _confirm_discard(self, target_name: str) -> bool:
         if not self.dialogs:
             return True
-        answer = QMessageBox.question(
-            self,
-            "Discard unsaved changes?",
-            f"'{self.editor.editing.name}' has unsaved changes. Discard them and open "
-            f"'{target_name}'?",
-            QMessageBox.StandardButton.Discard
-            | QMessageBox.StandardButton.Save
-            | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
+        answer = dialogs.confirm_discard(self, self.editor.editing.name, target_name)
         if answer == QMessageBox.StandardButton.Save:
             self._pending_open = target_name
             self.profile_actions.save()
             return False
         return answer == QMessageBox.StandardButton.Discard
 
+    def regions(self) -> tuple:
+        return (
+            self.header, self.sidebar, self.editor_column, self.editor, self.checks, self.reports
+        )
+
+    def restyle(self, palette: QPalette) -> None:
+        self.statusBar().setStyleSheet(styles.status_bar_style(palette))
+        for region in self.regions():
+            restyle = getattr(region, "restyle", None)
+            if restyle is not None:
+                restyle(palette)
+
     def changeEvent(self, event) -> None:
-        if self._built:
-            if event.type() in (
-                QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange
-            ):
-                palette = self.palette()
-                self.header.restyle(palette)
-                self.editor.restyle(palette)
-                self.checks.restyle(palette)
+        if self._built and event.type() in (
+            QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange
+        ):
+            self.restyle(self.palette())
         super().changeEvent(event)
 
     def closeEvent(self, event) -> None:

@@ -14,7 +14,7 @@ POWER_MIN_W = 5
 POWER_MAX_W = 200
 TEMP_MIN_C = 50
 TEMP_MAX_C = 100
-BALANCED_PLUS_MAX_TEMP_C = 78
+BALANCED_PLUS_MAX_TEMP_C = 80
 
 POWER_PROFILES = ("balanced", "performance", "power-saver", "unchanged")
 POWER_PROFILE_ICON_NAMES = {

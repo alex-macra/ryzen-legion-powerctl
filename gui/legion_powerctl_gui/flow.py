@@ -7,10 +7,15 @@ from PySide6.QtWidgets import QLayout
 
 
 class FlowLayout(QLayout):
-    def __init__(self, parent=None, spacing: int = 6) -> None:
+    def __init__(
+        self, parent=None, spacing: int = 6, line_spacing: int | None = None,
+        min_spacing: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self._items: list = []
         self._spacing = spacing
+        self._line_spacing = spacing if line_spacing is None else line_spacing
+        self._min_spacing = spacing if min_spacing is None else min_spacing
         self.setContentsMargins(QMargins(0, 0, 0, 0))
 
     def addItem(self, item) -> None:
@@ -51,20 +56,34 @@ class FlowLayout(QLayout):
     def spacing(self) -> int:
         return self._spacing
 
+    def _lines(self, width: int) -> list[list]:
+        lines, used = [[]], 0
+        for item in self._items:
+            hint = item.sizeHint().width()
+            gap = self._min_spacing if lines[-1] else 0
+            if lines[-1] and used + gap + hint > width:
+                lines.append([])
+                used, gap = 0, 0
+            used += gap + hint
+            lines[-1].append(item)
+        return lines
+
     def _lay_out(self, rect: QRect, apply: bool) -> int:
         margins = self.contentsMargins()
         area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
-        x, y, line_height = area.x(), area.y(), 0
-        for item in self._items:
-            hint = item.sizeHint()
-            next_x = x + hint.width() + self._spacing
-            if next_x - self._spacing > area.right() and line_height > 0:
-                x = area.x()
-                y += line_height + self._spacing
-                next_x = x + hint.width() + self._spacing
-                line_height = 0
-            if apply:
-                item.setGeometry(QRect(QPoint(x, y), hint))
-            x = next_x
-            line_height = max(line_height, hint.height())
-        return y + line_height - rect.y() + margins.bottom()
+        y = area.y()
+        for index, line in enumerate(self._lines(area.width())):
+            if index:
+                y += self._line_spacing
+            hints = [item.sizeHint() for item in line]
+            spacing = self._spacing
+            if len(line) > 1:
+                spare = area.width() - sum(hint.width() for hint in hints)
+                spacing = min(spacing, spare // (len(line) - 1))
+            x = area.x()
+            for item, hint in zip(line, hints):
+                if apply:
+                    item.setGeometry(QRect(QPoint(x, y), hint))
+                x += hint.width() + spacing
+            y += max((hint.height() for hint in hints), default=0)
+        return y - rect.y() + margins.bottom()

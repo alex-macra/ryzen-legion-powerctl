@@ -70,20 +70,26 @@ length ceiling below.
 | `app.py` | the window: assembles the panels, runs the poll, and arbitrates whether a click on the sidebar may change the editor |
 | `actions.py` | every privileged argv the GUI builds - the six subcommands that reach `pkexec`: `configure`, `apply`, `select`, `delete`, `enable`, `disable` - and what each exit code means |
 | `editor.py` | the form for one profile - reads and writes the widgets, validates, and shows an unreadable profile without arming anything |
+| `editor_column.py` | the frame around the form: the profile's title above the scrolling cards, and the problems callout and `Apply now` below them, so neither scrolls away |
 | `advanced.py` | the collapsed disclosure holding boost, EPP and the frequency range |
 | `envelope.py` | the power instrument: three linked stops on one track, and the temperature ceiling |
-| `fields.py` | the widget vocabulary the editor is built from - cards, value entries, combo boxes |
+| `tiles.py` | one limit's figure: the frameless spin box in the strip's face, its delta against what runs, its caption and tier swatch |
+| `fields.py` | the widget vocabulary the editor is built from - cards, scale labels, combo boxes, the title aside |
 | `flow.py` | a wrapping layout, because Qt ships none |
 | `sidebar.py` | the profile list, including rows for profiles that have never been written |
 | `profile_delegate.py` | how one profile row is painted: the running rail, the boot pin, and the pin's hit test |
-| `header.py` | the two-line answer: what is running now, and what applies at boot |
+| `header.py` | the status strip: what is running now, what applies at boot, the boot-service switch and the checks badge |
+| `strip_widgets.py` | the strip's painted pieces: the switch, the dotted badge and the dot icon |
 | `runstate.py` | `last_apply` read as a state, the deltas that decide whether an apply raises limits, and the service badge. No Qt |
-| `dialogs.py` | the modal surfaces: the checks report, the raise confirmation, and profile naming |
+| `dialogs.py` | the modal surfaces: the checks dialog, every confirmation, and profile naming |
+| `checks_view.py` | the checks dialog's rows, its summary line, and the report it copies |
 | `reports.py` | the status line and its transient messages |
 | `runner.py` | every child process, and the promise that none outlives the window |
 | `model.py` | the CLI's data contract: profile shape, enumerations, validators, and the `status --json` and `doctor` parsers. No Qt |
-| `theme.py` | severity colours derived from the running palette |
-| `a11y.py` | announcing a message, and labelling the control pairs `QFormLayout` cannot |
+| `scheme.py` | the Legion light and dark palettes, the only colour literals in the package, and following the desktop between them |
+| `theme.py` | colour maths: every colour derived from the running palette and fitted to its contrast floor, and the font roles |
+| `styles.py` | the stylesheets, each written from the palette it is handed |
+| `a11y.py` | announcing a message, labelling the control pairs `QFormLayout` cannot, and the focus ring a frameless scroll area lacks |
 
 `actions.py` is the seam the split was chosen around: polkit pins `exec.path` to
 the CLI and `exec.argv1` to the subcommand, so what that one file is able to

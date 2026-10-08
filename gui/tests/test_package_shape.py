@@ -13,6 +13,8 @@ MAX_LINES = 300
 
 LONGER_ALLOWED = {"model.py": 340}
 
+COLOUR_ALLOWED = {"scheme.py"}
+
 
 class PackageShapeTest(unittest.TestCase):
     def modules(self):
@@ -47,6 +49,14 @@ class PackageShapeTest(unittest.TestCase):
                 self.assertLess(
                     length, limit, f"{path.name} is {length} lines, the limit is {limit}"
                 )
+
+    def test_the_architecture_notes_name_every_module(self):
+        notes = (REPO / "docs/ARCHITECTURE.md").read_text(encoding="utf-8")
+        listed = set(re.findall(r"^\| `([a-z0-9_]+\.py)` \|", notes, re.MULTILINE))
+        self.assertEqual(
+            {path.name for path in self.modules()} - {"__init__.py"}, listed,
+            "docs/ARCHITECTURE.md's module table and the package disagree",
+        )
 
     def test_only_one_module_builds_a_privileged_command(self):
         call = re.compile(r"(?<![A-Za-z_])privileged_command\(")
@@ -121,11 +131,27 @@ class PackageShapeTest(unittest.TestCase):
         for kind in ("allow_any", "allow_inactive", "allow_active"):
             self.assertEqual(action.find(f"defaults/{kind}").text, "auth_admin")
 
+    def test_the_editor_form_does_not_import_the_frame_that_hosts_it(self):
+        tree = ast.parse((PACKAGE / "editor.py").read_text(encoding="utf-8"))
+        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        self.assertNotIn(
+            "editor_column", imported,
+            "editor_column.py frames the form and imports it, so the form reaching back "
+            "into its frame is a cycle",
+        )
+
     def test_no_module_writes_down_a_colour(self):
-        colour = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b")
+        colour = re.compile(
+            r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b|\b(?:rgba?|hsla?)\("
+        )
         for path in self.modules():
+            if path.name in COLOUR_ALLOWED:
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
+                if self.is_literal_qcolor(node):
+                    with self.subTest(module=path.name, line=node.lineno):
+                        self.fail(f"{path.name}:{node.lineno} builds a QColor from literals")
                 if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
                     continue
                 if not colour.search(node.value):
@@ -133,9 +159,44 @@ class PackageShapeTest(unittest.TestCase):
                 with self.subTest(module=path.name, line=node.lineno):
                     self.fail(f"{path.name}:{node.lineno} paints {node.value!r}")
 
+    @staticmethod
+    def is_literal_qcolor(node) -> bool:
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", "") != "QColor":
+            return False
+        return bool(node.args) and all(isinstance(arg, ast.Constant) for arg in node.args)
+
+    def test_every_font_role_is_set_somewhere(self):
+        theme = ast.parse((PACKAGE / "theme.py").read_text(encoding="utf-8"))
+        roles = next(
+            node.value for node in ast.walk(theme)
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "FONT_ROLES"
+        )
+        named = {
+            node.value
+            for path in self.modules() if path.name != "theme.py"
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        inherited = "(1.0, _W.Normal, 100.0, False, False)"
+        for key, value in zip(roles.keys, roles.values):
+            if ast.unparse(value) == inherited:
+                continue
+            with self.subTest(role=key.value):
+                self.assertIn(
+                    key.value, named,
+                    "no widget sets this role any more, so its size is a token nobody sees",
+                )
+
+    def test_the_colour_exemption_is_where_the_colours_are(self):
+        source = (PACKAGE / "scheme.py").read_text(encoding="utf-8")
+        self.assertRegex(
+            source, r"#[0-9A-Fa-f]{6}\b",
+            "scheme.py holds no colours any more, so its exemption covers nothing",
+        )
+
     def test_every_exemption_still_names_a_module(self):
         names = {path.name for path in self.modules()}
-        for name in LONGER_ALLOWED:
+        for name in (*LONGER_ALLOWED, *COLOUR_ALLOWED):
             with self.subTest(module=name):
                 self.assertIn(
                     name, names,

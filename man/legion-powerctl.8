@@ -46,8 +46,8 @@ Run compatibility and installation checks, including RyzenAdj version,
 Secure Boot/kernel-lockdown state, and conflicting power-management tools.
 .TP
 .B repair balanced-plus [--dry-run]
-Back up the existing profile and module configuration, then apply a gaming recovery
-baseline of 60/65/75 W at 78 C, balanced mode, stock CPU frequencies, boost on and
+Back up the existing profile and module configuration, then apply the shipped
+balanced-plus values of 87/92/102 W at 80 C, balanced mode, stock CPU frequencies, boost on and
 balance_performance EPP. Save the repaired profile only after the apply succeeds.
 If a compatible but incomplete ryzen_smu module blocks RyzenAdj, unload it without
 force when lockdown is none and /dev/mem exists. After a successful apply, blacklist

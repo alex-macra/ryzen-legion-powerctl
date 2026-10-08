@@ -9,11 +9,12 @@ than useful while the GPU felt constrained by the laptop's shared power and cool
 envelope.
 
 The `balanced-plus` example asks `powerprofilesctl` for the balanced policy, then
-applies 65/70/80 W CPU package limits and a 78 °C ceiling, with boost enabled on
-the stock frequency range. The intent is to keep short CPU boosts while containing
-sustained CPU heat, leaving more shared headroom for the GPU and improving frame
-pacing and 1% lows. On the development machine,
-gaming felt smoother and CPU temperature spikes were less severe.
+applies 87/92/102 W CPU package limits and an 80 °C ceiling, with boost enabled on
+the stock frequency range. The wattage gives games and work room to run; the ceiling
+is what contains sustained CPU heat, so short boosts stay available while the shared
+cooler keeps headroom for the GPU. An earlier 65/70/80 W, 78 °C version already made
+gaming smoother than stock Balanced. On the development machine, the 87 W version
+with an 80 °C ceiling was better again for both gaming and work.
 
 This tool does not raise GPU power limits, so any GPU benefit is indirect. The
 observations above come from one Lenovo Legion Pro 7 with a Ryzen 9 9955HX3D and are

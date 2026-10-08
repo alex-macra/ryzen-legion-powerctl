@@ -18,14 +18,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import a11y, model, theme
+from . import a11y, checks_view, model, styles, theme
+from .checks_view import report_text, summarise, worst_first
 
-_SEVERITY_ORDER = {"FAIL": 0, "WARN": 1, "OK": 2}
 COPIED_MS = 2000
-
-
-def worst_first(lines: list[model.DoctorLine]) -> list[model.DoctorLine]:
-    return sorted(lines, key=lambda line: _SEVERITY_ORDER.get(line.status, 3))
+DIALOG_SIZE = (640, 480)
+HEADER_SPACING = 8
+SCROLLBAR_ROOM = 8
 
 
 class ChecksDialog(QDialog):
@@ -35,16 +34,22 @@ class ChecksDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("System checks")
-        self.resize(620, 460)
-        self.rows: list[QWidget] = []
+        self.resize(*DIALOG_SIZE)
+        self.rows: list[checks_view.CheckRow] = []
         self.chips: list[QLabel] = []
+        self._separators: list[QFrame] = []
         self._report: model.DoctorReport | None = None
         self._stderr = ""
         self._machine = ""
 
         layout = QVBoxLayout(self)
+        gutter = styles.GUTTER
+        layout.setContentsMargins(gutter, gutter, gutter, gutter)
+        layout.setSpacing(styles.GAP)
         header = QHBoxLayout()
+        header.setSpacing(HEADER_SPACING)
         self.summary = QLabel("Doctor: not run yet")
+        self.summary.setFont(theme.font("strong"))
         header.addWidget(self.summary)
         header.addStretch(1)
         self.copy_button = QPushButton("&Copy report")
@@ -66,9 +71,11 @@ class ChecksDialog(QDialog):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._host = QWidget()
         self._rows_layout = QVBoxLayout(self._host)
-        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setContentsMargins(0, 0, SCROLLBAR_ROOM, 0)
+        self._rows_layout.setSpacing(0)
         self._rows_layout.addStretch(1)
         self.scroll.setWidget(self._host)
+        self.focus_ring = a11y.FocusRing(self.scroll)
         layout.addWidget(self.scroll, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -99,25 +106,16 @@ class ChecksDialog(QDialog):
                 item.widget().deleteLater()
         self.rows = []
         self.chips = []
+        self._separators = []
+        palette = self.palette()
         for line in worst_first(report.lines):
-            row = QFrame()
-            line_layout = QHBoxLayout(row)
-            line_layout.setContentsMargins(0, 0, 0, 0)
-            chip = QLabel(f"{line.status} {line.label}")
-            chip.setProperty("severity", line.status)
-            chip.setStyleSheet(theme.chip_style(self.palette(), line.status))
-            chip.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            detail = QLabel(line.detail)
-            detail.setWordWrap(True)
-            detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            line_layout.addWidget(chip)
-            line_layout.addWidget(detail, 1)
-            row.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-            row.setStyleSheet(theme.focus_ring_style(self.palette()))
-            row.setAccessibleName(f"{line.status}: {line.label}. {line.detail}")
-            self._rows_layout.insertWidget(len(self.rows), row)
+            if self.rows:
+                self._separators.append(checks_view.separator(palette))
+                self._rows_layout.insertWidget(self._rows_layout.count() - 1, self._separators[-1])
+            row = checks_view.CheckRow(line, palette)
+            self._rows_layout.insertWidget(self._rows_layout.count() - 1, row)
             self.rows.append(row)
-            self.chips.append(chip)
+            self.chips.append(row.chip)
         self.summary.setText(summarise(report, stderr))
 
     def _copy(self) -> None:
@@ -135,11 +133,10 @@ class ChecksDialog(QDialog):
         self.copy_button.setText("&Copy report")
 
     def restyle(self, palette: QPalette) -> None:
-        for chip in self.chips:
-            chip.setStyleSheet(theme.chip_style(palette, chip.property("severity")))
-        ring = theme.focus_ring_style(palette)
         for row in self.rows:
-            row.setStyleSheet(ring)
+            row.restyle(palette)
+        for line in self._separators:
+            checks_view.restyle_separator(line, palette)
 
 
 class ChecksController(QObject):
@@ -181,42 +178,10 @@ class ChecksController(QObject):
             self.dialog.show_report(self.report, stderr, self._machine())
 
 
-def summarise(report: model.DoctorReport, stderr: str = "") -> str:
-    if not report.lines:
-        return (
-            "Doctor: could not run"
-            if report.exit_code != 0 or stderr.strip()
-            else "Doctor: produced no results"
-        )
-    return f"Doctor: {report.failures} failure(s), {report.warnings} warning(s)"
-
-
-def report_text(report: model.DoctorReport, stderr: str = "", machine: str = "") -> str:
-    head = ["legion-powerctl doctor report"]
-    if machine:
-        head.append(machine)
-    verdict = summarise(report, stderr)
-    if report.exit_code != 0:
-        verdict = f"{verdict} (exit {report.exit_code})"
-    head.append(verdict)
-
-    parts = ["\n".join(head)]
-    body = report.text.strip("\n")
-    if body:
-        parts.append(body)
-    if stderr.strip():
-        parts.append(f"Errors reported by the command:\n{stderr.strip()}")
-    return "\n\n".join(parts) + "\n"
-
-
-def checks_chip(report: model.DoctorReport | None) -> tuple[str, str]:
-    if report is None:
-        return ("Checks", "NEUTRAL")
-    if report.failures:
-        return (f"Checks {report.failures}", "FAIL")
-    if report.warnings:
-        return (f"Checks {report.warnings}", "WARN")
-    return ("Checks", "OK")
+def _primary(button: QPushButton) -> QPushButton:
+    button.setProperty("kind", "primary")
+    theme.repolish(button)
+    return button
 
 
 def ask_profile_name(parent: QWidget) -> str | None:
@@ -239,7 +204,7 @@ def confirm_raise(parent: QWidget, name: str, deltas: list) -> bool:
         f"{rows}\n\nHigher limits raise heat, noise and power draw.\n"
         "Limits are volatile: a power cycle clears them, and nothing here puts them back."
     )
-    apply_button = box.addButton("Apply anyway", QMessageBox.ButtonRole.AcceptRole)
+    apply_button = _primary(box.addButton("Apply anyway", QMessageBox.ButtonRole.AcceptRole))
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(cancel)
     box.exec()
@@ -253,7 +218,7 @@ def confirm_enable(parent: QWidget, boot_profile: str) -> bool:
     box.setIcon(QMessageBox.Icon.Question)
     box.setText(f"Apply '{name}' at every boot?")
     box.setInformativeText("This also applies it right now.")
-    accept = box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole)
+    accept = _primary(box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole))
     box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(accept)
     box.exec()
@@ -264,7 +229,7 @@ def confirm_repair(parent: QWidget, dirty_profile: str = "") -> bool:
     box = QMessageBox(parent)
     box.setWindowTitle("Repair balanced-plus")
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setText("Reset and apply balanced-plus at 60/65/75 W and 78 C?")
+    box.setText("Reset and apply balanced-plus at 87/92/102 W and 80 C?")
     detail = (
         "Restore balanced mode, stock CPU frequency limits, boost on and "
         "balance_performance EPP. Save a backup of the existing profile and module settings.\n\n"
@@ -274,11 +239,34 @@ def confirm_repair(parent: QWidget, dirty_profile: str = "") -> bool:
     if dirty_profile:
         detail += f"\n\nDiscard unsaved changes to '{dirty_profile}' after repair succeeds."
     box.setInformativeText(detail)
-    accept = box.addButton("Repair and apply", QMessageBox.ButtonRole.AcceptRole)
+    accept = _primary(box.addButton("Repair and apply", QMessageBox.ButtonRole.AcceptRole))
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(cancel)
     box.exec()
     return box.clickedButton() is accept
+
+
+def confirm_discard(parent: QWidget, name: str, target: str) -> QMessageBox.StandardButton:
+    box = QMessageBox(parent)
+    box.setWindowTitle("Discard unsaved changes?")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(f"'{name}' has unsaved changes. Discard them and open '{target}'?")
+    _primary(box.addButton(QMessageBox.StandardButton.Discard))
+    box.addButton(QMessageBox.StandardButton.Save)
+    box.setDefaultButton(box.addButton(QMessageBox.StandardButton.Cancel))
+    box.exec()
+    return box.standardButton(box.clickedButton())
+
+
+def confirm_delete(parent: QWidget, name: str) -> bool:
+    box = QMessageBox(parent)
+    box.setWindowTitle("Delete profile")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(f"Delete profile '{name}'? This cannot be undone.")
+    delete = _primary(box.addButton(QMessageBox.StandardButton.Yes))
+    box.setDefaultButton(box.addButton(QMessageBox.StandardButton.Cancel))
+    box.exec()
+    return box.clickedButton() is delete
 
 
 def offer_force_enable(parent: QWidget, detail: str) -> bool:
@@ -287,7 +275,7 @@ def offer_force_enable(parent: QWidget, detail: str) -> bool:
     box.setIcon(QMessageBox.Icon.Warning)
     box.setText("The boot service was not enabled because a system check failed.")
     box.setInformativeText(f"{detail}\n\nEnable it anyway, or close and fix the check first.")
-    force = box.addButton("Enable anyway", QMessageBox.ButtonRole.DestructiveRole)
+    force = _primary(box.addButton("Enable anyway", QMessageBox.ButtonRole.DestructiveRole))
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)
     box.setDefaultButton(cancel)
     box.exec()

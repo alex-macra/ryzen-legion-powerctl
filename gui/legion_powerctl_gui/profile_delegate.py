@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QIcon, QPainter, QPalette, QPen
+from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
 from . import theme
@@ -12,22 +12,53 @@ RUNNING_ROLE = Qt.ItemDataRole.UserRole + 1
 DETAIL_ROLE = Qt.ItemDataRole.UserRole + 2
 BOOT_ROLE = Qt.ItemDataRole.UserRole + 3
 
+ROW_HEIGHT = 52
+ROW_PADDING = 8
 RAIL_WIDTH = 3
-DOT_DIAMETER = 8
-PADDING = 8
+RAIL_INSET = 8
+RAIL_RADIUS = 1.5
+PADDING = 12
+EDGE_PADDING = 16
 GAP = 8
+ICON_SIZE = 16
+HOVER_TINT = 0.04
 
 PIN_TEXT = "BOOT"
 PIN_ACTION_TEXT = "SET BOOT"
-PIN_PAD = 5
+PIN_PAD = 6
+PIN_HEIGHT = 18
+PIN_RADIUS = 4
+
+FOCUS_INSET = 2
+FOCUS_WIDTH = 2
+FOCUS_RADIUS = 6
+
+
+class RowLines:
+    def __init__(self, option) -> None:
+        self.name_font = theme.font("strong", option.font)
+        self.detail_font = theme.font("detail-mono", option.font)
+        self.name_height = max(
+            QFontMetrics(self.name_font).height(), option.decorationSize.height()
+        )
+        self.detail_height = max(QFontMetrics(self.detail_font).height(), PIN_HEIGHT)
+        spare = option.rect.height() - self.name_height - self.detail_height
+        self.name_top = option.rect.top() + spare // 2
+        self.detail_top = self.name_top + self.name_height
+        self.left = option.rect.left() + RAIL_WIDTH + PADDING
+        self.right = option.rect.right() + 1 - EDGE_PADDING
+
+    @property
+    def content_height(self) -> int:
+        return self.name_height + self.detail_height
 
 
 class ProfileDelegate(QStyledItemDelegate):
     boot_requested = Signal(str)
 
     def sizeHint(self, option, index) -> QSize:
-        metrics = option.fontMetrics
-        return QSize(200, metrics.height() * 2 + metrics.leading() + PADDING * 2)
+        lines = RowLines(option)
+        return QSize(200, max(ROW_HEIGHT, lines.content_height + ROW_PADDING * 2))
 
     def paint(self, painter, option, index) -> None:
         profile = index.data(Qt.ItemDataRole.UserRole)
@@ -35,51 +66,45 @@ class ProfileDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
 
-        palette = option.palette
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        running = bool(index.data(RUNNING_ROLE))
-        background = self._background(palette, selected, running)
-        accent = theme.fit_contrast(
-            theme.accent_color(palette), background, theme.MIN_NON_TEXT_CONTRAST
-        )
+        palette = QPalette(option.palette)
+        palette.setCurrentColorGroup(QPalette.ColorGroup.Active)
+        state = option.state
+        enabled = bool(state & QStyle.StateFlag.State_Enabled)
+        selected = bool(state & QStyle.StateFlag.State_Selected)
+        hovered = bool(state & QStyle.StateFlag.State_MouseOver)
+        background = self._background(palette, selected, hovered)
+        lines = RowLines(option)
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(option.rect, background)
-        if running:
-            rail = QRect(option.rect.topLeft(), QSize(RAIL_WIDTH, option.rect.height()))
-            painter.fillRect(rail, theme.on_accent_color(palette) if selected else accent)
-        painter.setPen(QPen(theme.edge_color(palette), 1))
-        painter.drawLine(
-            option.rect.left(), option.rect.bottom(), option.rect.right(), option.rect.bottom()
+        if index.data(RUNNING_ROLE):
+            self._draw_rail(painter, option, palette, background)
+        painter.fillRect(
+            QRect(lines.left, option.rect.bottom(), max(0, lines.right - lines.left), 1),
+            theme.edge_color(palette),
         )
 
-        left = self._draw_marker(painter, option, index, background, accent, running, selected)
-        right = self._draw_watts(painter, option, profile, palette, background, selected)
+        right = self._draw_watts(painter, profile, palette, background, enabled, lines)
+        right = self._draw_icon(painter, option, index, palette, background, enabled, lines, right)
         pin_left = self._draw_pin(
-            painter, option, index, profile, palette, background, selected, accent
+            painter, option, index, profile, palette, background, enabled, lines
         )
         self._draw_text(
-            painter, option, index, profile, palette, background, selected, left, right, pin_left
+            painter, index, profile, palette, background, enabled, lines, right, pin_left
         )
-
-        if option.state & QStyle.StateFlag.State_HasFocus:
-            painter.setPen(QPen(accent, 2))
-            painter.drawRect(option.rect.adjusted(1, 1, -2, -2))
+        if state & QStyle.StateFlag.State_HasFocus:
+            self._draw_focus(painter, option, palette, background)
         painter.restore()
 
     @staticmethod
-    def pin_rect(option, pinned: bool = False) -> QRect:
-        metrics = option.fontMetrics
+    def pin_rect(option, pinned: bool = False, lines: RowLines | None = None) -> QRect:
+        lines = lines or RowLines(option)
+        metrics = QFontMetrics(theme.font("pin", option.font))
         width = metrics.horizontalAdvance(PIN_TEXT if pinned else PIN_ACTION_TEXT)
         width += PIN_PAD * 2
-        height = metrics.height()
-        return QRect(
-            option.rect.right() - PADDING - width,
-            option.rect.bottom() - PADDING - height + 1,
-            width,
-            height,
-        )
+        top = lines.detail_top + (lines.detail_height - PIN_HEIGHT) // 2
+        return QRect(lines.right - width, top, width, PIN_HEIGHT)
 
     @staticmethod
     def pinnable(profile) -> bool:
@@ -98,137 +123,173 @@ class ProfileDelegate(QStyledItemDelegate):
             return True
         return super().editorEvent(event, item_model, option, index)
 
-    def _draw_pin(
-        self, painter, option, index, profile, palette, background, selected, accent
-    ) -> int:
-        edge = option.rect.right() - PADDING
-        if not self.pinnable(profile):
-            return edge
-        pinned = bool(index.data(BOOT_ROLE))
-        hovered = bool(
-            option.state & (QStyle.StateFlag.State_MouseOver | QStyle.StateFlag.State_Selected)
-        )
-        if not pinned and not hovered:
-            return edge
-        rect = self.pin_rect(option, pinned)
-        ink = theme.on_accent_color(palette) if selected else accent
-        painter.setPen(Qt.PenStyle.NoPen)
-        if pinned:
-            painter.setBrush(ink)
-            painter.drawRoundedRect(rect, 3, 3)
-            painter.setPen(
-                theme.fit_contrast(background if selected else theme.on_accent_color(palette), ink)
-            )
-        else:
-            outline = theme.fit_contrast(
-                theme.muted_color(palette, background), background, theme.MIN_NON_TEXT_CONTRAST
-            )
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(outline, 1))
-            painter.drawRoundedRect(rect, 3, 3)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        font = QFont(option.font)
-        font.setPointSizeF(max(1.0, font.pointSizeF() - 1))
-        painter.setFont(font)
-        painter.drawText(
-            rect, Qt.AlignmentFlag.AlignCenter, PIN_TEXT if pinned else PIN_ACTION_TEXT
-        )
-        painter.setFont(QFont(option.font))
-        return rect.left() - GAP
-
     @staticmethod
-    def _background(palette: QPalette, selected: bool, running: bool):
+    def _background(palette: QPalette, selected: bool, hovered: bool) -> QColor:
         if selected:
-            return palette.color(QPalette.ColorRole.Highlight)
+            return theme.selection_color(palette)
         base = palette.color(QPalette.ColorRole.Base)
-        return theme.wash_color(palette, base) if running else base
+        if hovered:
+            return theme.tint_color(base, palette.color(QPalette.ColorRole.Text), HOVER_TINT)
+        return base
 
     @staticmethod
-    def _text_colors(palette: QPalette, background, selected: bool, valid: bool):
-        if selected:
-            primary = theme.fit_contrast(
-                palette.color(QPalette.ColorRole.HighlightedText), background
-            )
-            return primary, primary
-        primary = theme.fit_contrast(palette.color(QPalette.ColorRole.Text), background)
-        if not valid:
-            primary = theme.fit_contrast(theme.severity_color(palette, "FAIL"), background)
-        return primary, theme.muted_color(palette, background)
-
-    def _draw_marker(self, painter, option, index, background, accent, active, selected) -> int:
-        left = option.rect.left() + RAIL_WIDTH + PADDING
-        icon = index.data(Qt.ItemDataRole.DecorationRole)
-        size = option.decorationSize
-        if icon is not None and not icon.isNull():
-            icon.paint(
-                painter,
-                QRect(
-                    left,
-                    option.rect.center().y() - size.height() // 2 + 1,
-                    size.width(),
-                    size.height(),
-                ),
-                Qt.AlignmentFlag.AlignCenter,
-                QIcon.Mode.Selected if selected else QIcon.Mode.Normal,
-            )
-            return left + size.width() + GAP
-        dot = QRect(
-            left + 2, option.rect.center().y() - DOT_DIAMETER // 2, DOT_DIAMETER, DOT_DIAMETER
+    def _draw_rail(painter, option, palette, background) -> None:
+        accent = theme.fit_contrast(
+            theme.accent_color(palette), background, theme.MIN_NON_TEXT_CONTRAST
+        )
+        rail = QRectF(
+            option.rect.left(),
+            option.rect.top() + RAIL_INSET,
+            RAIL_WIDTH,
+            option.rect.height() - RAIL_INSET * 2,
         )
         painter.setPen(Qt.PenStyle.NoPen)
-        if active:
-            painter.setBrush(theme.on_accent_color(option.palette) if selected else accent)
-        else:
-            painter.setBrush(theme.muted_color(option.palette, background))
-        painter.drawEllipse(dot)
+        painter.setBrush(accent)
+        painter.drawRoundedRect(rail, RAIL_RADIUS, RAIL_RADIUS)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        return left + DOT_DIAMETER + GAP + 2
 
-    def _draw_watts(self, painter, option, profile, palette, background, selected) -> int:
+    @staticmethod
+    def _draw_focus(painter, option, palette, background) -> None:
+        ring = theme.fit_contrast(
+            theme.focus_color(palette), background, theme.MIN_NON_TEXT_CONTRAST
+        )
+        inset = FOCUS_INSET + FOCUS_WIDTH / 2
+        painter.setPen(QPen(ring, FOCUS_WIDTH))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(
+            QRectF(option.rect).adjusted(inset, inset, -inset, -inset),
+            FOCUS_RADIUS,
+            FOCUS_RADIUS,
+        )
+
+    @staticmethod
+    def _tinted(icon: QIcon, size: QSize, color: QColor, ratio: float) -> QPixmap:
+        pixmap = icon.pixmap(size, ratio)
+        painter = QPainter(pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), color)
+        painter.end()
+        return pixmap
+
+    def _draw_icon(
+        self, painter, option, index, palette, background, enabled, lines, right
+    ) -> int:
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        if icon is None or icon.isNull():
+            return right
+        size = option.decorationSize
+        color = (
+            theme.secondary_color(palette, background)
+            if enabled
+            else theme.disabled_text_color(palette)
+        )
+        pixmap = self._tinted(icon, size, color, painter.device().devicePixelRatioF())
+        left = right - size.width()
+        painter.drawPixmap(
+            left, lines.name_top + (lines.name_height - size.height()) // 2, pixmap
+        )
+        return left - GAP
+
+    @staticmethod
+    def _draw_watts(painter, profile, palette, background, enabled, lines) -> int:
         if not profile.valid:
-            return option.rect.right() - PADDING
-        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        font.setPointSizeF(QFont(option.font).pointSizeF())
-        painter.setFont(font)
+            return lines.right
         text = f"{profile.stapm_w} W"
-        metrics = painter.fontMetrics()
-        width = metrics.horizontalAdvance(text)
-        right = option.rect.right() - PADDING - width
-        painter.setPen(self._text_colors(palette, background, selected, True)[1])
+        width = QFontMetrics(lines.detail_font).horizontalAdvance(text)
+        painter.setFont(lines.detail_font)
+        painter.setPen(
+            theme.fit_contrast(palette.color(QPalette.ColorRole.Text), background)
+            if enabled
+            else theme.disabled_text_color(palette)
+        )
         painter.drawText(
-            QRect(right, option.rect.top() + PADDING, width, metrics.height()),
+            QRect(lines.right - width, lines.name_top, width, lines.name_height),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
             text,
         )
-        painter.setFont(QFont(option.font))
-        return right - GAP
+        return lines.right - width - GAP
 
+    def _draw_pin(
+        self, painter, option, index, profile, palette, background, enabled, lines
+    ) -> int:
+        if not self.pinnable(profile):
+            return lines.right
+        pinned = bool(index.data(BOOT_ROLE))
+        shown = option.state & (
+            QStyle.StateFlag.State_MouseOver | QStyle.StateFlag.State_Selected
+        )
+        if not pinned and not shown:
+            return lines.right
+        rect = self.pin_rect(option, pinned, lines)
+        disabled = theme.disabled_text_color(palette)
+        painter.setFont(theme.font("pin", option.font))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        if pinned:
+            fill = (
+                theme.fit_contrast(
+                    palette.color(QPalette.ColorRole.Text),
+                    background,
+                    theme.MIN_NON_TEXT_CONTRAST,
+                )
+                if enabled
+                else disabled
+            )
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, PIN_RADIUS, PIN_RADIUS)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(theme.fit_contrast(palette.color(QPalette.ColorRole.Base), fill))
+        else:
+            outline = (
+                theme.edge_strong_color(palette, background)
+                if enabled
+                else theme.edge_color(palette)
+            )
+            painter.setPen(QPen(outline, 1))
+            painter.drawRoundedRect(
+                QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), PIN_RADIUS, PIN_RADIUS
+            )
+            painter.setPen(
+                theme.secondary_color(palette, background) if enabled else disabled
+            )
+        painter.drawText(
+            rect, Qt.AlignmentFlag.AlignCenter, PIN_TEXT if pinned else PIN_ACTION_TEXT
+        )
+        return rect.left() - GAP
+
+    @staticmethod
     def _draw_text(
-        self, painter, option, index, profile, palette, background, selected, left, right, pin_left
+        painter, index, profile, palette, background, enabled, lines, right, pin_left
     ) -> None:
-        primary, secondary = self._text_colors(palette, background, selected, profile.valid)
-        width = max(0, right - left)
-        name_font = QFont(option.font)
-        name_font.setBold(True)
-        painter.setFont(name_font)
-        metrics = painter.fontMetrics()
-        top = option.rect.top() + PADDING
+        disabled = theme.disabled_text_color(palette)
+        if not enabled:
+            primary = secondary = disabled
+        elif profile.valid:
+            primary = theme.fit_contrast(palette.color(QPalette.ColorRole.Text), background)
+            secondary = theme.secondary_color(palette, background)
+        else:
+            primary = theme.fit_contrast(theme.severity_color(palette, "FAIL"), background)
+            secondary = theme.secondary_color(palette, background)
+        align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        left = lines.left
+        name_width = max(0, right - left)
+        painter.setFont(lines.name_font)
         painter.setPen(primary)
         painter.drawText(
-            QRect(left, top, width, metrics.height()),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            metrics.elidedText(profile.name, Qt.TextElideMode.ElideRight, width),
+            QRect(left, lines.name_top, name_width, lines.name_height),
+            align,
+            QFontMetrics(lines.name_font).elidedText(
+                profile.name, Qt.TextElideMode.ElideRight, name_width
+            ),
         )
-        detail_font = QFont(option.font)
-        detail_font.setBold(False)
-        painter.setFont(detail_font)
-        detail_metrics = painter.fontMetrics()
-        painter.setPen(secondary)
         detail_width = max(0, pin_left - left)
+        painter.setFont(lines.detail_font)
+        painter.setPen(secondary)
         painter.drawText(
-            QRect(left, top + metrics.height(), detail_width, detail_metrics.height()),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            detail_metrics.elidedText(
+            QRect(left, lines.detail_top, detail_width, lines.detail_height),
+            align,
+            QFontMetrics(lines.detail_font).elidedText(
                 str(index.data(DETAIL_ROLE) or ""), Qt.TextElideMode.ElideRight, detail_width
             ),
         )
+

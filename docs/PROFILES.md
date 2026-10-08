@@ -94,39 +94,33 @@ Profiles are created with `configure` or the wizard - see the README quickstart.
 
 ## The shipped profiles
 
-Four vary by how loud you are willing for the machine to be:
+Four ship, varying by how loud you are willing for the machine to be:
 
 | Profile | STAPM / Slow / Fast | Ceiling |
 |---|---:|---:|
 | `quiet` | 45 / 50 / 60 W | 78 °C |
 | `balanced` | 60 / 65 / 70 W | 72 °C |
-| `balanced-plus` | 65 / 70 / 80 W | 78 °C |
+| `balanced-plus` | 87 / 92 / 102 W | 80 °C |
 | `performance-capped` | 65 / 70 / 75 W | 85 °C |
 
-Two vary by what the workload is doing, because the CPU and the GPU share one power and
-cooling envelope:
+`balanced-plus` sits between `balanced` and Lenovo's stock Performance mode: 87 W
+sustained with boost on, held at an 80 °C ceiling. Under a sustained all-core load the
+ceiling, not the wattage, is expected to be the limit that binds. The values come from
+hands-on gaming and work on one Legion Pro 7 16ARX10, not from a benchmark, and 87 W is
+above AMD's 55-75 W configurable TDP for the 9955HX3D. On another model, compare them with
+`legion-powerctl baseline --show` before enabling them at boot.
 
-| Profile | STAPM / Slow / Fast | Ceiling | For |
-|---|---:|---:|---|
-| `crossload` | 65 / 70 / 80 W | 78 °C | Gaming and anything loading both. Restraint here leaves budget for the GPU |
-| `compute` | 85 / 90 / 100 W | 85 °C | CPU-only work with the GPU idle |
-
-`balanced-plus` is capped at 78 °C by both the CLI and GUI, even if an older installed
-file contains a higher value. Repair an older copy with
-`sudo legion-powerctl configure balanced-plus --temp 78 --apply`; other profile names
-retain the general 50-100 °C validation range.
+`balanced-plus` is capped at 80 °C by both the CLI and GUI, even if an older installed
+file contains a higher value. Upgrades can keep the old installed profile (pacman keeps an
+edited one, script installs keep any existing one unless `--force-config`), so bring an
+older copy up to the shipped values with
+`sudo legion-powerctl configure balanced-plus --stapm 87 --slow 92 --fast 102 --temp 80 --apply`;
+other profile names retain the general 50-100 °C validation range.
 
 `repair balanced-plus` is an explicit recovery action that saves a backup and
-replaces the installed profile with 60/65/75 W at 78 °C, balanced platform policy,
-stock frequency bounds, boost on and `balance_performance` EPP. Those wattages
-reproduce the earlier manual gaming baseline; the bundled 65/70/80 W profile is
-unchanged pending hardware comparisons. Repair applies immediately and preserves
-the selected boot-profile name.
-
-`compute` ships with **unmeasured** values. They are a hypothesis about what a Legion Pro
-7 chassis can absorb with nothing competing for the cooler, not a recommendation. Run the
-ladder in [TUNING.md](TUNING.md) before trusting them, and lower them if it reports the
-machine as thermally limited rather than power limited.
+replaces the installed profile with the shipped 87/92/102 W at 80 °C, balanced platform
+policy, stock frequency bounds, boost on and `balance_performance` EPP. Repair applies
+immediately and preserves the selected boot-profile name.
 
 ## Tuning method
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 
+import atexit
 import json
 import os
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 FAKE_CLI = HERE / "fake-legion-powerctl"
 STATUS_FIXTURE = HERE / "fixtures" / "status.json"
+DESKTOP_POINT_SIZE = 10.0
 
 try:
     import PySide6  # noqa: F401
@@ -28,6 +30,26 @@ def wait_until(app, predicate, timeout=15.0):
             return True
         time.sleep(0.01)
     return False
+
+
+GRAYSCALE_FONTCONFIG = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <include ignore_missing="yes">{base}</include>
+  <match target="font"><edit name="rgba" mode="assign"><const>none</const></edit></match>
+</fontconfig>
+"""
+
+
+def render_text_in_grayscale() -> None:
+    # Subpixel antialiasing tints every glyph edge, so a test that reads a text
+    # colour back would pass or fail with the machine's LCD setting.
+    base = os.environ.get("FONTCONFIG_FILE") or "/etc/fonts/fonts.conf"
+    handle = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
+    handle.write(GRAYSCALE_FONTCONFIG.format(base=base))
+    handle.close()
+    atexit.register(os.unlink, handle.name)
+    os.environ["FONTCONFIG_FILE"] = handle.name
 
 
 @unittest.skipUnless(HAVE_PYSIDE6, "PySide6 is not installed")
@@ -48,12 +70,24 @@ class OffscreenGuiTest(unittest.TestCase):
 
         from PySide6.QtWidgets import QApplication
 
+        if QApplication.instance() is None:
+            render_text_in_grayscale()
         cls.app = QApplication.instance() or QApplication([])
 
     def settle(self, rounds: int = 20) -> None:
         for _ in range(rounds):
             self.app.processEvents()
             time.sleep(0.01)
+
+    def use_app_font_size(self, size: float) -> None:
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtGui import QFont
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        font = QFont(self.app.font())
+        self.addCleanup(self.app.setFont, QFont(font))
+        font.setPointSizeF(size)
+        self.app.setFont(font)
 
     @staticmethod
     def accessible_name(widget) -> str:
@@ -81,6 +115,53 @@ class OffscreenGuiTest(unittest.TestCase):
     @staticmethod
     def spoken(call) -> str:
         return call[0][1]
+
+    @staticmethod
+    def colours_in_rows(image, top: int, bottom: int) -> set:
+        return {
+            image.pixelColor(x, y).name()
+            for y in range(max(0, top), min(bottom, image.height()))
+            for x in range(image.width())
+        }
+
+    @staticmethod
+    def ink_spans(image, top: int, bottom: int, parting: int) -> list:
+        from collections import Counter
+
+        plane = Counter(
+            image.pixel(x, y) for y in range(image.height()) for x in range(image.width())
+        ).most_common(1)[0][0]
+        rows = range(max(0, top), min(bottom, image.height()))
+        spans, blank = [], parting
+        for x in range(image.width()):
+            if any(image.pixel(x, y) != plane for y in rows):
+                if blank >= parting:
+                    spans.append([x, x])
+                spans[-1][1] = x
+                blank = 0
+            else:
+                blank += 1
+        return spans
+
+    @staticmethod
+    def caption_rows(readout) -> tuple:
+        from legion_powerctl_gui import theme
+        from PySide6.QtGui import QFontMetrics
+
+        eyebrow = QFontMetrics(theme.font("eyebrow", readout.font())).height()
+        return readout.height() - eyebrow, readout.height()
+
+    @staticmethod
+    def readout_inks(readout):
+        from legion_powerctl_gui import theme
+        from PySide6.QtGui import QFontMetrics, QPalette
+
+        palette = readout.palette()
+        base = palette.color(QPalette.ColorRole.Base)
+        ink = theme.fit_contrast(palette.color(QPalette.ColorRole.Text), base)
+        fail = theme.fit_contrast(theme.severity_color(palette, "FAIL"), base)
+        cap = QFontMetrics(theme.font("readout", readout.font())).capHeight()
+        return ink.name(), fail.name(), theme.muted_color(palette, base).name(), cap
 
 
 class MainWindowTest(OffscreenGuiTest):
@@ -117,10 +198,10 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertIn("balanced-plus", self.header.running_label.text())
         self.assertIn("balanced-plus", self.header.boot_label.text())
         self.assertEqual(self.editor.profile_title.text(), "balanced-plus")
-        self.assertEqual(self.editor.stapm_spin.value(), 65)
-        self.assertEqual(self.editor.slow_spin.value(), 70)
-        self.assertEqual(self.editor.fast_spin.value(), 80)
-        self.assertEqual(self.editor.temp_spin.value(), 78)
+        self.assertEqual(self.editor.stapm_spin.value(), 87)
+        self.assertEqual(self.editor.slow_spin.value(), 92)
+        self.assertEqual(self.editor.fast_spin.value(), 102)
+        self.assertEqual(self.editor.temp_spin.value(), 80)
         self.assertFalse(self.window.errors)
 
     def _item(self, name):
@@ -192,11 +273,117 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertNotIn("running now", quiet)
         self.assertNotIn("boot profile", quiet)
 
+    def test_the_editor_measures_every_profile_against_what_runs(self):
+        cards = self.editor.cards
+        self.assertEqual(self.editor.title_aside.text(), "running now, boot profile")
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(self.editor.thermal_envelope.bar.reference, (80,))
+        self.assertEqual(
+            [card.aside for card in cards], ["running 87/92/102 W", "running 80 °C", ""]
+        )
+        self.sidebar.list.setCurrentRow(self._row_of("broken"))
+        self.assertEqual(self.editor.title_aside.text(), "")
+        self.assertFalse(self.editor.title_aside.isVisibleTo(self.window))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(
+            cards[0].aside, "running 87/92/102 W", "the machine's facts left with the file"
+        )
+
+    def test_the_title_says_edited_while_there_are_unsaved_changes(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        aside = self.editor.title_aside
+        self.assertEqual(aside.text(), "running now, boot profile")
+        self.editor.stapm_spin.setValue(55)
+        self.editor._on_edited()
+        self.assertEqual(aside.text(), "running now, boot profile, edited")
+        self.assertEqual(self.editor.dirty_label.text(), "Unsaved changes")
+        with unittest.mock.patch.object(self.window, "refresh"):
+            self.window.profile_actions.save()
+            self.assertTrue(
+                wait_until(self.app, lambda: not self.editor.dirty), "the save never landed"
+            )
+            self.assertEqual(
+                aside.text(), "running now, boot profile",
+                "the title still says edited once the CLI has written the profile",
+            )
+        self.editor.stapm_spin.setValue(54)
+        self.editor._on_edited()
+        self.assertEqual(aside.text(), "running now, boot profile, edited")
+        self.window.dialogs = True
+        try:
+            with unittest.mock.patch(
+                "legion_powerctl_gui.dialogs.confirm_discard",
+                return_value=QMessageBox.StandardButton.Discard,
+            ):
+                self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        finally:
+            self.window.dialogs = False
+        self.assertEqual(self.editor.profile_title.text(), "quiet")
+        self.assertEqual(aside.text(), "", "the discarded edits followed the title")
+        self.assertEqual(self.editor.dirty_label.text(), "")
+
+    def test_the_cards_end_where_the_strip_and_apply_end_unless_a_bar_is_shown(self):
+        from legion_powerctl_gui.editor import SCROLLBAR_GAP
+        from PySide6.QtCore import QPoint
+
+        def right(widget) -> int:
+            return widget.mapTo(self.window, QPoint(widget.width(), 0)).x()
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        self.settle(5)
+        card, scroll = self.editor.cards[0], self.window.editor_scroll
+        bar, margins = scroll.verticalScrollBar(), self.editor.layout().contentsMargins
+        for advanced in (False, True, False):
+            self.editor.advanced.button.setChecked(advanced)
+            self.settle(5)
+            with self.subTest(advanced=advanced):
+                self.assertEqual(bar.isVisible(), advanced)
+                if advanced:
+                    self.assertEqual(margins().right(), SCROLLBAR_GAP)
+                    self.assertEqual(
+                        right(card), right(scroll.viewport()) - SCROLLBAR_GAP,
+                        "the cards run up against the scroll bar",
+                    )
+                else:
+                    self.assertEqual(margins().right(), 0)
+                    self.assertEqual(
+                        (right(card), right(card)),
+                        (right(self.header), right(self.editor.apply_button)),
+                        "the cards stop short of the strip and Apply with nothing to scroll",
+                    )
+
+    def test_the_delta_is_spoken_with_its_unit(self):
+        tiles = {
+            **self.editor.power_envelope.tiles, **self.editor.thermal_envelope.tiles
+        }
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(tiles["stapm"].delta.text(), "-42")
+        self.assertEqual(tiles["stapm"].delta.accessibleName(), "-42 W vs running")
+        self.editor.fast_spin.setValue(122)
+        self.editor.temp_spin.setValue(86)
+        self.editor._on_edited()
+        self.assertEqual(tiles["fast"].delta.text(), "+20")
+        self.assertEqual(tiles["fast"].delta.accessibleName(), "+20 W vs running")
+        self.assertEqual(self.accessible_name(tiles["fast"].delta), "+20 W vs running")
+        self.assertEqual(tiles["temp"].delta.text(), "+6")
+        self.assertEqual(tiles["temp"].delta.accessibleName(), "+6 °C vs running")
+        labels = {
+            name: self.accessible_label(widget) for name, widget in self._form_controls().items()
+        }
+        self.assertEqual(len(set(labels.values())), len(labels), labels)
+        for name, label in labels.items():
+            with self.subTest(control=name):
+                self.assertNotIn("vs running", label, "a delta took over a control's label")
+
     def test_slider_order_is_enforced_live(self):
-        self.editor.stapm_spin.setValue(100)
-        self.assertEqual(self.editor.stapm_spin.value(), 100)
-        self.assertEqual(self.editor.slow_spin.value(), 100)
-        self.assertEqual(self.editor.fast_spin.value(), 100)
+        self.editor.stapm_spin.setValue(110)
+        self.assertEqual(self.editor.stapm_spin.value(), 110)
+        self.assertEqual(self.editor.slow_spin.value(), 110)
+        self.assertEqual(self.editor.fast_spin.value(), 110)
         self.editor.fast_spin.setValue(70)
         self.assertEqual(self.editor.stapm_spin.value(), 70)
         self.assertEqual(self.editor.slow_spin.value(), 70)
@@ -208,7 +395,7 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, lambda: any("configure" in line for line in self.read_log()))
         )
         line = next(line for line in self.read_log() if line.startswith("configure"))
-        self.assertIn("configure balanced-plus --stapm 55 --slow 70 --fast 80 --temp 78", line)
+        self.assertIn("configure balanced-plus --stapm 55 --slow 92 --fast 102 --temp 80", line)
         self.assertIn("--power-profile balanced", line)
         self.assertIn("--apply", line)
 
@@ -287,8 +474,6 @@ class MainWindowTest(OffscreenGuiTest):
     def test_checks_repair_replaces_an_invalid_profile_and_refreshes_the_results(self):
         data = json.loads(STATUS_FIXTURE.read_text(encoding="utf-8"))
         repaired = json.loads(json.dumps(data))
-        repaired["profiles"][0].update(stapm_w=60, slow_w=65, fast_w=75)
-        repaired["last_apply"].update(stapm_w="60", slow_w="65", fast_w="75")
         data["profiles"][0] = {"name": "balanced-plus", "valid": False}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -315,17 +500,17 @@ class MainWindowTest(OffscreenGuiTest):
                     self.window.refresh_count > refreshes and self.window.checks.count > checks
                     and not self.window.runner.processes
                 )))
-                self.assertIn("78 C", confirmation)
-                self.assertIn("60/65/75 W", confirmation)
+                self.assertIn("80 C", confirmation)
+                self.assertIn("87/92/102 W", confirmation)
                 self.assertIn("backup", confirmation.lower())
                 self.assertIn("ryzen_smu", confirmation)
                 self.assertIn("unload it before applying", confirmation)
                 self.assertIn("only after a successful apply", confirmation)
                 self.assertIn("repair balanced-plus", self.read_log())
-                self.assertEqual(self.editor.collect().stapm_w, 60)
-                self.assertEqual(self.editor.collect().slow_w, 65)
-                self.assertEqual(self.editor.collect().fast_w, 75)
-                self.assertEqual(self.editor.collect().temp_c, 78)
+                self.assertEqual(self.editor.collect().stapm_w, 87)
+                self.assertEqual(self.editor.collect().slow_w, 92)
+                self.assertEqual(self.editor.collect().fast_w, 102)
+                self.assertEqual(self.editor.collect().temp_c, 80)
                 self.assertFalse(self.editor.dirty)
                 self.assertEqual(self.window.checks.report.failures, 0)
                 self.assertIn("0 failure(s)", self.checks.summary.text())
@@ -455,11 +640,11 @@ class MainWindowTest(OffscreenGuiTest):
 
         self.assertFalse(self.editor.fast_spin.keyboardTracking())
         self.editor.fast_spin.selectAll()
-        QTest.keyClicks(self.editor.fast_spin, "100")
+        QTest.keyClicks(self.editor.fast_spin, "110")
         QTest.keyClick(self.editor.fast_spin, Qt.Key.Key_Return)
-        self.assertEqual(self.editor.fast_spin.value(), 100)
-        self.assertEqual(self.editor.stapm_spin.value(), 65)
-        self.assertEqual(self.editor.slow_spin.value(), 70)
+        self.assertEqual(self.editor.fast_spin.value(), 110)
+        self.assertEqual(self.editor.stapm_spin.value(), 87)
+        self.assertEqual(self.editor.slow_spin.value(), 92)
 
     def test_failed_action_keeps_unsaved_edits(self):
         self.editor.stapm_spin.setValue(58)
@@ -531,7 +716,7 @@ class MainWindowTest(OffscreenGuiTest):
             "return_value": QMessageBox.StandardButton.Cancel
         }
         return unittest.mock.patch(
-            "legion_powerctl_gui.app.QMessageBox.question", **kwargs
+            "legion_powerctl_gui.dialogs.confirm_discard", **kwargs
         )
 
     def test_cancel_on_discard_keeps_editor_and_sidebar_in_agreement(self):
@@ -702,7 +887,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.dialogs = True
         try:
             with unittest.mock.patch(
-                "legion_powerctl_gui.app.QMessageBox.question"
+                "legion_powerctl_gui.dialogs.confirm_discard"
             ) as question:
                 self.window.profile_actions.delete()
                 self.settle(5)
@@ -886,7 +1071,7 @@ class MainWindowTest(OffscreenGuiTest):
         running = self._item("balanced-plus")
         self.assertTrue(running.data(RUNNING_ROLE))
         self.assertTrue(running.data(BOOT_ROLE))
-        self.assertEqual(running.data(DETAIL_ROLE), "65/70/80 W, 78 C cap")
+        self.assertEqual(running.data(DETAIL_ROLE), "87/92/102 W, 80 C cap")
         self.assertFalse(self._item("quiet").data(RUNNING_ROLE))
         self.assertFalse(self._item("quiet").data(BOOT_ROLE))
         self.assertEqual(self._item("broken").data(DETAIL_ROLE), "invalid profile file")
@@ -1196,27 +1381,30 @@ class MainWindowTest(OffscreenGuiTest):
             )
 
     def test_delete_defaults_to_cancel(self):
+        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QMessageBox
+
+        seen = []
+
+        def press_enter():
+            box = self.app.activeModalWidget()
+            seen.append([box.standardButton(button) for button in box.buttons()])
+            seen.append(box.standardButton(box.defaultButton()))
+            QTest.keyClick(box, Qt.Key.Key_Return)
 
         self.window.dialogs = True
         try:
-            with unittest.mock.patch(
-                "legion_powerctl_gui.actions.QMessageBox.question",
-                return_value=QMessageBox.StandardButton.Cancel,
-            ) as question:
-                self.window.profile_actions.delete()
+            QTimer.singleShot(0, press_enter)
+            self.window.profile_actions.delete()
         finally:
             self.window.dialogs = False
-        args = question.call_args[0]
-        self.assertGreaterEqual(
-            len(args), 5,
-            "the dialog names no buttons, so question() supplies Yes/No and defaults to Yes",
-        )
+        self.assertEqual(len(seen), 2, "no confirmation was asked")
+        self.assertIn(QMessageBox.StandardButton.Cancel, seen[0])
         self.assertEqual(
-            args[4], QMessageBox.StandardButton.Cancel,
+            seen[1], QMessageBox.StandardButton.Cancel,
             "Enter on the dialog deletes a profile with no undo",
         )
-        self.assertTrue(args[3] & QMessageBox.StandardButton.Cancel)
         self.settle(5)
         self.assertNotIn("delete", "\n".join(self.read_log()))
 
@@ -1376,7 +1564,7 @@ class MainWindowTest(OffscreenGuiTest):
             with unittest.mock.patch.object(
                 actions_module.dialogs, "confirm_raise", fake_confirm
             ):
-                self.editor.fast_spin.setValue(90)
+                self.editor.fast_spin.setValue(110)
                 self.editor.temp_spin.setValue(88)
                 self.editor._on_edited()
                 self.window.profile_actions.apply()
@@ -1384,8 +1572,8 @@ class MainWindowTest(OffscreenGuiTest):
         finally:
             self.window.dialogs = False
         self.assertEqual(asked.get("name"), "quiet")
-        self.assertIn(("Fast PPT", 80, 90), asked["deltas"])
-        self.assertIn(("Ceiling", 78, 88), asked["deltas"])
+        self.assertIn(("Fast PPT", 102, 110), asked["deltas"])
+        self.assertIn(("Ceiling", 80, 88), asked["deltas"])
         self.assertFalse(
             any("configure" in line for line in self.read_log()),
             "Cancel still wrote to the hardware",
@@ -1447,6 +1635,353 @@ class MainWindowTest(OffscreenGuiTest):
         spoken = self.accessible_name(header.running_label)
         self.assertIn(header.running_label.text(), spoken)
         self.assertIn("Running now", spoken)
+
+
+    def _top(self, widget) -> int:
+        from PySide6.QtCore import QPoint
+
+        return widget.mapTo(self.header, QPoint(0, 0)).y()
+
+    def test_the_strip_moves_its_actions_below_the_facts_on_a_narrow_window(self):
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        running_bottom = self._top(header.running_label) + header.running_label.height()
+        self.assertLess(
+            self._top(header.checks_button), running_bottom,
+            "at 960 the actions share the row with what is running",
+        )
+        wide = header.height()
+
+        self.window.resize(720, 480)
+        self.app.processEvents()
+        running_bottom = self._top(header.running_label) + header.running_label.height()
+        for control in (header.service_check, header.checks_button):
+            with self.subTest(control=control.text()):
+                self.assertGreaterEqual(
+                    self._top(control), running_bottom,
+                    "at 720 the actions cell still squeezes the running cell",
+                )
+        self.assertGreater(header.height(), wide)
+        right = header.checks_button.mapTo(header, header.checks_button.rect().topRight()).x()
+        self.assertGreater(right, header.width() * 3 // 4, "the wrapped actions are not right aligned")
+
+        self.window.resize(960, 620)
+        self.app.processEvents()
+        self.assertEqual(header.height(), wide, "widening again does not restore one row")
+
+    def test_the_strip_reflows_as_soon_as_a_longer_name_arrives(self):
+        import dataclasses
+
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        status = self.window.status
+        partial = dict(status.last_apply, result="partial")
+        for record, wrapped in ((partial, True), (status.last_apply, False)):
+            header.show_status(dataclasses.replace(status, last_apply=record))
+            self.app.processEvents()
+            running_bottom = self._top(header.running_label) + header.running_label.height()
+            with self.subTest(running=header.running_label.text()):
+                self.assertEqual(
+                    self._top(header.checks_button) >= running_bottom, wrapped,
+                    "the strip kept the row it measured before the running name changed",
+                )
+
+    def test_the_strip_is_eighty_tall_at_the_default_size(self):
+        from legion_powerctl_gui import styles
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertEqual(self.header.height(), styles.STRIP_HEIGHT)
+
+    def test_the_readout_paints_the_four_limits_and_keeps_the_summary_as_its_text(self):
+        from legion_powerctl_gui.strip_widgets import Readout
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = self.header.envelope_label
+        self.assertEqual(readout.text(), "87/92/102 W, 80 C cap")
+        self.assertIn(readout.text(), self.accessible_name(readout))
+        self.assertEqual(readout.tiles, [
+            ("87", "W", "SUSTAINED"), ("92", "W", "SLOW PPT"),
+            ("102", "W", "FAST PPT"), ("80", "°C", "CEILING"),
+        ])
+        self.assertEqual(readout.height(), readout.tile_height())
+        widths = sum(readout.tile_widths())
+        self.assertEqual(readout.sizeHint().width(), widths + 3 * Readout.GAP)
+        self.assertEqual(readout.minimumSizeHint().width(), widths + 3 * Readout.MIN_GAP)
+        ink, _fail, muted, cap = self.readout_inks(readout)
+        image = readout.grab().toImage()
+        self.assertIn(ink, self.colours_in_rows(image, 0, cap), "the figures are not in the ink")
+        captions = self.colours_in_rows(image, cap + Readout.CAPTION_GAP, image.height())
+        self.assertIn(muted, captions, "the captions are not in the muted ink")
+        self.assertNotIn(ink, captions, "the captions are as loud as the figures")
+        spans = self.ink_spans(image, *self.caption_rows(readout), Readout.MIN_GAP)
+        self.assertEqual(len(spans), 4, f"the captions run into each other: {spans}")
+        room = (readout.width() - widths) // 3
+        for left, right in zip(spans, spans[1:]):
+            self.assertGreaterEqual(
+                right[0] - left[1] - 1, max(Readout.MIN_GAP, min(Readout.GAP, room)),
+                "the tiles are crowded with room to spare",
+            )
+        right_edge = self.ink_spans(image, 0, image.height(), 1)[-1][1]
+        self.assertGreaterEqual(right_edge, image.width() - 3, "the readout is not flush right")
+
+    def test_the_readout_closes_its_gaps_before_it_cuts_a_figure(self):
+        from legion_powerctl_gui import runstate
+        from legion_powerctl_gui.strip_widgets import Readout
+
+        readout = Readout()
+        self.addCleanup(readout.deleteLater)
+        readout.set_state(runstate.run_state(self.window.status), "OK")
+        least = readout.minimumSizeHint()
+        inked, gaps = {}, {}
+        for width in (least.width() + 120, least.width()):
+            readout.resize(width, least.height())
+            bands = {"figures": (0, readout.tile_height() // 2), "captions": self.caption_rows(readout)}
+            image = readout.grab().toImage()
+            for band, rows in bands.items():
+                spans = self.ink_spans(image, *rows, 1)
+                inked[width, band] = sum(right - left + 1 for left, right in spans)
+            captions = self.ink_spans(image, *bands["captions"], Readout.MIN_GAP)
+            gaps[width] = [right[0] - left[1] - 1 for left, right in zip(captions, captions[1:])]
+            with self.subTest(width=width):
+                self.assertEqual(len(captions), 4, f"the captions run into each other: {captions}")
+                right_edge = self.ink_spans(image, 0, image.height(), 1)[-1][1]
+                self.assertGreaterEqual(right_edge, width - 3, "the readout is not flush right")
+        roomy, tight = least.width() + 120, least.width()
+        for band in bands:
+            with self.subTest(band=band):
+                self.assertEqual(
+                    inked[tight, band], inked[roomy, band],
+                    "at its minimum width the readout cut part of a tile off",
+                )
+        self.assertLess(max(gaps[tight]), Readout.GAP, "the gaps did not close")
+        self.assertGreaterEqual(min(gaps[roomy]), Readout.GAP)
+
+    def test_the_apply_record_sits_on_the_eyebrow_line_and_the_fact_below_it(self):
+        header = self.header
+        mark, when = header.mark_label, header.when_label
+        name, readout = header.running_label, header.envelope_label
+        self.window.show()
+        for size in ((960, 620), (720, 480)):
+            self.window.resize(*size)
+            self.app.processEvents()
+            with self.subTest(size=size):
+                self.assertLess(self._top(mark), self._top(name))
+                self.assertLessEqual(
+                    abs(self._top(mark) + mark.height() // 2
+                        - (self._top(when) + when.height() // 2)), 2,
+                    "the badge and the time are not on one line",
+                )
+                self.assertLess(self._top(readout), self._top(name) + name.height())
+                self.assertLess(self._top(name), self._top(readout) + readout.height())
+                self.assertEqual(
+                    readout.mapTo(header, readout.rect().topRight()).x(),
+                    when.mapTo(header, when.rect().topRight()).x(),
+                    "the readout is not flush with the time above it",
+                )
+
+    def test_the_badge_is_still_read_after_the_facts_it_qualifies(self):
+        from PySide6.QtGui import QAccessible
+
+        header = self.header
+        cell = QAccessible.queryAccessibleInterface(header.run_caption.parentWidget())
+        read = [cell.child(index).object() for index in range(cell.childCount())]
+        self.assertEqual(read, [
+            header.run_caption, header.when_label, header.rail,
+            header.running_label, header.envelope_label, header.mark_label,
+        ])
+
+    def test_the_running_name_is_set_in_the_title_voice(self):
+        from legion_powerctl_gui import theme
+
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        title = theme.font("title")
+        self.assertAlmostEqual(header.running_label.font().pointSizeF(), title.pointSizeF())
+        self.assertEqual(header.running_label.font().weight(), title.weight())
+        self.assertEqual(header.rail.height(), header.envelope_label.tile_height())
+        self.assertEqual(self._top(header.rail), self._top(header.envelope_label))
+
+    def test_the_readout_and_its_rail_follow_the_desktop_font(self):
+        header = self.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        before = header.envelope_label.tile_height()
+        self.use_app_font_size(self.app.font().pointSizeF() + 3)
+        self.app.processEvents()
+        self.assertGreater(header.envelope_label.tile_height(), before)
+        self.assertEqual(header.rail.height(), header.envelope_label.tile_height())
+
+    def test_a_palette_change_restyles_the_strip_the_status_bar_and_the_checks(self):
+        from legion_powerctl_gui import scheme, theme
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtGui import QPalette
+
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.checks.show()
+        self.assertTrue(self.checks.rows, "no rows to restyle")
+        dark = scheme.palette(True)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.addCleanup(self.app.setPalette, QPalette(self.app.palette()))
+        self.app.setPalette(dark)
+        self.app.setStyleSheet(self.app.styleSheet())
+        self.app.processEvents()
+
+        plane = dark.color(QPalette.ColorRole.Window)
+        surface = self.header.grab().toImage().pixelColor(6, self.header.height() // 2)
+        self.assertEqual(surface.name(), dark.color(QPalette.ColorRole.Base).name())
+        self.assertIn(
+            theme.muted_color(dark, plane).name(), self.header.machine_label.styleSheet()
+        )
+        link = theme.fit_contrast(theme.accent_color(dark), plane, theme.MIN_CONTRAST)
+        for offer in (self.window.reports.go_back_button, self.window.reports.details_button):
+            with self.subTest(offer=offer.text()):
+                self.assertIn(link.name(), offer.styleSheet())
+        for row in self.checks.rows:
+            with self.subTest(row=row.accessibleName()):
+                self.assertIn(
+                    theme.severity_color(dark, row.chip.property("severity")).name(),
+                    row.chip.styleSheet(),
+                )
+                self.assertIn(
+                    theme.secondary_color(dark, plane).name(), row.detail.styleSheet()
+                )
+
+    def test_the_go_back_offer_makes_room_for_the_message_it_follows(self):
+        bar = self.window.statusBar()
+        offer = self.window.reports.go_back_button
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.window.reports.success("Applied 'quiet'.", "balanced-plus")
+        self.app.processEvents()
+        beside = offer.sizeHint().width()
+        bar.clearMessage()
+        self.app.processEvents()
+        alone = offer.sizeHint().width()
+        self.assertGreaterEqual(
+            beside - alone, bar.fontMetrics().horizontalAdvance("Applied 'quiet'."),
+            "the offer is drawn under the message instead of after it",
+        )
+        self.assertFalse(offer.isHidden(), "the offer went away with the message")
+
+    def test_a_long_warning_keeps_its_offer_in_sight(self):
+        reports = self.window.reports
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        reports.warning("Applied 'quiet'.", "WARNING: " + "the limits could not be read back " * 8)
+        self.app.processEvents()
+        details = reports.details_button
+        machine = self.header.machine_label
+        self.assertFalse(details.isHidden())
+        self.assertGreaterEqual(
+            details.width(), details.sizeHint().width(),
+            "the room left for the message squeezes the Details offer out of sight",
+        )
+        self.assertLessEqual(
+            details.geometry().right(), machine.geometry().left(),
+            "the Details offer is drawn over the version it sits beside",
+        )
+
+    def test_the_switch_keeps_its_focus_ring_through_a_busy_spell(self):
+        from PySide6.QtCore import Qt
+
+        switch = self.header.service_check
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.activateWindow()
+        self.settle(5)
+        opened = switch.grab().toImage()
+        switch.clearFocus()
+        self.settle(3)
+        resting = switch.grab().toImage()
+        self.assertEqual(opened, resting, "opening the window paints a keyboard ring")
+        switch.setFocus(Qt.FocusReason.TabFocusReason)
+        self.settle(3)
+        ringed = switch.grab().toImage()
+        self.assertNotEqual(ringed, resting, "keyboard focus draws no ring")
+        self.window._set_busy(True)
+        self.settle(3)
+        self.window._set_busy(False)
+        self.settle(3)
+        self.assertTrue(switch.hasFocus(), "the focus did not come back after the command")
+        self.assertEqual(switch.grab().toImage(), ringed, "the ring did not come back with it")
+        switch.clearFocus()
+        switch.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.settle(3)
+        self.assertEqual(switch.grab().toImage(), resting, "a click draws the keyboard ring")
+        self.window._set_busy(True)
+        self.settle(3)
+        self.window._set_busy(False)
+        self.settle(3)
+        self.assertTrue(switch.hasFocus())
+        self.assertEqual(
+            switch.grab().toImage(), resting, "the refocus after a clicked command draws the ring"
+        )
+
+    def test_the_switch_keeps_its_ring_or_its_absence_across_window_activation(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        switch = self.header.service_check
+        other = QWidget()
+        self.addCleanup(other.deleteLater)
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.activateWindow()
+        self.settle(5)
+        for reason in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.MouseFocusReason):
+            switch.clearFocus()
+            switch.setFocus(reason)
+            self.settle(3)
+            before = switch.grab().toImage()
+            other.show()
+            other.activateWindow()
+            self.settle(3)
+            self.assertFalse(switch.hasFocus(), "the other window never took the focus")
+            self.window.activateWindow()
+            self.settle(3)
+            with self.subTest(reason=reason.name):
+                self.assertTrue(switch.hasFocus(), "activation did not hand the focus back")
+                self.assertEqual(switch.grab().toImage(), before)
+            other.hide()
+
+    def test_an_offer_stays_in_sight_when_the_window_narrows(self):
+        reports = self.window.reports
+        machine = self.header.machine_label
+        self.window.resize(1100, 620)
+        self.window.show()
+        self.settle(5)
+        reports.warning("Applied 'quiet'.", "WARNING: " + "the limits could not be read back " * 8)
+        self.settle(5)
+        for offer, show in (
+            (reports.details_button, lambda: None),
+            (reports.go_back_button, lambda: reports.success("Applied 'quiet'.", "balanced-plus")),
+        ):
+            show()
+            self.window.resize(1100, 620)
+            self.settle(5)
+            self.window.resize(720, 620)
+            self.settle(5)
+            with self.subTest(offer=offer.text()):
+                self.assertFalse(offer.isHidden())
+                self.assertGreaterEqual(
+                    offer.width(), offer.sizeHint().width(),
+                    "the offer keeps the margin it had in a wider window and draws out of sight",
+                )
+                self.assertLessEqual(offer.geometry().right(), machine.geometry().left())
 
 
 class RunnerTimeoutTest(OffscreenGuiTest):
@@ -1524,17 +2059,17 @@ class RunnerTimeoutTest(OffscreenGuiTest):
 
 
 class PanelSeamTest(OffscreenGuiTest):
-    def test_balanced_plus_editor_caps_both_temperature_controls_at_78(self):
+    def test_balanced_plus_editor_caps_both_temperature_controls_at_80(self):
         from legion_powerctl_gui import model
         from legion_powerctl_gui.editor import ProfileEditor
 
         editor = ProfileEditor()
         try:
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
-            self.assertEqual(editor.temp_spin.maximum(), 78)
-            self.assertEqual(editor.temp_slider.maximum(), 78)
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
+            self.assertEqual(editor.temp_spin.maximum(), 80)
+            self.assertEqual(editor.temp_slider.maximum(), 80)
             editor.temp_spin.setValue(90)
-            self.assertEqual(editor.collect().temp_c, 78)
+            self.assertEqual(editor.collect().temp_c, 80)
             self.assertEqual(editor.problems(), [])
         finally:
             editor.deleteLater()
@@ -1545,14 +2080,14 @@ class PanelSeamTest(OffscreenGuiTest):
 
         editor = ProfileEditor()
         try:
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
             editor.load(model.Profile(name="trial", temp_c=90))
             self.assertEqual(editor.temp_spin.maximum(), model.TEMP_MAX_C)
             self.assertEqual(editor.temp_slider.maximum(), model.TEMP_MAX_C)
             self.assertEqual(editor.collect().temp_c, 90)
-            editor.load(model.Profile(name="balanced-plus", temp_c=78))
-            self.assertEqual(editor.temp_spin.maximum(), 78)
-            self.assertEqual(editor.collect().temp_c, 78)
+            editor.load(model.Profile(name="balanced-plus", temp_c=80))
+            self.assertEqual(editor.temp_spin.maximum(), 80)
+            self.assertEqual(editor.collect().temp_c, 80)
         finally:
             editor.deleteLater()
 
@@ -1775,6 +2310,134 @@ class PanelSeamTest(OffscreenGuiTest):
         self.settle(3)
 
 
+    def test_a_chip_keeps_its_height_on_a_row_that_wraps(self):
+        from legion_powerctl_gui import model, styles
+        from legion_powerctl_gui.dialogs import ChecksDialog
+        from PySide6.QtWidgets import QSizePolicy
+
+        dialog = ChecksDialog()
+        try:
+            dialog.resize(640, 480)
+            dialog.show_report(model.DoctorReport(
+                lines=[
+                    model.DoctorLine("WARN", "SMU-backend", "no ryzen_smu module " * 12),
+                    model.DoctorLine("OK", "CPU", "AMD processor detected"),
+                ],
+                failures=0, warnings=1, exit_code=0,
+            ))
+            dialog.show()
+            self.settle(5)
+            wrapped, single = dialog.rows
+            self.assertGreater(wrapped.height(), single.height(), "the long detail did not wrap")
+            for row in dialog.rows:
+                with self.subTest(row=row.chip.text()):
+                    self.assertEqual(row.chip.height(), styles.BADGE_HEIGHT)
+                    self.assertEqual(
+                        row.chip.sizePolicy().verticalPolicy(), QSizePolicy.Policy.Fixed
+                    )
+            self.assertEqual(
+                wrapped.chip.y(), single.chip.y(), "the chip on the long row is not at its top"
+            )
+        finally:
+            dialog.deleteLater()
+
+    def test_badges_and_chips_grow_with_their_font_rather_than_clipping_it(self):
+        from legion_powerctl_gui import styles
+        from legion_powerctl_gui.checks_view import CheckRow
+        from legion_powerctl_gui.header import MachineHeader
+        from legion_powerctl_gui.model import DoctorLine
+        from PySide6.QtGui import QFont
+
+        header = MachineHeader("9.9.9")
+        row = CheckRow(DoctorLine("WARN", "Conflicts", "tlp.service is active"), self.app.palette())
+        try:
+            badges = (header.mark_label, header.service_label, header.checks_button, row.chip)
+            for badge in badges:
+                self.assertEqual(badge.height(), styles.BADGE_HEIGHT)
+                large = QFont(badge.font())
+                large.setPointSizeF(24.0)
+                badge.setFont(large)
+                with self.subTest(badge=type(badge).__name__):
+                    self.assertGreater(badge.height(), styles.BADGE_HEIGHT)
+                    self.assertGreaterEqual(
+                        badge.height(), badge.fontMetrics().height() + styles.BADGE_CHROME,
+                        "the text is taller than the badge drawn around it",
+                    )
+        finally:
+            header.deleteLater()
+            row.deleteLater()
+
+    def test_a_message_box_marks_the_action_and_keeps_the_safe_default(self):
+        from legion_powerctl_gui import dialogs, runstate
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox, QWidget
+
+        parent = QWidget()
+        seen = {}
+
+        def answer(name):
+            box = self.app.activeModalWidget()
+            seen[name] = (
+                [
+                    b.text().replace("&", "") for b in box.buttons()
+                    if b.property("kind") == "primary"
+                ],
+                box.defaultButton().text().replace("&", ""),
+                box.focusWidget() is box.defaultButton(),
+            )
+            box.button(QMessageBox.StandardButton.Cancel).click()
+
+        cases = {
+            "raise": (lambda: dialogs.confirm_raise(
+                parent, "quiet", [runstate.Delta("Fast PPT", 102, 110, "W")]
+            ), "Apply anyway", "Cancel"),
+            "enable": (lambda: dialogs.confirm_enable(parent, "quiet"), "Enable", "Enable"),
+            "repair": (lambda: dialogs.confirm_repair(parent), "Repair and apply", "Cancel"),
+            "force": (
+                lambda: dialogs.offer_force_enable(parent, "doctor reported failures"),
+                "Enable anyway", "Cancel",
+            ),
+            "discard": (
+                lambda: dialogs.confirm_discard(parent, "quiet", "balanced-plus")
+                != QMessageBox.StandardButton.Cancel,
+                "Discard", "Cancel",
+            ),
+            "delete": (lambda: dialogs.confirm_delete(parent, "quiet"), "Yes", "Cancel"),
+        }
+        try:
+            for name, (run, action, default) in cases.items():
+                with self.subTest(dialog=name):
+                    QTimer.singleShot(0, lambda name=name: answer(name))
+                    self.assertFalse(run(), "Cancel was taken as a yes")
+                    primary, chosen, focused = seen[name]
+                    self.assertEqual(primary, [action])
+                    self.assertEqual(chosen, default, "the default moved to a riskier button")
+                    self.assertTrue(focused, "the default button does not hold the focus")
+        finally:
+            parent.deleteLater()
+
+    def test_the_boot_switch_is_still_a_check_box_to_everyone_but_the_eye(self):
+        from legion_powerctl_gui.header import MachineHeader
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QAccessible
+
+        header = MachineHeader("9.9.9")
+        try:
+            switch = header.service_check
+            switch.resize(switch.sizeHint())
+            interface = QAccessible.queryAccessibleInterface(switch)
+            self.assertEqual(interface.role(), QAccessible.Role.CheckBox)
+            self.assertEqual(interface.text(QAccessible.Text.Name), "Re-apply at every boot")
+            self.assertTrue(switch.isCheckable())
+            self.assertTrue(
+                switch.hitButton(QPoint(switch.width() - 2, switch.height() // 2)),
+                "the label beside the track does not toggle it",
+            )
+            self.assertGreaterEqual(switch.height(), 20)
+        finally:
+            header.deleteLater()
+
+
 class VariantFixtureTest(OffscreenGuiTest):
     def mutate(self, document: dict) -> None:
         raise NotImplementedError
@@ -1802,6 +2465,75 @@ class VariantFixtureTest(OffscreenGuiTest):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+
+    def reopen_at_the_desktop_size(self) -> None:
+        from legion_powerctl_gui.app import MainWindow
+
+        self.window.close()
+        self.window.deleteLater()
+        self.use_app_font_size(DESKTOP_POINT_SIZE)
+        self.window = MainWindow()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count >= 1))
+
+    def strip_is_one_row(self) -> bool:
+        from PySide6.QtCore import QPoint
+
+        header, name = self.window.header, self.window.header.running_label
+        bottom = name.mapTo(header, QPoint(0, name.height())).y()
+        return header.checks_button.mapTo(header, QPoint(0, 0)).y() < bottom
+
+    def assert_nothing_in_the_strip_is_cut(self, *elided) -> None:
+        header = self.window.header
+        readout = header.envelope_label
+        labels = (
+            header.run_caption, header.mark_label, header.when_label, header.running_label,
+            header.boot_label, header.same_label,
+        )
+        for label in labels:
+            with self.subTest(label=label.text()):
+                if label in elided:
+                    floor = label.minimumWidth() or label.sizeHint().width()
+                    self.assertGreaterEqual(label.width(), floor, "the layout clipped a name")
+                    if label.width() < label.sizeHint().width():
+                        self.assert_painted_with_an_ellipsis(label)
+                elif label.isVisible():
+                    self.assertGreaterEqual(label.width(), label.sizeHint().width())
+        name = header.running_label
+        if name.width() < name.sizeHint().width():
+            self.assertEqual(
+                readout.width(), readout.minimumSizeHint().width(),
+                "the name lost letters while the readout still had width to give",
+            )
+        self.assertGreaterEqual(readout.width(), readout.minimumSizeHint().width())
+
+    @staticmethod
+    def deltas(editor) -> list:
+        return [
+            tile.delta.text()
+            for envelope in editor.envelopes
+            for tile in envelope.tiles.values()
+        ]
+
+    def assert_painted_with_an_ellipsis(self, label) -> None:
+        from legion_powerctl_gui.strip_widgets import ElidedLabel
+        from PySide6.QtCore import Qt
+
+        room = label.contentsRect().width()
+        shown = label.fontMetrics().elidedText(label.text(), Qt.TextElideMode.ElideRight, room)
+        self.assertNotEqual(shown, label.text(), "the label has room for its whole text")
+        twin = ElidedLabel(shown, label.parentWidget())
+        twin.setFont(label.font())
+        twin.setStyleSheet(label.styleSheet())
+        twin.setGeometry(label.geometry())
+        twin.show()
+        try:
+            self.assertTrue(
+                twin.grab().toImage() == label.grab().toImage(),
+                f"{label.text()!r} is clipped at its edge instead of reading {shown!r}",
+            )
+        finally:
+            twin.hide()
+            twin.deleteLater()
 
 
 class BrokenFirstProfileTest(VariantFixtureTest):
@@ -1841,6 +2573,338 @@ class ServiceBadgeVariantTest(VariantFixtureTest):
             theme.severity_color(self.window.palette(), "WARN").name(),
             label.styleSheet(),
         )
+
+
+class ServiceOffVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["service"] = {"enabled": "disabled", "active": "inactive"}
+
+    def test_a_disabled_boot_service_warns_that_the_limits_will_not_come_back(self):
+        from legion_powerctl_gui import theme
+
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertFalse(header.service_check.isChecked())
+        self.assertEqual(header.service_label.text(), "", "an off service is not a fault")
+        note = header.volatile_note
+        self.assertTrue(note.isVisible())
+        self.assertEqual(
+            note.text(), "Limits are cleared by a power cycle and will not come back on their own."
+        )
+        self.assertIn(
+            theme.severity_color(self.window.palette(), "WARN").name(), note.styleSheet(),
+            "the note reads as plain text, not as a warning callout",
+        )
+        cells_bottom = header.running_label.mapTo(header, header.running_label.rect().bottomLeft())
+        self.assertGreater(note.mapTo(header, note.rect().topLeft()).y(), cells_bottom.y())
+
+
+class LimitsDidNotTakeVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["verified"] = "no"
+
+    def test_limits_that_did_not_take_are_painted_in_the_fail_ink(self):
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(header.mark_label.text(), "limits did not take")
+        self.assertEqual(readout.severity, "FAIL")
+        ink, fail, _muted, cap = self.readout_inks(readout)
+        figures = self.colours_in_rows(readout.grab().toImage(), 0, cap)
+        self.assertIn(fail, figures, "the figures that did not take are not in the FAIL ink")
+        self.assertNotIn(ink, figures, "a figure that did not take is still in the plain ink")
+
+    def test_at_the_kde_size_a_failure_never_pushes_the_cards_into_a_scroll(self):
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.window.sidebar.select_by_name("quiet")
+        self.settle(5)
+        self.assertFalse(self.window.editor.advanced.button.isChecked())
+        self.assertEqual(self.window.header.mark_label.text(), "limits did not take")
+        self.assert_nothing_in_the_strip_is_cut()
+        self.assertEqual(
+            self.window.editor_scroll.verticalScrollBar().maximum(), 0,
+            f"a {self.window.header.height()} px failed strip made the cards scroll",
+        )
+
+    def test_limits_that_did_not_take_are_not_marked_as_running_in_the_editor(self):
+        editor = self.window.editor
+        for name, words in (("balanced-plus", "running now, boot profile"), ("quiet", "")):
+            self.window.sidebar.select_by_name(name)
+            self.settle(3)
+            with self.subTest(profile=name):
+                self.assertEqual(editor.current_name, name)
+                self.assertEqual(editor.power_envelope.bar.reference, ())
+                self.assertEqual(editor.thermal_envelope.bar.reference, ())
+                self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
+                self.assertEqual(editor.title_aside.text(), words, "the row and the title disagree")
+                self.assertEqual(self.deltas(editor), ["", "", "", ""])
+
+
+class UnverifiedVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["verified"] = ""
+
+    def test_an_unverified_apply_keeps_its_figures_in_the_plain_ink(self):
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(header.mark_label.text(), "unverified")
+        self.assertEqual(readout.severity, "WARN")
+        ink, fail, _muted, cap = self.readout_inks(readout)
+        figures = self.colours_in_rows(readout.grab().toImage(), 0, cap)
+        self.assertIn(ink, figures, "an unverified figure is not in the plain ink")
+        self.assertNotIn(fail, figures, "an unverified figure reads as a fault")
+
+
+class QuietRunningVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+
+    def test_at_the_kde_size_the_whole_figures_fit_an_eighty_pixel_strip(self):
+        from legion_powerctl_gui import styles, theme
+        from PySide6.QtGui import QFontMetrics
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        header = self.window.header
+        readout = header.envelope_label
+        self.assertTrue(self.strip_is_one_row())
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        self.assertEqual(readout.height(), readout.tile_height())
+        image = readout.grab().toImage()
+        plane = image.pixel(0, image.height() - 1)
+        inked = [any(image.pixel(x, y) != plane for x in range(image.width()))
+                 for y in range(image.height())]
+        top = inked.index(True)
+        drawn = inked.index(False, top) - top
+        metrics = QFontMetrics(theme.font("readout", readout.font()))
+        tallest = max(-metrics.tightBoundingRect(value).top() for value, _u, _c in readout.tiles)
+        self.assertGreaterEqual(
+            drawn, tallest, "the readout box is shorter than its figures and cuts their tops off"
+        )
+
+
+class PartialApplyVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["result"] = "partial"
+
+    def test_at_the_minimum_size_a_long_name_gives_way_before_the_figures(self):
+        import dataclasses
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        header = self.window.header
+        name, readout = header.running_label, header.envelope_label
+        status = self.window.status
+        for record in (status.last_apply, dict(status.last_apply, result="ok")):
+            header.show_status(dataclasses.replace(status, last_apply=record))
+            self.app.processEvents()
+            with self.subTest(running=name.text()):
+                self.assertGreaterEqual(
+                    readout.width(), readout.minimumSizeHint().width(),
+                    "the readout is cut off on its left, so a figure reads as another number",
+                )
+                self.assertIn(name.text(), self.accessible_name(name))
+        self.assertGreaterEqual(
+            name.width(), name.sizeHint().width(),
+            "the name lost letters while the readout still had gaps to give",
+        )
+        header.show_status(status)
+        self.app.processEvents()
+        self.assertEqual(name.text(), "balanced-plus - PARTIALLY APPLIED")
+        self.assertLess(name.width(), name.sizeHint().width(), "the long name did not give way")
+        self.assertGreaterEqual(readout.width(), readout.minimumSizeHint().width())
+
+    def test_the_name_gives_up_exactly_what_the_row_is_short_and_ends_in_an_ellipsis(self):
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.settle(5)
+        header = self.window.header
+        name, readout, boot = header.running_label, header.envelope_label, header.boot_label
+        short = name.sizeHint().width() - name.width()
+        self.assertGreater(short, 0, "the long name fits whole at 720, so this pins nothing")
+        self.assert_painted_with_an_ellipsis(name)
+        self.assertEqual(
+            boot.width(), boot.sizeHint().width(),
+            "the boot name gave way while the running name still had letters to give",
+        )
+        for width, given in ((720 + short - 1, 1), (720 + short, 0)):
+            self.window.resize(width, 480)
+            self.settle(5)
+            with self.subTest(width=width):
+                self.assertFalse(self.strip_is_one_row())
+                self.assertEqual(
+                    name.sizeHint().width() - name.width(), given,
+                    "the name gave up more than the row was short",
+                )
+                self.assertEqual(readout.width(), readout.minimumSizeHint().width())
+                self.assertLess(readout.width(), readout.sizeHint().width())
+
+
+class PerformanceCappedFailureVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"].update(profile="performance-capped", verified="no")
+        document["active_profile"] = "performance-capped"
+
+    def test_at_the_minimum_size_the_boot_name_gives_way_before_the_apply_record_is_cut(self):
+        import dataclasses
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(720, 480)
+        self.window.show()
+        self.settle(5)
+        header = self.window.header
+        status = self.window.status
+        partial = dict(status.last_apply, result="partial")
+        long_boot = "performance-capped-on-battery-saver"
+        for record, boot in (
+            (status.last_apply, status.active_profile),
+            (partial, status.active_profile),
+            (status.last_apply, long_boot),
+            (dict(status.last_apply, profile="quiet"), long_boot),
+        ):
+            header.show_status(dataclasses.replace(status, last_apply=record, active_profile=boot))
+            self.settle(5)
+            with self.subTest(running=header.running_label.text(), boot=boot):
+                self.assertEqual(header.mark_label.text(), "limits did not take")
+                self.assertTrue(header.when_label.text().startswith("applied 2026-08-07"))
+                self.assert_nothing_in_the_strip_is_cut(header.running_label, header.boot_label)
+                self.assertEqual(header.boot_label.text(), boot)
+                self.assertEqual(self.accessible_name(header.boot_label), boot)
+
+
+class NothingAppliedVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"] = None
+
+    def test_before_the_first_apply_the_readout_is_the_sentence_and_the_strip_keeps_its_height(
+        self,
+    ):
+        from legion_powerctl_gui import styles, theme
+        from PySide6.QtGui import QFontMetrics
+
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        readout = header.envelope_label
+        self.assertEqual(readout.tiles, [])
+        self.assertEqual(readout.text(), "nothing applied since this boot")
+        self.assertFalse(header.mark_label.isVisible())
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        caption = QFontMetrics(theme.font("caption", readout.font()))
+        self.assertEqual(readout.height(), caption.height(), "the sentence is set at figure size")
+        ink, _fail, muted, _cap = self.readout_inks(readout)
+        image = readout.grab().toImage()
+        painted = self.colours_in_rows(image, 0, image.height())
+        self.assertIn(muted, painted)
+        self.assertNotIn(ink, painted, "the sentence is painted as loud as a figure")
+        self.assertIn(muted, header.rail.styleSheet(), "the rail claims something is running")
+
+    def test_before_the_first_apply_the_editor_has_nothing_to_measure_against(self):
+        editor = self.window.editor
+        self.assertEqual(editor.current_name, "balanced-plus")
+        self.assertEqual(editor.power_envelope.bar.reference, ())
+        self.assertEqual(editor.thermal_envelope.bar.reference, ())
+        self.assertEqual([card.aside for card in editor.cards], ["", "", ""])
+        self.assertEqual(editor.title_aside.text(), "boot profile")
+        self.assertEqual(self.deltas(editor), ["", "", "", ""])
+
+    def test_at_the_kde_size_the_boot_cell_narrows_before_the_actions_wrap(self):
+        from legion_powerctl_gui import styles
+        from legion_powerctl_gui.header import BOOT_CELL_WIDTH, WRAP_WIDTH
+
+        self.reopen_at_the_desktop_size()
+        header = self.window.header
+        self.window.resize(960, 620)
+        self.window.show()
+        self.app.processEvents()
+        self.assertTrue(self.strip_is_one_row(), "before the first apply the strip wraps at 960")
+        self.assertEqual(header.height(), styles.STRIP_HEIGHT)
+        self.assert_nothing_in_the_strip_is_cut()
+
+        narrow, wide = 720, 960
+        while wide - narrow > 1:
+            middle = (narrow + wide) // 2
+            self.window.resize(middle, 620)
+            self.app.processEvents()
+            narrow, wide = (narrow, middle) if self.strip_is_one_row() else (middle, wide)
+        self.window.resize(wide, 620)
+        self.app.processEvents()
+        self.assertGreater(header.width(), WRAP_WIDTH, "the wrap floor, not the cells, set this width")
+        self.assert_nothing_in_the_strip_is_cut()
+        self.assertLess(
+            header.boot_label.parentWidget().width(), BOOT_CELL_WIDTH,
+            "the actions wrapped while the boot cell still had width to give",
+        )
+
+
+class LongBootNameVariantTest(VariantFixtureTest):
+    LONG = "performance-capped-overnight-render-queue"
+
+    def mutate(self, document):
+        document["last_apply"].update(profile="quiet", verified="no")
+        document["active_profile"] = self.LONG
+
+    def boot_next(self, name: str) -> None:
+        document = json.loads(Path(self.fixture.name).read_text())
+        document["active_profile"] = name
+        Path(self.fixture.name).write_text(json.dumps(document))
+        before = self.window.refresh_count
+        self.window.refresh()
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > before))
+
+    def test_a_squeezed_boot_name_gives_its_width_back_once_the_name_is_short(self):
+        self.reopen_at_the_desktop_size()
+        label = self.window.header.boot_label
+        self.window.resize(720, 480)
+        self.window.show()
+        self.app.processEvents()
+        self.assertGreater(label.given(), 0, "the long name was never squeezed, so this proves nothing")
+
+        self.boot_next("quiet")
+        self.window.resize(960, 620)
+        self.app.processEvents()
+        self.assertEqual(label.minimumSizeHint().width(), label.sizeHint().width())
+        self.assertTrue(self.strip_is_one_row(), "the strip kept the long name's width after it left")
+        self.assert_nothing_in_the_strip_is_cut()
+        widened = self.settled_strip()
+
+        self.reopen_at_the_desktop_size()
+        self.window.resize(960, 620)
+        self.window.show()
+        self.assertTrue(
+            self.settled_strip() == widened,
+            "the strip remembers a name that left instead of matching a fresh window",
+        )
+
+    def settled_strip(self):
+        self.assertTrue(wait_until(self.app, lambda: self.window.checks.count >= 1))
+        for _ in range(5):
+            self.app.processEvents()
+        return self.window.header.grab().toImage()
+
+    def test_an_empty_strip_label_measures_the_same_before_and_after_it_held_text(self):
+        from legion_powerctl_gui.header import MachineHeader
+
+        fresh = MachineHeader._label("", "caption")
+        used = MachineHeader._label("", "caption")
+        used.setText("(same)")
+        used.setText("")
+        self.assertEqual(fresh.sizeHint(), used.sizeHint(), "an emptied label and a new one size apart")
 
 
 if __name__ == "__main__":

@@ -724,7 +724,7 @@ case_apply_fails_when_the_limits_do_not_read_back() {
     local output rc=0
     output="$(run_cli apply balanced-plus 2>&1)" || rc=$?
     assert_eq '1' "$rc" 'an apply whose limits did not take still exited 0'
-    assert_contains 'Tctl wanted 78, reads 95' "$output" \
+    assert_contains 'Tctl wanted 80, reads 95' "$output" \
         'the drift was not named'
     if grep -q 'applied successfully' <<<"$output"; then
         printf 'FAIL: apply claimed success while the limits read back wrong:\n%s\n' "$output" >&2
@@ -738,7 +738,7 @@ case_doctor_reports_limits_that_drifted_from_the_profile() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_TCTL=95)
     local report rc=0
     report="$(run_cli doctor 2>&1)" || rc=$?
-    assert_doctor_line FAIL Limits 'Tctl wanted 78, reads 95' "$report" \
+    assert_doctor_line FAIL Limits 'Tctl wanted 80, reads 95' "$report" \
         'doctor did not report the limits drifting from the active profile'
     assert_eq '1' "$rc" 'doctor exited 0 with the limits not in force'
 }
@@ -780,11 +780,11 @@ case_doctor_reports_the_boost_control_it_found() {
         'doctor did not warn that BOOST profiles will be skipped on this kernel'
 }
 
-case_balanced_plus_rejects_saving_a_ceiling_above_78() {
+case_balanced_plus_rejects_saving_a_ceiling_above_80() {
     local before
     before="$(<"$PROFILES/balanced-plus.conf")"
-    assert_fails 'balanced-plus accepted a saved 79 C ceiling' \
-        run_cli configure balanced-plus --temp 79
+    assert_fails 'balanced-plus accepted a saved 81 C ceiling' \
+        run_cli configure balanced-plus --temp 81
     assert_eq "$before" "$(<"$PROFILES/balanced-plus.conf")" \
         'a rejected ceiling changed the saved balanced-plus profile'
     assert_eq '' "$(<"$LOG")" 'a rejected ceiling invoked a hardware helper'
@@ -792,18 +792,18 @@ case_balanced_plus_rejects_saving_a_ceiling_above_78() {
 
 case_balanced_plus_rejects_applying_a_hand_edited_high_ceiling() {
     sed -i 's/^TEMP_C=.*/TEMP_C=85/' "$PROFILES/balanced-plus.conf"
-    assert_fails 'an edited balanced-plus ceiling above 78 C was applied' \
+    assert_fails 'an edited balanced-plus ceiling above 80 C was applied' \
         run_cli apply balanced-plus
     assert_eq '' "$(<"$LOG")" 'an invalid balanced-plus ceiling reached a hardware helper'
 }
 
 case_balanced_plus_can_repair_an_existing_high_ceiling() {
     sed -i 's/^TEMP_C=.*/TEMP_C=90/' "$PROFILES/balanced-plus.conf"
-    run_cli configure balanced-plus --temp 78 --apply >/dev/null
-    assert_file_contains 'TEMP_C=78' "$PROFILES/balanced-plus.conf" \
+    run_cli configure balanced-plus --temp 80 --apply >/dev/null
+    assert_file_contains 'TEMP_C=80' "$PROFILES/balanced-plus.conf" \
         'configure could not correct an existing high balanced-plus ceiling'
-    assert_file_contains 'ryzenadj --stapm-limit=65000 --slow-limit=70000 --fast-limit=80000 --tctl-temp=78' \
-        "$LOG" 'the corrected balanced-plus profile was not applied at 78 C'
+    assert_file_contains 'ryzenadj --stapm-limit=87000 --slow-limit=92000 --fast-limit=102000 --tctl-temp=80' \
+        "$LOG" 'the corrected balanced-plus profile was not applied at 80 C'
 }
 
 case_other_profiles_keep_their_temperature_range() {
@@ -1051,12 +1051,12 @@ run_case case_smu_persistence_rejects_an_existing_incompatible_driver \
     'explicit module install cannot persist an existing incompatible driver'
 run_case case_smu_persistence_rejects_a_freshly_loaded_incompatible_driver \
     'explicit module install cannot persist a freshly loaded incompatible driver'
-run_case case_balanced_plus_rejects_saving_a_ceiling_above_78 \
-    'balanced-plus cannot save a ceiling above 78 C'
+run_case case_balanced_plus_rejects_saving_a_ceiling_above_80 \
+    'balanced-plus cannot save a ceiling above 80 C'
 run_case case_balanced_plus_rejects_applying_a_hand_edited_high_ceiling \
-    'balanced-plus cannot apply a hand-edited ceiling above 78 C'
+    'balanced-plus cannot apply a hand-edited ceiling above 80 C'
 run_case case_balanced_plus_can_repair_an_existing_high_ceiling \
-    'balanced-plus can correct and apply an existing high ceiling at 78 C'
+    'balanced-plus can correct and apply an existing high ceiling at 80 C'
 run_case case_other_profiles_keep_their_temperature_range \
     'other profiles can save and apply 85 C and 90 C ceilings'
 

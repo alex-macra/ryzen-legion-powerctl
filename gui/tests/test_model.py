@@ -133,16 +133,16 @@ class ValidateProfileTest(unittest.TestCase):
     def test_default_profile_is_valid(self):
         self.assertEqual(model.validate_profile(self._profile()), [])
 
-    def test_balanced_plus_has_a_78_degree_ceiling(self):
+    def test_balanced_plus_has_an_80_degree_ceiling(self):
         self.assertEqual(
-            model.validate_profile(self._profile(name="balanced-plus", temp_c=78)), []
+            model.validate_profile(self._profile(name="balanced-plus", temp_c=80)), []
         )
-        for ceiling in (79, 85, 90):
+        for ceiling in (81, 85, 90):
             with self.subTest(ceiling=ceiling):
                 problems = model.validate_profile(
                     self._profile(name="balanced-plus", temp_c=ceiling)
                 )
-                self.assertTrue(any("78" in problem for problem in problems), problems)
+                self.assertTrue(any("80" in problem for problem in problems), problems)
 
     def test_other_profiles_accept_85_and_90_degree_ceilings(self):
         for ceiling in (85, 90):
