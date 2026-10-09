@@ -93,7 +93,7 @@ Usage:
   legion-powerctl repair balanced-plus [--dry-run]
   legion-powerctl enable [--force]
   legion-powerctl disable
-  legion-powerctl restore-frequency [--boost on|off|unchanged]
+  legion-powerctl restore-frequency [--boost on|off|unchanged] [--dry-run]
   legion-powerctl baseline [--capture|--show]
   legion-powerctl version
 
@@ -138,6 +138,15 @@ require_root() {
     if [[ "$TESTING" != "1" && $EUID -ne 0 ]]; then
         die "This command changes system settings. Run it with sudo."
     fi
+}
+
+MUTATION_LOCK_FD=""
+acquire_mutation_lock() {
+    [[ -z "$MUTATION_LOCK_FD" ]] || return 0
+    [[ -x /usr/bin/flock ]] || die "flock from util-linux is required for power operations."
+    mkdir -p -- "$STATE_DIR" || die "Could not create state directory: $STATE_DIR"
+    exec {MUTATION_LOCK_FD}> "$STATE_DIR/power.lock" || die "Could not open the power-operation lock."
+    /usr/bin/flock -n "$MUTATION_LOCK_FD" || die "Another power operation is already running. Try again when it finishes."
 }
 
 in_list() {
@@ -823,6 +832,7 @@ cmd_baseline() {
 
     if [[ "$action" == capture ]]; then
         require_root
+        acquire_mutation_lock
         if stock_limits_captured; then
             info "Stock limits were already captured; they are never overwritten."
         else
@@ -968,6 +978,8 @@ record_failed_apply() {
 apply_loaded_profile() {
     local profile="$1" dry_run="$2" boot="${3:-0}" recovery="${4:-0}"
 
+    [[ "$dry_run" == "1" ]] || acquire_mutation_lock
+
     local ryzenadj_preflight
     ryzenadj_preflight="$(resolve_ryzenadj)"
     [[ -n "$ryzenadj_preflight" && -x "$ryzenadj_preflight" ]] || \
@@ -1086,6 +1098,8 @@ cmd_repair() {
         apply_loaded_profile "$profile" 1
         return 0
     fi
+
+    acquire_mutation_lock
 
     mkdir -p "$LIB_DIR/backups"
     chmod 0700 "$LIB_DIR/backups"
@@ -1793,23 +1807,31 @@ cmd_disable() {
 }
 
 cmd_restore_frequency() {
-    require_root
-    local requested_boost=on
+    local requested_boost=on dry_run="$DRY_RUN_DEFAULT"
     while (( $# > 0 )); do
         case "$1" in
             --boost) [[ $# -ge 2 ]] || die "--boost needs a value"; requested_boost="$2"; shift ;;
+            --dry-run) dry_run=1 ;;
             *) die "Unknown restore-frequency option: $1" ;;
         esac
         shift
     done
     in_list "$requested_boost" "${BOOST_VALUES[@]}" || die "--boost must be on, off, or unchanged."
+    if [[ "$dry_run" != "1" ]]; then
+        require_root
+        acquire_mutation_lock
+    fi
 
     MIN_FREQ_MHZ=stock
     MAX_FREQ_MHZ=stock
     BOOST="$requested_boost"
-    apply_boost 0
-    apply_frequency_limits 0
-    success "Stock CPU frequency range restored."
+    apply_boost "$dry_run"
+    apply_frequency_limits "$dry_run"
+    if [[ "$dry_run" == "1" ]]; then
+        success "DRY RUN: stock CPU frequency range was not changed."
+    else
+        success "Stock CPU frequency range restored."
+    fi
 }
 
 main() {

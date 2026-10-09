@@ -592,6 +592,62 @@ case_restore_frequency_honours_every_boost_value() {
     assert_eq '0' "$(<"$SYSFS/cpufreq/boost")" 'restore-frequency --boost unchanged wrote to the boost control'
 }
 
+case_restore_frequency_dry_run_preserves_controls() {
+    printf '0\n' > "$SYSFS/cpufreq/boost"
+    local before_min before_max before_state out
+    before_min="$(<"$SYSFS/cpufreq/policy0/scaling_min_freq")"
+    before_max="$(<"$SYSFS/cpufreq/policy0/scaling_max_freq")"
+    before_state="$(<"$STATE/last-apply.env")"
+
+    out="$(LEGION_POWERCTL_DRY_RUN=1 run_cli restore-frequency)"
+    assert_contains 'DRY RUN' "$out" 'restore-frequency ignored the dry-run environment'
+    out="$(run_cli restore-frequency --dry-run)"
+    assert_contains 'DRY RUN' "$out" 'restore-frequency rejected --dry-run'
+    if (( EUID != 0 )); then
+        out="$(env "${FAKE_ENV[@]}" LEGION_POWERCTL_TESTING=0 \
+            "$FAKE_CLI" restore-frequency --dry-run)"
+        assert_contains 'DRY RUN' "$out" 'unprivileged restore-frequency preview was refused'
+    fi
+    assert_eq '0' "$(<"$SYSFS/cpufreq/boost")" 'restore-frequency dry run changed boost'
+    assert_eq "$before_min" "$(<"$SYSFS/cpufreq/policy0/scaling_min_freq")" \
+        'restore-frequency dry run changed minimum frequency'
+    assert_eq "$before_max" "$(<"$SYSFS/cpufreq/policy0/scaling_max_freq")" \
+        'restore-frequency dry run changed maximum frequency'
+    assert_eq "$before_state" "$(<"$STATE/last-apply.env")" \
+        'restore-frequency dry run changed the last apply record'
+}
+
+case_power_mutations_refuse_a_concurrent_operation() {
+    local lock_fd out rc=0
+    exec {lock_fd}> "$STATE/power.lock"
+    flock -n "$lock_fd"
+    : > "$LOG"
+
+    out="$(exec {lock_fd}>&-; run_cli apply quiet 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'apply did not refuse a concurrent power operation'
+    assert_contains 'Another power operation is already running' "$out" \
+        'apply did not explain lock contention'
+    assert_eq '' "$(<"$LOG")" 'apply invoked a hardware helper before taking the lock'
+
+    rc=0
+    out="$(exec {lock_fd}>&-; run_cli restore-frequency 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'restore-frequency did not refuse a concurrent operation'
+    assert_eq '2200000' "$(<"$SYSFS/cpufreq/policy0/scaling_min_freq")" \
+        'restore-frequency wrote a CPU control before taking the lock'
+
+    rc=0
+    out="$(exec {lock_fd}>&-; run_cli baseline --capture 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'baseline capture did not refuse a concurrent operation'
+    [[ ! -e "$LIB/stock-limits.env" ]] || \
+        assert_eq 'absent' 'created' 'baseline capture wrote while the lock was held'
+
+    flock -u "$lock_fd"
+    exec {lock_fd}>&-
+    run_cli apply quiet >/dev/null
+    assert_file_contains 'PROFILE=quiet' "$STATE/last-apply.env" \
+        'apply could not proceed after the other operation ended'
+}
+
 case_configure_names_the_flag_it_could_not_parse() {
     local out rc=0
     out="$(run_cli configure flagtest --nope 5 2>&1)" || rc=$?
@@ -1021,6 +1077,10 @@ run_case case_the_read_only_subcommands_take_their_defaults_from_the_config \
     'select, show and delete take their defaults from the config'
 run_case case_restore_frequency_honours_every_boost_value \
     'restore-frequency honours every boost value'
+run_case case_restore_frequency_dry_run_preserves_controls \
+    'restore-frequency dry run preserves controls and state'
+run_case case_power_mutations_refuse_a_concurrent_operation \
+    'power mutations refuse a concurrent operation before writing hardware'
 run_case case_configure_names_the_flag_it_could_not_parse \
     'configure names the flag it could not parse'
 run_case case_the_gui_launcher_refuses_before_it_execs_anything \

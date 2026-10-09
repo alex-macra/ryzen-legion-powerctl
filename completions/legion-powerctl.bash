@@ -28,7 +28,7 @@ _legion_powerctl_complete() {
         select)            opts='--apply' ;;
         delete|enable)     opts='--force' ;;
         status)            opts='--json --waybar' ;;
-        restore-frequency) opts='--boost' ;;
+        restore-frequency) opts='--boost --dry-run' ;;
         baseline)          opts='--capture --show' ;;
         *)                 opts='' ;;
     esac

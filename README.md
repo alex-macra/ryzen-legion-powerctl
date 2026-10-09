@@ -98,6 +98,7 @@ limits. It restores your running profile afterward. `balanced-plus` stays capped
 - An Arch-based distribution with systemd and Bash 5
 - An AMD Ryzen processor supported by RyzenAdj
 - `ryzenadj` **0.19.0 or newer** from the AUR, the first release with Fire Range/HX support
+- `flock` (util-linux) to prevent overlapping power operations
 - Python 3 and `setsid` (util-linux) for the measurement harness
 - Optional: `powerprofilesctl`; `pyside6` and `polkit` for the GUI; Python 3 for the GUI launcher
 

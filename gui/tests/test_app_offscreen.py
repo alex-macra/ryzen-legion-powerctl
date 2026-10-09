@@ -1524,8 +1524,10 @@ class MainWindowTest(OffscreenGuiTest):
         polls, privileged = [], []
 
         def record(target):
-            def run(argv, on_done, timeout_ms=None):
+            def run(argv, on_done, timeout_ms=None, on_start_failed=None):
                 target.append((argv, timeout_ms))
+                if timeout_ms is None:
+                    on_done(0, "", "")
             return run
 
         with unittest.mock.patch.object(self.window.runner, "run", record(polls)):
@@ -1535,7 +1537,8 @@ class MainWindowTest(OffscreenGuiTest):
         for argv, timeout_ms in polls:
             self.assertIsNotNone(timeout_ms, f"{argv} can wedge the refresh for the session")
 
-        with unittest.mock.patch.object(self.window.runner, "run", record(privileged)):
+        with unittest.mock.patch.object(self.window, "refresh"), \
+                unittest.mock.patch.object(self.window.runner, "run", record(privileged)):
             self.window.profile_actions.set_service(False)
             self.window.profile_actions.pin_boot("quiet")
         for argv, timeout_ms in privileged:
@@ -2036,7 +2039,7 @@ class RunnerTimeoutTest(OffscreenGuiTest):
         calls = []
 
         class RecordingRunner:
-            def run(self, argv, on_done, timeout_ms=None):
+            def run(self, argv, on_done, timeout_ms=None, on_start_failed=None):
                 calls.append((argv, timeout_ms))
 
         window = QWidget()
@@ -2056,6 +2059,34 @@ class RunnerTimeoutTest(OffscreenGuiTest):
         self.assertIsNone(
             timeout_ms, "a privileged command on a timer cancels the save being authorised"
         )
+
+    def test_save_shortcut_does_not_start_a_second_privileged_command(self):
+        from legion_powerctl_gui import model
+        from legion_powerctl_gui.actions import ProfileActions
+        from PySide6.QtWidgets import QWidget
+
+        calls = []
+
+        class RecordingRunner:
+            def run(self, argv, on_done, timeout_ms=None, on_start_failed=None):
+                calls.append((argv, on_done, on_start_failed))
+
+        window = QWidget()
+        editor = unittest.mock.MagicMock()
+        editor.collect.return_value = model.Profile(name="quiet")
+        editor.problems.return_value = []
+        actions = ProfileActions(window, RecordingRunner(), editor, unittest.mock.MagicMock())
+
+        actions.save()
+        actions.save()
+        self.assertEqual(len(calls), 1)
+        calls[0][1](0, "", "")
+        actions.save()
+        self.assertEqual(len(calls), 2)
+
+        calls[1][2]()
+        actions.save()
+        self.assertEqual(len(calls), 3)
 
 
 class PanelSeamTest(OffscreenGuiTest):
@@ -2302,10 +2333,15 @@ class PanelSeamTest(OffscreenGuiTest):
         owner = QObject()
         runner = CommandRunner(owner)
         seen = []
+        failed_starts = []
         runner.failed.connect(seen.append)
-        runner.run([str(HERE / "no-such-binary"), "status"], lambda *args: None)
+        runner.run(
+            [str(HERE / "no-such-binary"), "status"], lambda *args: None,
+            on_start_failed=lambda: failed_starts.append(True),
+        )
         self.assertTrue(wait_until(self.app, lambda: seen))
         self.assertIn("Could not run", seen[0])
+        self.assertEqual(failed_starts, [True])
         self.assertEqual(runner.processes, [])
         self.settle(3)
 

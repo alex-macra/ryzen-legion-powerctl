@@ -182,6 +182,8 @@ class ProfileActions(QObject):
         go_back: str = "",
         on_success=None,
     ) -> None:
+        if self._busy:
+            return
         self.previous_profile = go_back
         self._set_busy(True)
 
@@ -201,7 +203,10 @@ class ProfileActions(QObject):
             if backup:
                 self.repair_backup.emit(backup)
 
-        self._runner.run(model.privileged_command(args), done)
+        self._runner.run(
+            model.privileged_command(args), done,
+            on_start_failed=lambda: self._set_busy(False),
+        )
 
     def _set_busy(self, busy: bool) -> None:
         if busy != self._busy:
