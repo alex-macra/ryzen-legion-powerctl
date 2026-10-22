@@ -25,7 +25,7 @@ class RailTestCase(OffscreenGuiTest):
         self.sidebar.show()
         profiles = [
             model.Profile(name="quiet", stapm_w=45, slow_w=50, fast_w=60, temp_c=78),
-            model.Profile(name="balanced-plus", stapm_w=87, slow_w=92, fast_w=102, temp_c=80),
+            model.Profile(name="balanced-plus", stapm_w=70, slow_w=75, fast_w=85, temp_c=72),
             model.Profile(name="broken", valid=False),
         ]
         self.sidebar.set_profiles(profiles, boot="balanced-plus", select="", running="quiet")
@@ -166,7 +166,7 @@ class RowPaintTest(RailTestCase):
         self.sidebar.list.item(1).setIcon(QIcon(pixmap))
         image = self.paint("balanced-plus")
         lines = RowLines(self.option())
-        right = lines.right - QFontMetrics(lines.detail_font).horizontalAdvance("87 W") - GAP
+        right = lines.right - QFontMetrics(lines.detail_font).horizontalAdvance("70 W") - GAP
         middle = lines.name_top + lines.name_height // 2
         base = self.light.color(self.role("Base"))
         ink = theme.secondary_color(self.light, base).rgb()
@@ -544,7 +544,7 @@ class HeaderTest(RailTestCase):
             [name for _, role, name in found if role == roles.ListItem],
             [
                 "quiet, running now, 45/50/60 W, 78 C cap",
-                "balanced-plus, boot profile, 87/92/102 W, 80 C cap",
+                "balanced-plus, boot profile, 70/75/85 W, 72 C cap",
                 "broken, invalid profile file",
             ],
         )

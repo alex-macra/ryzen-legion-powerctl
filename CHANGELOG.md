@@ -11,9 +11,11 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   ordinary apply failures as partial instead of leaving a stale success visible.
 - Unload an unusable module newly loaded by the installer, and respect a recovery
   blacklist on later installs.
-- Keep `balanced-plus` at or below 80 C in the CLI and GUI, and correct the
-  installer and CLI examples that previously set it to 82 C. Existing edited
-  installs can be repaired with `configure balanced-plus --temp 80 --apply`.
+- Retune `balanced-plus` to 70/75/85 W at 72 C, down from 87/92/102 W at 80 C: the
+  lower 85 W fast limit keeps boost spikes off the thermal ceiling, which an 80 C
+  Tctl cap alone could not hold under load. Its adjustable ceiling now rises to 82 C,
+  and `repair balanced-plus` restores the new baseline. Bring an older install up to
+  date with `configure balanced-plus --stapm 70 --slow 75 --fast 85 --temp 72 --apply`.
 - Detect the actual `ryzen_smu` sysfs interface instead of a nonexistent device
   node. Check RyzenAdj's driver version and required PM-table files before
   reporting the module backend ready; missing files can prevent applying limits.
@@ -36,14 +38,14 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `repair balanced-plus` and the GUI's **Repair balanced-plus** action back up
-  the installed settings and recover the shipped 87/92/102 W at 80 C with stock
+  the installed settings and recover the shipped 70/75/85 W at 72 C with stock
   frequencies and boost on. With lockdown off, recovery can remove an incomplete optional
   SMU module and disable its automatic loading after a successful RyzenAdj apply.
 - `make dev-gui` runs the GUI and CLI straight from a local checkout for fast
   previews without pushing to GitHub or rebuilding the installed package.
 - A reproducible game-plus-VM comparison for balanced-plus, starting at 85 C with
-  unchanged 87/92/102 W limits, including acceptance thresholds and explicit rollback.
-  The candidate is unmeasured; the bundled 80 C ceiling stays pending hardware results.
+  unchanged 70/75/85 W limits, including acceptance thresholds and explicit rollback.
+  The candidate is unmeasured; the bundled 72 C ceiling stays pending hardware results.
 
 - `docs/TUNING.md` and `legion-powerbench`: a way to find out which limit is actually
   binding before changing one. The document is the protocol - a signature table that maps
@@ -78,11 +80,6 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   below the form so it never scrolls away. It is light or dark to follow the desktop's
   colour scheme and switches live; set `LEGION_POWERCTL_GUI_SCHEME=desktop` to keep the
   desktop's native style and palette instead.
-- `balanced-plus` ships at 87/92/102 W with an 80 C ceiling, up from 65/70/80 W at
-  78 C. That was better for both gaming and work on the development Legion Pro 7. Upgrades
-  can keep the old installed profile (pacman keeps an edited one, script installs keep any
-  existing one unless `--force-config`); apply the new values with
-  `sudo legion-powerctl configure balanced-plus --stapm 87 --slow 92 --fast 102 --temp 80 --apply`.
 - The `compute` and `crossload` example profiles are gone. If either is your boot
   profile, select another before upgrading; `crossload` matched the old `balanced-plus`.
   A package upgrade now names a boot profile that no longer exists.

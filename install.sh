@@ -265,7 +265,7 @@ load_ryzen_smu() {
                 warn "Could not unload the unusable module; stop its users, then run 'sudo legion-powerctl repair balanced-plus'."
             fi
         else
-            warn "The pre-existing module was left loaded. Run 'sudo legion-powerctl repair balanced-plus' to recover 87/92/102 W at 80 C with a backup."
+            warn "The pre-existing module was left loaded. Run 'sudo legion-powerctl repair balanced-plus' to recover 70/75/85 W at 72 C with a backup."
         fi
         return 0
     fi

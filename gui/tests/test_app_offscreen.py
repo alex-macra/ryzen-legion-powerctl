@@ -198,10 +198,10 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertIn("balanced-plus", self.header.running_label.text())
         self.assertIn("balanced-plus", self.header.boot_label.text())
         self.assertEqual(self.editor.profile_title.text(), "balanced-plus")
-        self.assertEqual(self.editor.stapm_spin.value(), 87)
-        self.assertEqual(self.editor.slow_spin.value(), 92)
-        self.assertEqual(self.editor.fast_spin.value(), 102)
-        self.assertEqual(self.editor.temp_spin.value(), 80)
+        self.assertEqual(self.editor.stapm_spin.value(), 70)
+        self.assertEqual(self.editor.slow_spin.value(), 75)
+        self.assertEqual(self.editor.fast_spin.value(), 85)
+        self.assertEqual(self.editor.temp_spin.value(), 72)
         self.assertFalse(self.window.errors)
 
     def _item(self, name):
@@ -276,17 +276,17 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_editor_measures_every_profile_against_what_runs(self):
         cards = self.editor.cards
         self.assertEqual(self.editor.title_aside.text(), "running now, boot profile")
-        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
-        self.assertEqual(self.editor.thermal_envelope.bar.reference, (80,))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (70, 75, 85))
+        self.assertEqual(self.editor.thermal_envelope.bar.reference, (72,))
         self.assertEqual(
-            [card.aside for card in cards], ["running 87/92/102 W", "running 80 °C", ""]
+            [card.aside for card in cards], ["running 70/75/85 W", "running 72 °C", ""]
         )
         self.sidebar.list.setCurrentRow(self._row_of("broken"))
         self.assertEqual(self.editor.title_aside.text(), "")
         self.assertFalse(self.editor.title_aside.isVisibleTo(self.window))
-        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
+        self.assertEqual(self.editor.power_envelope.bar.reference, (70, 75, 85))
         self.assertEqual(
-            cards[0].aside, "running 87/92/102 W", "the machine's facts left with the file"
+            cards[0].aside, "running 70/75/85 W", "the machine's facts left with the file"
         )
 
     def test_the_title_says_edited_while_there_are_unsaved_changes(self):
@@ -360,17 +360,17 @@ class MainWindowTest(OffscreenGuiTest):
             **self.editor.power_envelope.tiles, **self.editor.thermal_envelope.tiles
         }
         self.sidebar.list.setCurrentRow(self._row_of("quiet"))
-        self.assertEqual(self.editor.power_envelope.bar.reference, (87, 92, 102))
-        self.assertEqual(tiles["stapm"].delta.text(), "-42")
-        self.assertEqual(tiles["stapm"].delta.accessibleName(), "-42 W vs running")
+        self.assertEqual(self.editor.power_envelope.bar.reference, (70, 75, 85))
+        self.assertEqual(tiles["stapm"].delta.text(), "-25")
+        self.assertEqual(tiles["stapm"].delta.accessibleName(), "-25 W vs running")
         self.editor.fast_spin.setValue(122)
         self.editor.temp_spin.setValue(86)
         self.editor._on_edited()
-        self.assertEqual(tiles["fast"].delta.text(), "+20")
-        self.assertEqual(tiles["fast"].delta.accessibleName(), "+20 W vs running")
-        self.assertEqual(self.accessible_name(tiles["fast"].delta), "+20 W vs running")
-        self.assertEqual(tiles["temp"].delta.text(), "+6")
-        self.assertEqual(tiles["temp"].delta.accessibleName(), "+6 °C vs running")
+        self.assertEqual(tiles["fast"].delta.text(), "+37")
+        self.assertEqual(tiles["fast"].delta.accessibleName(), "+37 W vs running")
+        self.assertEqual(self.accessible_name(tiles["fast"].delta), "+37 W vs running")
+        self.assertEqual(tiles["temp"].delta.text(), "+14")
+        self.assertEqual(tiles["temp"].delta.accessibleName(), "+14 °C vs running")
         labels = {
             name: self.accessible_label(widget) for name, widget in self._form_controls().items()
         }
@@ -395,7 +395,7 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, lambda: any("configure" in line for line in self.read_log()))
         )
         line = next(line for line in self.read_log() if line.startswith("configure"))
-        self.assertIn("configure balanced-plus --stapm 55 --slow 92 --fast 102 --temp 80", line)
+        self.assertIn("configure balanced-plus --stapm 55 --slow 75 --fast 85 --temp 72", line)
         self.assertIn("--power-profile balanced", line)
         self.assertIn("--apply", line)
 
@@ -500,17 +500,17 @@ class MainWindowTest(OffscreenGuiTest):
                     self.window.refresh_count > refreshes and self.window.checks.count > checks
                     and not self.window.runner.processes
                 )))
-                self.assertIn("80 C", confirmation)
-                self.assertIn("87/92/102 W", confirmation)
+                self.assertIn("72 C", confirmation)
+                self.assertIn("70/75/85 W", confirmation)
                 self.assertIn("backup", confirmation.lower())
                 self.assertIn("ryzen_smu", confirmation)
                 self.assertIn("unload it before applying", confirmation)
                 self.assertIn("only after a successful apply", confirmation)
                 self.assertIn("repair balanced-plus", self.read_log())
-                self.assertEqual(self.editor.collect().stapm_w, 87)
-                self.assertEqual(self.editor.collect().slow_w, 92)
-                self.assertEqual(self.editor.collect().fast_w, 102)
-                self.assertEqual(self.editor.collect().temp_c, 80)
+                self.assertEqual(self.editor.collect().stapm_w, 70)
+                self.assertEqual(self.editor.collect().slow_w, 75)
+                self.assertEqual(self.editor.collect().fast_w, 85)
+                self.assertEqual(self.editor.collect().temp_c, 72)
                 self.assertFalse(self.editor.dirty)
                 self.assertEqual(self.window.checks.report.failures, 0)
                 self.assertIn("0 failure(s)", self.checks.summary.text())
@@ -643,8 +643,8 @@ class MainWindowTest(OffscreenGuiTest):
         QTest.keyClicks(self.editor.fast_spin, "110")
         QTest.keyClick(self.editor.fast_spin, Qt.Key.Key_Return)
         self.assertEqual(self.editor.fast_spin.value(), 110)
-        self.assertEqual(self.editor.stapm_spin.value(), 87)
-        self.assertEqual(self.editor.slow_spin.value(), 92)
+        self.assertEqual(self.editor.stapm_spin.value(), 70)
+        self.assertEqual(self.editor.slow_spin.value(), 75)
 
     def test_failed_action_keeps_unsaved_edits(self):
         self.editor.stapm_spin.setValue(58)
@@ -1071,7 +1071,7 @@ class MainWindowTest(OffscreenGuiTest):
         running = self._item("balanced-plus")
         self.assertTrue(running.data(RUNNING_ROLE))
         self.assertTrue(running.data(BOOT_ROLE))
-        self.assertEqual(running.data(DETAIL_ROLE), "87/92/102 W, 80 C cap")
+        self.assertEqual(running.data(DETAIL_ROLE), "70/75/85 W, 72 C cap")
         self.assertFalse(self._item("quiet").data(RUNNING_ROLE))
         self.assertFalse(self._item("quiet").data(BOOT_ROLE))
         self.assertEqual(self._item("broken").data(DETAIL_ROLE), "invalid profile file")
@@ -1575,8 +1575,8 @@ class MainWindowTest(OffscreenGuiTest):
         finally:
             self.window.dialogs = False
         self.assertEqual(asked.get("name"), "quiet")
-        self.assertIn(("Fast PPT", 102, 110), asked["deltas"])
-        self.assertIn(("Ceiling", 80, 88), asked["deltas"])
+        self.assertIn(("Fast PPT", 85, 110), asked["deltas"])
+        self.assertIn(("Ceiling", 72, 88), asked["deltas"])
         self.assertFalse(
             any("configure" in line for line in self.read_log()),
             "Cancel still wrote to the hardware",
@@ -1708,11 +1708,11 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.show()
         self.app.processEvents()
         readout = self.header.envelope_label
-        self.assertEqual(readout.text(), "87/92/102 W, 80 C cap")
+        self.assertEqual(readout.text(), "70/75/85 W, 72 C cap")
         self.assertIn(readout.text(), self.accessible_name(readout))
         self.assertEqual(readout.tiles, [
-            ("87", "W", "SUSTAINED"), ("92", "W", "SLOW PPT"),
-            ("102", "W", "FAST PPT"), ("80", "°C", "CEILING"),
+            ("70", "W", "SUSTAINED"), ("75", "W", "SLOW PPT"),
+            ("85", "W", "FAST PPT"), ("72", "°C", "CEILING"),
         ])
         self.assertEqual(readout.height(), readout.tile_height())
         widths = sum(readout.tile_widths())
@@ -2090,17 +2090,17 @@ class RunnerTimeoutTest(OffscreenGuiTest):
 
 
 class PanelSeamTest(OffscreenGuiTest):
-    def test_balanced_plus_editor_caps_both_temperature_controls_at_80(self):
+    def test_balanced_plus_editor_caps_both_temperature_controls_at_82(self):
         from legion_powerctl_gui import model
         from legion_powerctl_gui.editor import ProfileEditor
 
         editor = ProfileEditor()
         try:
-            editor.load(model.Profile(name="balanced-plus", temp_c=80))
-            self.assertEqual(editor.temp_spin.maximum(), 80)
-            self.assertEqual(editor.temp_slider.maximum(), 80)
+            editor.load(model.Profile(name="balanced-plus", temp_c=82))
+            self.assertEqual(editor.temp_spin.maximum(), 82)
+            self.assertEqual(editor.temp_slider.maximum(), 82)
             editor.temp_spin.setValue(90)
-            self.assertEqual(editor.collect().temp_c, 80)
+            self.assertEqual(editor.collect().temp_c, 82)
             self.assertEqual(editor.problems(), [])
         finally:
             editor.deleteLater()
@@ -2117,7 +2117,7 @@ class PanelSeamTest(OffscreenGuiTest):
             self.assertEqual(editor.temp_slider.maximum(), model.TEMP_MAX_C)
             self.assertEqual(editor.collect().temp_c, 90)
             editor.load(model.Profile(name="balanced-plus", temp_c=80))
-            self.assertEqual(editor.temp_spin.maximum(), 80)
+            self.assertEqual(editor.temp_spin.maximum(), 82)
             self.assertEqual(editor.collect().temp_c, 80)
         finally:
             editor.deleteLater()

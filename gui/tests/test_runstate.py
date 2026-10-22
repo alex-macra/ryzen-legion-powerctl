@@ -23,7 +23,7 @@ class RunStateTest(unittest.TestCase):
         self.assertTrue(state.applied)
         self.assertEqual(state.profile, "balanced-plus")
         self.assertEqual(state.headline(), "balanced-plus")
-        self.assertEqual(state.summary(), "87/92/102 W, 80 C cap")
+        self.assertEqual(state.summary(), "70/75/85 W, 72 C cap")
 
     def test_values_arrive_as_strings_and_come_out_as_numbers(self):
         state = runstate.run_state(model.parse_status(FIXTURE.read_text(encoding="utf-8")))
@@ -76,7 +76,7 @@ class RunStateTest(unittest.TestCase):
 
     def test_the_limits_are_one_list_or_none_at_all(self):
         full = runstate.run_state(model.parse_status(FIXTURE.read_text(encoding="utf-8")))
-        self.assertEqual(full.limits(), [87, 92, 102, 80])
+        self.assertEqual(full.limits(), [70, 75, 85, 72])
         partly = runstate.run_state(status_with({"profile": "quiet", "stapm_w": "45"}))
         self.assertIsNone(partly.limits(), "a readout of three limits would pass for all four")
         self.assertEqual(partly.summary(), "")

@@ -158,7 +158,7 @@ A reasonable CPU-only ladder: `STAPM_W` 65, 75, 85, 95, 105, with `SLOW_W` at
 `STAPM_W + 5` and `FAST_W` at `SLOW_W + 10`, `TEMP_C` fixed at 85. That is
 `--ladder stapm`.
 
-Choose the first dimension from the current measurements. At the 80 C balanced-plus
+Choose the first dimension from the current measurements. At the 72 C balanced-plus
 ceiling, test temperature first if Tctl is pinned. A temperature ladder answers how
 much more the machine will draw for each degree you give it, at the same power limits.
 Raising the ceiling on a machine that was never thermally limited changes only the
@@ -192,7 +192,7 @@ Concretely, on a Legion Pro 7 16ARX10: AMD rates the Ryzen 9 9955HX3D at 55 W de
 TDP with a 55 to 75 W configurable range, Lenovo rates ColdFront Vapor on this chassis at
 roughly 250 W sustained crossload, and the RTX 5080 laptop GPU is a 175 W part including
 Dynamic Boost. Subtract, and the CPU's share of a fully loaded game is somewhere near 75
-W. `balanced-plus` allows 87 W sustained, so in a GPU-heavy game its 80 C ceiling, not
+W. `balanced-plus` allows 70 W sustained, so in a GPU-heavy game its 72 C ceiling, not
 its wattage, is what is expected to hold the CPU back.
 
 Those are vendor figures for one configuration, not measurements of your machine. Use
@@ -203,8 +203,8 @@ frames**, because the budget it takes comes out of the GPU's. But the same raise
 compile or a render, with the GPU idle, has the whole cooler to itself and no competitor
 for the budget.
 
-The shipped profiles do not split by workload. `balanced-plus` is the compromise: 87 W of
-sustained headroom for CPU work, and an 80 C ceiling that contains CPU heat when the GPU
+The shipped profiles do not split by workload. `balanced-plus` is the compromise: 70 W of
+sustained headroom for CPU work, and a 72 C ceiling that contains CPU heat when the GPU
 needs the cooler. If a measurement shows one workload losing to it, save a tuned copy
 under its own name rather than editing the shipped profile.
 
@@ -257,10 +257,10 @@ numbers; with it, it is a reason to change a profile.
 
 ## 10. Balanced-plus with a game and a VM
 
-The experimental candidate is the shipped **87/92/102 W at 85 C** instead of 80 C,
-with boost on, stock frequency range, balanced platform policy and
+The experiment sweeps the shipped **balanced-plus** (70/75/85 W) to higher ceilings,
+80 C then 85 C, with boost on, stock frequency range, balanced platform policy and
 `balance_performance` EPP. It is unmeasured and is applied only through a temporary
-scratch profile. `balanced-plus` is capped at 80 C even if this comparison
+scratch profile. `balanced-plus` is capped at 82 C even if this comparison
 demonstrates a gain. The 90 C ceiling here
 is a bound for temporary experiments on the Ryzen 9 9955HX3D,
 not a new global validation limit or a claim that every Legion should use it.
@@ -312,12 +312,12 @@ completion time as throughput. A stress-ng or synthetic crossload result does no
 substitute for this game-plus-VM comparison.
 
 Only if the 85 C trial is thermally limited, repeat it at 90 C (`--from 90 --to 90`).
-If it is power limited instead, test one 10 W step, 97/102/112 W, at the chosen fixed
+If it is power limited instead, test one 10 W step, 80/85/95 W, at the chosen fixed
 temperature, and only if each limit is within the verified stock envelope:
 
 ```bash
-legion-powerbench run --ladder stapm --from 97 --to 97 --temp 85 \
-  --workload none --soak 600 --cool 0 --interval 5 --out balanced-plus-97w-run1.csv
+legion-powerbench run --ladder stapm --from 80 --to 80 --temp 85 \
+  --workload none --soak 600 --cool 0 --interval 5 --out balanced-plus-80w-run1.csv
 ```
 
 Use `--temp 90` only if that thermal trial was accepted. Do not run a blind multi-step power ladder while
@@ -331,32 +331,32 @@ investigate contention. Attach the CSVs and these results to the tuning PR:
 
 | Condition | Run | Average FPS | 1% low FPS | VM throughput | Tctl / CPU W / GPU W |
 |---|---|---|---|---|---|
-| 87/92/102 W, 80 C | 1-3 | | | | |
-| 87/92/102 W, 85 C | 1-3 | | | | |
+| 70/75/85 W, 80 C | 1-3 | | | | |
+| 70/75/85 W, 85 C | 1-3 | | | | |
 
-### Keep balanced-plus at 80 C
+### Keep balanced-plus within its cap
 
 Package upgrades preserve edited installed profiles. If your installed
 `balanced-plus` was previously raised, correct its saved ceiling and apply it:
 
 ```bash
-sudo legion-powerctl configure balanced-plus --temp 80 --apply
+sudo legion-powerctl configure balanced-plus --temp 72 --apply
 legion-powerctl status
 ```
 
 If an 85 C or 90 C candidate passes the comparison, save it under a separate name.
-This leaves the `balanced-plus` boot profile capped at 80 C. For an accepted 85 C,
-87/92/102 W result:
+This leaves the `balanced-plus` boot profile capped at 82 C. For an accepted 85 C,
+70/75/85 W result:
 
 ```bash
-sudo legion-powerctl configure gaming-vm --stapm 87 --slow 92 --fast 102 \
+sudo legion-powerctl configure gaming-vm --stapm 70 --slow 75 --fast 85 \
   --temp 85 --power-profile balanced --min-mhz stock --max-mhz stock \
   --boost on --epp balance_performance --apply
 legion-powerctl status
 ```
 
 Substitute different watts or 90 C only after that exact candidate passes. To
-return to the 80 C profile immediately:
+return to the shipped profile immediately:
 
 ```bash
 sudo legion-powerctl apply balanced-plus

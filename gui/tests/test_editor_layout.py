@@ -669,7 +669,7 @@ class RunningReferenceTest(VariantFixtureTest):
         self.assertEqual(hidden(), [False] * 4)
         self.open_profile("balanced-plus")
         self.assertEqual(
-            described()[3], "50 to 80 degrees Celsius; +2 °C vs running",
+            described()[3], "50 to 82 degrees Celsius; -6 °C vs running",
             "the capped scale dropped the delta from the description",
         )
         self.open_profile("quiet")
