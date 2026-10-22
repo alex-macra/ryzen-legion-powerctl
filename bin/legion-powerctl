@@ -36,7 +36,7 @@ readonly MIN_POWER_W="${LEGION_POWERCTL_MIN_POWER_W:-5}"
 readonly MAX_POWER_W="${LEGION_POWERCTL_MAX_POWER_W:-200}"
 readonly MIN_TEMP_C="${LEGION_POWERCTL_MIN_TEMP_C:-50}"
 readonly MAX_TEMP_C="${LEGION_POWERCTL_MAX_TEMP_C:-100}"
-readonly BALANCED_PLUS_MAX_TEMP_C=80
+readonly BALANCED_PLUS_MAX_TEMP_C=82
 
 readonly -a PROFILE_KEYS=(
     STAPM_W SLOW_W FAST_W TEMP_C
@@ -114,7 +114,7 @@ Configure options:
 
 Examples:
   sudo legion-powerctl configure balanced-plus \
-      --stapm 87 --slow 92 --fast 102 --temp 80 \
+      --stapm 70 --slow 75 --fast 85 --temp 72 \
       --power-profile balanced --min-mhz stock --max-mhz stock \
       --boost on --select --apply
 
@@ -125,8 +125,8 @@ Examples:
 The systemd service is a one-shot boot service. It has no timer and does not
 remain running after the limits are applied.
 
-repair balanced-plus backs up the installed profile and applies 87/92/102 W at
-80 C, balanced mode, stock frequencies, boost on and balance_performance EPP.
+repair balanced-plus backs up the installed profile and applies 70/75/85 W at
+72 C, balanced mode, stock frequencies, boost on and balance_performance EPP.
 If an incomplete ryzen_smu module blocks RyzenAdj, repair unloads it without
 force and disables its automatic loading only after the replacement apply
 succeeds. This requires lockdown none and /dev/mem. Other module users may be
@@ -877,7 +877,7 @@ inspect_smu_backend() {
 check_apply_backend() {
     inspect_smu_backend
     if [[ "$SMU_BACKEND" == broken ]]; then
-        die "ryzen_smu $SMU_DRIVER_VERSION lacks ${SMU_MISSING_FILES[*]}; RyzenAdj cannot apply limits while this module is loaded. Run 'sudo legion-powerctl repair balanced-plus' for the backed-up 87/92/102 W, 80 C recovery. No power settings were changed."
+        die "ryzen_smu $SMU_DRIVER_VERSION lacks ${SMU_MISSING_FILES[*]}; RyzenAdj cannot apply limits while this module is loaded. Run 'sudo legion-powerctl repair balanced-plus' for the backed-up 70/75/85 W, 72 C recovery. No power settings were changed."
     fi
     [[ "$SMU_BACKEND" != none ]] || die "Neither a usable ryzen_smu backend nor $DEV_MEM_PATH is available. No power settings were changed."
     if [[ "$SMU_BACKEND" == devmem ]]; then
@@ -1050,14 +1050,15 @@ cmd_repair() {
     [[ "$dry_run" == 1 ]] || require_root
     path="$(profile_path "$profile")"
     set_profile_defaults "$profile"
-    STAPM_W=87
-    SLOW_W=92
-    FAST_W=102
+    STAPM_W=70
+    SLOW_W=75
+    FAST_W=85
+    TEMP_C=72
     MIN_FREQ_MHZ=stock
     MAX_FREQ_MHZ=stock
     BOOST=on
     EPP=balance_performance
-    PROFILE_DESCRIPTION="Gaming and work: boost on with power headroom, held at an 80 C ceiling."
+    PROFILE_DESCRIPTION="Gaming and work: boost on with headroom, held under a firm heat cap."
     validate_profile "$profile"
     ryzenadj="$(resolve_ryzenadj)"
     [[ -n "$ryzenadj" && -x "$ryzenadj" ]] || die "ryzenadj is not installed or executable. No settings were changed."
@@ -1147,7 +1148,7 @@ cmd_repair() {
     if [[ -f "$pending" && ! -L "$pending" ]] && [[ "$(cat "$pending")" == "$pending_marker" ]]; then
         rm -- "$pending"
     fi
-    success "balanced-plus repaired and applied at ${BALANCED_PLUS_MAX_TEMP_C} C. Original files: $backup"
+    success "balanced-plus repaired and applied at ${TEMP_C} C. Original files: $backup"
 }
 
 cmd_configure() {
@@ -1632,7 +1633,7 @@ cmd_doctor() {
     if [[ "$smu_backend" == module ]]; then
         doctor_line OK SMU-backend "$SMU_SYSFS_DIR has the RyzenAdj module interface (driver $smu_drv_ver)"
     elif [[ "$smu_backend" == broken ]]; then
-        doctor_line FAIL SMU-backend "compatible ryzen_smu $smu_drv_ver lacks ${SMU_MISSING_FILES[*]}; RyzenAdj 0.19 cannot initialize this module or fall back to $DEV_MEM_PATH. Run 'sudo legion-powerctl repair balanced-plus' to back up the profile, recover 87/92/102 W at 80 C and disable this incomplete module when lockdown is none."
+        doctor_line FAIL SMU-backend "compatible ryzen_smu $smu_drv_ver lacks ${SMU_MISSING_FILES[*]}; RyzenAdj 0.19 cannot initialize this module or fall back to $DEV_MEM_PATH. Run 'sudo legion-powerctl repair balanced-plus' to back up the profile, recover 70/75/85 W at 72 C and disable this incomplete module when lockdown is none."
         ((failures += 1))
     elif [[ "$smu_backend" == devmem ]]; then
         if [[ -d "$MODULES_ROOT/ryzen_smu" ]]; then

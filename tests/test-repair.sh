@@ -116,7 +116,7 @@ assert_backup_contains() {
 
 assert_repaired_profile() {
     local entry key
-    for entry in STAPM_W=87 SLOW_W=92 FAST_W=102 TEMP_C=80 POWER_PROFILE=balanced \
+    for entry in STAPM_W=70 SLOW_W=75 FAST_W=85 TEMP_C=72 POWER_PROFILE=balanced \
         MIN_FREQ_MHZ=stock MAX_FREQ_MHZ=stock BOOST=on EPP=balance_performance; do
         key="${entry%%=*}"
         assert_eq "${entry#*=}" "$(sed -n "s/^$key=//p" "$PROFILES/balanced-plus.conf")" \
@@ -127,7 +127,7 @@ assert_repaired_profile() {
             "$(sed -n "s/^$key=//p" "$PROFILES/balanced-plus.conf")" \
             "repair saved a $key that differs from the shipped balanced-plus profile"
     done
-    assert_file_contains 'ryzenadj --stapm-limit=87000 --slow-limit=92000 --fast-limit=102000 --tctl-temp=80' \
+    assert_file_contains 'ryzenadj --stapm-limit=70000 --slow-limit=75000 --fast-limit=85000 --tctl-temp=72' \
         "$LOG" 'repair did not apply the requested gaming baseline'
     assert_eq '1200000' "$(<"$SYSFS/cpufreq/policy0/scaling_min_freq")" 'repair did not restore the stock minimum'
     assert_eq '5460000' "$(<"$SYSFS/cpufreq/policy0/scaling_max_freq")" 'repair did not restore the stock maximum'
@@ -171,8 +171,8 @@ EOF_FORBIDDEN_HELPER
     done
     before="$(file_tree "$FAKE_ROOT")"
     output="$(run_cli repair balanced-plus --dry-run 2>&1)"
-    assert_contains '87/92/102 W' "$output" 'dry-run did not name the recovery baseline'
-    assert_contains '80 C' "$output" 'dry-run did not name the temperature ceiling'
+    assert_contains '70/75/85 W' "$output" 'dry-run did not name the recovery baseline'
+    assert_contains '72 C' "$output" 'dry-run did not name the temperature ceiling'
     assert_eq '' "$(<"$LOG")" 'dry-run invoked a privileged helper'
     assert_eq "$before" "$(file_tree "$FAKE_ROOT")" 'dry-run changed the fake machine or created backups'
 }
@@ -249,20 +249,20 @@ case_repair_checks_the_interface_disappeared() {
 
 case_failed_repair_apply_preserves_persistent_originals() {
     prepare_broken_repair
-    LEGION_TEST_ENV+=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=80)
+    LEGION_TEST_ENV+=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=72)
     assert_fails 'repair persisted a baseline whose apply failed' run_cli repair balanced-plus
     assert_originals_unchanged
     assert_file_contains 'modprobe -r ryzen_smu' "$LOG" 'failure did not occur after module recovery'
-    assert_file_contains '--stapm-limit=87000' "$LOG" 'the recovery baseline was never attempted'
+    assert_file_contains '--stapm-limit=70000' "$LOG" 'the recovery baseline was never attempted'
     assert_file_contains 'RESULT=partial' "$STATE/last-apply.env" 'repair left the previous successful state after apply failed'
-    assert_file_contains 'STAPM_W=87' "$STATE/last-apply.env" 'partial state does not describe the attempted baseline'
+    assert_file_contains 'STAPM_W=70' "$STATE/last-apply.env" 'partial state does not describe the attempted baseline'
     assert_backup_contains "$FAKE_ROOT/profile.before" "$LIB/backups"
     assert_backup_contains "$FAKE_ROOT/modules.before" "$LIB/backups"
 }
 
 case_failed_repair_retry_persists_module_recovery() {
     prepare_broken_repair
-    LEGION_TEST_ENV+=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=80)
+    LEGION_TEST_ENV+=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=72)
     assert_fails 'the first recovery apply did not fail' run_cli repair balanced-plus
     assert_originals_unchanged
     LEGION_TEST_ENV+=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=)
@@ -294,7 +294,7 @@ EOF_INTERRUPTED
     assert_originals_unchanged
     assert_file_contains 'PROFILE=balanced-plus' "$STATE/last-apply.env" 'interrupted repair lost its profile name'
     assert_file_contains 'RESULT=partial' "$STATE/last-apply.env" 'interrupted repair left a successful state'
-    assert_file_contains 'STAPM_W=87' "$STATE/last-apply.env" 'interrupted repair lost the attempted baseline'
+    assert_file_contains 'STAPM_W=70' "$STATE/last-apply.env" 'interrupted repair lost the attempted baseline'
     assert_eq "$CPU_BEFORE" "$(file_tree "$SYSFS")" 'repair continued changing CPU controls after interruption'
     helper_pid="$(<"$FAKE_ROOT/apply-helper.pid")"
     if kill -0 "$helper_pid" 2>/dev/null; then
@@ -382,7 +382,7 @@ assert_incomplete_repair_keeps_originals() {
     assert_fails "$1" run_cli repair balanced-plus
     assert_originals_unchanged
     assert_file_contains 'RESULT=partial' "$STATE/last-apply.env" 'incomplete recovery was recorded as successful'
-    assert_file_contains 'STAPM_W=87' "$STATE/last-apply.env" 'partial recovery lost its attempted baseline'
+    assert_file_contains 'STAPM_W=70' "$STATE/last-apply.env" 'partial recovery lost its attempted baseline'
 }
 
 case_repair_requires_an_available_boost_control() {
@@ -455,7 +455,7 @@ EOF_RELOAD_SMU
     )
     LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-reloads-module" \
         assert_incomplete_repair_keeps_originals "repair persisted fallback after a $module_health module reappeared"
-    assert_file_contains '--stapm-limit=87000' "$LOG" 'module reappearance did not occur after applying the recovery limits'
+    assert_file_contains '--stapm-limit=70000' "$LOG" 'module reappearance did not occur after applying the recovery limits'
     [[ -d "$SMU_SYSFS_DIR" && -d "$MODULES/ryzen_smu" ]] || {
         printf 'FAIL: the module did not reappear during the recovery apply\n' >&2
         exit 1

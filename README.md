@@ -54,24 +54,25 @@ Profiles are plain `KEY=VALUE` files in `/etc/legion-powerctl/profiles.d/`, pars
 | Profile | STAPM / Slow / Fast | Ceiling | Intent |
 |---|---:|---:|---|
 | `balanced` | 60 / 65 / 70 W | 72 °C | Silent daily driver: boost off, quiet fan curve, full base-clock throughput |
-| `balanced-plus` | 87 / 92 / 102 W | 80 °C | Gaming and work: boost on with power headroom, held at an 80 °C ceiling |
+| `balanced-plus` | 70 / 75 / 85 W | 72 °C | Gaming and work: boost on with headroom, held under a firm heat cap |
 | `quiet` | 45 / 50 / 60 W | 78 °C | Cooler and quieter for light work |
 | `performance-capped` | 65 / 70 / 75 W | 85 °C | Sustained performance under a firm cap |
 
 Validation accepts 5-200 W and 50-100 °C and requires `STAPM_W <= SLOW_W <= FAST_W`. Those are sanity bounds, not a safe range: 200 W is far outside any Legion's power delivery. Stay at or below your machine's stock envelope unless you know exactly why you are not. [docs/PROFILES.md](docs/PROFILES.md) documents every field.
 
-`balanced-plus` has a stricter 80 °C ceiling in the CLI and GUI. Its 87 W sustained limit
-was chosen on a Legion Pro 7 16ARX10 and is above AMD's 55-75 W configurable TDP for that
-CPU; on another model, compare it with `legion-powerctl baseline --show` before enabling it
-at boot. Upgrades can keep the old installed profile (pacman keeps an edited one, script
-installs keep any existing one unless `--force-config`), so bring an older copy up to the
-shipped values with
-`sudo legion-powerctl configure balanced-plus --stapm 87 --slow 92 --fast 102 --temp 80 --apply`.
+`balanced-plus` has a 82 °C ceiling cap in the CLI and GUI, starting at 72 °C. Its 70 W
+sustained limit was chosen on a Legion Pro 7 16ARX10; an earlier 87/92/102 W version held
+at 80 °C still reached Tjmax, because boost spikes outrun a sustained thermal cap, so the
+lower 85 W fast limit now does the work. On another model, compare it with
+`legion-powerctl baseline --show` before enabling it at boot. Upgrades can keep the old
+installed profile (pacman keeps an edited one, script installs keep any existing one unless
+`--force-config`), so bring an older copy up to the shipped values with
+`sudo legion-powerctl configure balanced-plus --stapm 70 --slow 75 --fast 85 --temp 72 --apply`.
 
 If games and a VM became slow after older profiles or the optional SMU driver were
 installed, open **Checks > Repair balanced-plus** in the GUI, or run
 `sudo legion-powerctl repair balanced-plus`. This backs up the existing settings,
-restores the shipped 87/92/102 W profile at its 80 °C cap, enables boost and restores
+restores the shipped 70/75/85 W profile at its 72 °C ceiling, enables boost and restores
 stock frequency limits. It can unload an incomplete SMU driver that blocks RyzenAdj
 when lockdown is off. See the
 [recovery and rollback instructions](docs/TROUBLESHOOTING.md#recover-balanced-plus).
@@ -89,9 +90,9 @@ legion-powerbench report powerbench-stapm.csv
 It samples unprivileged, changes limits only through `legion-powerctl`, restores the profile that was active when it started, and never writes GPU state. [docs/TUNING.md](docs/TUNING.md) is the protocol: what each signature means, where to stop, and how to report a result.
 
 For gaming alongside a VM, [the balanced-plus comparison](docs/TUNING.md#10-balanced-plus-with-a-game-and-a-vm)
-compares the shipped 80 °C ceiling with a temporary 85 °C trial at the same 87/92/102 W
+compares the shipped 72 °C ceiling with hotter trials at the same 70/75/85 W
 limits. It restores your running profile afterward. `balanced-plus` stays capped at
-80 °C; keep any higher-temperature result in a separately named profile.
+82 °C; keep any higher-temperature result in a separately named profile.
 
 ## Requirements
 
