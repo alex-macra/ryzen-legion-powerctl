@@ -527,7 +527,7 @@ main() {
     printf '  legion-powerctl status\n'
     printf '  legion-powerctl-gui\n'
     printf '  sudo legion-powerctl wizard balanced-plus\n'
-    printf '  sudo legion-powerctl configure balanced-plus --temp 80 --select --apply\n'
+    printf '  sudo legion-powerctl select balanced --apply\n'
     printf '  legion-powerbench doctor\n'
     printf '  systemctl status legion-powerctl.service\n'
 }

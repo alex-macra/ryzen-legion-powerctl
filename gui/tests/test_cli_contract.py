@@ -236,9 +236,21 @@ class CliContractTest(unittest.TestCase):
         written = next(p for p in status.profiles if p.name == "pinned")
         self.assertEqual((written.stapm_w, written.temp_c), (40, 70))
 
-    def test_the_go_back_argv_re_applies_a_saved_profile(self):
-        proc = self.run_cli(*model.build_apply_args("quiet"))
+    def test_the_go_back_argv_re_applies_a_saved_profile_and_keeps_it_for_boot(self):
+        proc = self.run_cli(*model.build_select_args("quiet", apply_now=True))
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        status = model.parse_status(self.run_cli("status", "--json").stdout)
+        self.assertEqual(status.last_apply["profile"], "quiet")
+        self.assertEqual(status.active_profile, "quiet")
+
+    def test_the_profile_apply_now_runs_is_the_one_the_next_boot_applies(self):
+        status = model.parse_status(self.run_cli("status", "--json").stdout)
+        quiet = next(p for p in status.profiles if p.name == "quiet")
+        proc = self.run_cli(*model.build_configure_args(quiet, apply_now=True, select=True))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        proc = self.run_cli("apply", "--boot")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Boot apply: profile 'quiet'", proc.stdout + proc.stderr)
         status = model.parse_status(self.run_cli("status", "--json").stdout)
         self.assertEqual(status.last_apply["profile"], "quiet")
 

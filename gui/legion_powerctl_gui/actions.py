@@ -67,8 +67,8 @@ class ProfileActions(QObject):
                     return
             go_back = running.profile if running.profile != profile.name else ""
         self._run(
-            model.build_configure_args(profile, apply_now=True),
-            f"Applied '{profile.name}'.",
+            model.build_configure_args(profile, apply_now=True, select=True),
+            f"Applied '{profile.name}'. It will also be applied at boot.",
             saved=profile,
             go_back=go_back,
         )
@@ -77,7 +77,10 @@ class ProfileActions(QObject):
         if not model.valid_profile_name(name):
             self.failed.emit(f"Refusing to act on an invalid profile name: {name!r}")
             return
-        self._run(model.build_apply_args(name), f"Applied '{name}'.")
+        self._run(
+            model.build_select_args(name, apply_now=True),
+            f"Applied '{name}'. It will also be applied at boot.",
+        )
 
     def repair_balanced_plus(self) -> None:
         if self._busy:

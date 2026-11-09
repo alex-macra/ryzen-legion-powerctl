@@ -692,4 +692,26 @@ assert_contains 'already applied this boot' "$tainted_out" \
     exit 1
 }
 
+printf 'Test 53: a fresh install boots the shipped balanced profile\n'
+cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+rm -f "$STATE/last-apply.env"
+boot_out="$(run_cli apply --boot 2>&1)"
+assert_contains "Boot apply: profile 'balanced'" "$boot_out" 'the shipped config does not boot balanced'
+assert_file_contains 'PROFILE=balanced' "$STATE/last-apply.env" 'the boot apply did not record balanced'
+refute_contains 'PROFILE=balanced-plus' "$(<"$STATE/last-apply.env")" 'the boot apply recorded balanced-plus'
+
+printf 'Test 54: the profile the GUI applies is the one the next boot applies\n'
+run_cli select balanced-plus >/dev/null
+for gui_argv in "select quiet --apply" "select balanced --apply"; do
+    expected="$(cut -d' ' -f2 <<<"$gui_argv")"
+    read -r -a argv <<<"$gui_argv"
+    run_cli "${argv[@]}" >/dev/null
+    assert_file_contains "ACTIVE_PROFILE=$expected" "$ETC/config.conf" "'$gui_argv' did not persist the boot profile"
+    rm -f "$STATE/last-apply.env"
+    boot_out="$(run_cli apply --boot 2>&1)"
+    assert_contains "Boot apply: profile '$expected'" "$boot_out" "the next boot did not apply '$expected'"
+    assert_eq "PROFILE=$expected" "$(grep '^PROFILE=' "$STATE/last-apply.env")" "the next boot recorded the wrong profile"
+done
+
 printf 'All tests passed.\n'

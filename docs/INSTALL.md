@@ -134,11 +134,13 @@ The header separates the two things that are easy to confuse. **Running now** is
 last written to the hardware, read from the record `apply` leaves in `/run`, with the
 watts that actually reached the SMU and whether they were read back and confirmed. **At
 boot** is the profile `config.conf` points at, which the boot service applies at the next
-start; you set it with the `BOOT` pin on a profile row. They are frequently not the same
-profile, and nothing keeps them in step on purpose.
+start. A fresh install boots `balanced`. **Apply now** and **Go back** also make that
+profile the boot profile, so what you apply in the GUI survives a reboot. The `BOOT` pin
+on a profile row sets the boot profile without applying it, and `legion-powerctl apply`
+from a terminal stays a one-off that leaves the boot profile alone.
 
-There is one button, **Apply now**, which writes the profile and applies it. `Ctrl+S`
-saves without applying. Applying limits higher than what is running asks first; lowering
+There is one button, **Apply now**, which writes the profile, applies it, and keeps it for
+boot. `Ctrl+S` saves without applying. Applying limits higher than what is running asks first; lowering
 them does not.
 
 If the GUI does not start:

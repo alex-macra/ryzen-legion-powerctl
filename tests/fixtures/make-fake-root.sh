@@ -35,7 +35,7 @@ mkdir -p "$PROFILES" "$STATE" "$SYSFS/cpufreq/policy0" "$DMI" "$EFIVARS" "$MODUL
 
 cp "$FIXTURE_REPO/profiles/balanced-plus.conf" "$PROFILES/balanced-plus.conf"
 cp "$FIXTURE_REPO/profiles/quiet.conf" "$PROFILES/quiet.conf"
-cp "$FIXTURE_REPO/config/config.conf" "$ETC/config.conf"
+printf 'ACTIVE_PROFILE=balanced-plus\n' > "$ETC/config.conf"
 printf 'vendor_id\t: AuthenticAMD\n' > "$CPUINFO"
 
 cat > "$STATE/last-apply.env" <<'EOF_STATE'
