@@ -97,6 +97,16 @@ grant does not authorize it. The GUI confirms the reset and any discarded edits.
   `/usr/local/bin/ryzenadj` and `/usr/bin/ryzenadj`, and uses one only if it is
   a regular file owned by root and not writable by group or others. Unprivileged
   `doctor` and `status` run it too, so the same check protects them.
+- **As root, `powerprofilesctl` and `systemctl` are not looked up on `PATH`
+  either.** They come from `/usr/local/sbin`, `/usr/local/bin`, `/usr/sbin`,
+  `/usr/bin`, `/sbin` or `/bin`, under the same ownership check. An
+  unprivileged run still uses `PATH`, which is the user's own.
+- **`legion-powerbench` follows the same rules.** It reads `ryzenadj -i` only
+  from the two root-owned paths above, runs only a root-owned
+  `/usr/local/bin/legion-powerctl` or `/usr/bin/legion-powerctl` for both its
+  unprivileged reads and its `sudo` writes, and refuses to start while any
+  `LEGION_POWERCTL_*` variable is exported. Its own binary overrides need
+  `LEGION_POWERBENCH_TESTING=1`, which root ignores.
 - **`LEGION_POWERCTL_DRY_RUN=1`** is honoured by every mutating subcommand:
   `apply`, `repair` and `restore-frequency` preview, and the rest (`configure`,
   `select`, `delete`, `enable`, `disable`, `wizard`, `baseline --capture`)

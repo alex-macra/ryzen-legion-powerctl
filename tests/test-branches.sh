@@ -1467,6 +1467,32 @@ case_root_ignores_testing_and_every_test_override() {
     }
 }
 
+case_root_never_takes_powerprofilesctl_or_systemctl_from_path() {
+    if ! unshare --map-root-user true >/dev/null 2>&1; then
+        printf '  (skipped: no unprivileged user namespace to become root in)\n'
+        return 0
+    fi
+    local marker="$FAKE_ROOT/planted.log" name command
+    local -a production_env=()
+    mapfile -t production_env < <(untested_env)
+    mkdir -p "$FAKE_ROOT/planted"
+    for name in powerprofilesctl systemctl; do
+        # shellcheck disable=SC2016
+        printf '#!/bin/sh\nprintf "%%s %%s\\n" "$0" "$*" >> %q\n' "$marker" > "$FAKE_ROOT/planted/$name"
+        chmod 0755 "$FAKE_ROOT/planted/$name"
+    done
+    for command in doctor "status --json"; do
+        # shellcheck disable=SC2086
+        unshare --map-root-user env PATH="$FAKE_ROOT/planted:$PATH" "$FAKE_CLI" $command >/dev/null 2>&1 || true
+    done
+    [[ ! -e "$marker" ]] || {
+        printf 'FAIL: root ran a powerprofilesctl or systemctl found on PATH:\n%s\n' "$(<"$marker")" >&2
+        exit 1
+    }
+    env "${production_env[@]}" PATH="$FAKE_ROOT/planted:$PATH" "$FAKE_CLI" status --json >/dev/null 2>&1 || true
+    assert_file_contains "$FAKE_ROOT/planted/" "$marker" 'the planted PATH binaries are not reachable unprivileged'
+}
+
 fake_tree_digest() {
     (cd "$FAKE_ROOT" && find etc run var sys -type f -print0 | sort -z | xargs -0 md5sum)
 }
@@ -1801,6 +1827,8 @@ run_case case_doctor_and_status_never_run_a_ryzenadj_planted_on_path \
     'doctor and status never run a ryzenadj planted on PATH without TESTING'
 run_case case_root_ignores_testing_and_every_test_override \
     'root ignores TESTING and every test override'
+run_case case_root_never_takes_powerprofilesctl_or_systemctl_from_path \
+    'root never takes powerprofilesctl or systemctl from PATH'
 run_case case_dry_run_refuses_every_mutation_it_cannot_preview \
     'LEGION_POWERCTL_DRY_RUN=1 previews or refuses every mutating command'
 run_case case_no_writer_follows_a_planted_symlink \

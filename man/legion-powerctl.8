@@ -92,7 +92,9 @@ running as root ignores all of them except LEGION_POWERCTL_DRY_RUN.
 .PP
 RyzenAdj is never looked up on PATH: only /usr/local/bin/ryzenadj and
 /usr/bin/ryzenadj are used, and only when owned by root and not writable by
-group or others.
+group or others. As root, powerprofilesctl and systemctl are not looked up on
+PATH either: they come from /usr/local/sbin, /usr/local/bin, /usr/sbin, /usr/bin,
+/sbin or /bin, under the same ownership check.
 .SH EXIT STATUS
 0 on success and non-zero on failure. The command never exits 126 or 127 itself: a child that does is reported as 1, because pkexec
 uses those two codes for a dismissed or refused authorization.
@@ -126,16 +128,17 @@ The firmware SMU limits, recorded once before the first apply overwrote them.
 .B legion-powerctl-gui
 opens an unprivileged Qt control panel (requires the optional pyside6
 package). It reads state through 'status --json' and performs privileged
-actions through pkexec. The shipped policy defines one action per subcommand
-(io.github.alexmacra.legion-powerctl.configure, .apply, .select, .delete,
-.enable, .disable), each pinned with exec.argv1. Editing, applying, and
-selecting profiles use auth_admin_keep, which polkit retains for a few
-minutes; treat those three as one trust tier, because
+actions through pkexec. The GUI runs seven subcommands: configure, select,
+apply (Go back), delete, enable, disable and repair. The shipped policy defines
+one action for each (io.github.alexmacra.legion-powerctl.configure, .apply,
+.select, .delete, .enable, .disable, .repair), each pinned with exec.argv1.
+Editing, applying, and selecting profiles use auth_admin_keep, which polkit
+retains for a few minutes; treat those three as one trust tier, because
 .B configure
 accepts --select and --apply and so reaches what the other two do. Deleting a
-profile and enabling or disabling the boot service always prompt, so a
-retained profile-editing authorization cannot be reused to remove a profile
-or to install boot persistence.
+profile, enabling or disabling the boot service, and repair always prompt, so a
+retained profile-editing authorization cannot be reused to remove a profile,
+to install boot persistence, or to unload a module and rewrite a profile.
 .SH NOTES
 This project is not affiliated with Lenovo, AMD, or CachyOS. Legion is a
 trademark of Lenovo. Fire Range and other HX-series CPUs require RyzenAdj

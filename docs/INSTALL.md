@@ -191,7 +191,9 @@ key on it.
 Pull a newer checkout and rerun `./install.sh`. On Arch and CachyOS the rebuilt package
 upgrades the previous one through pacman, and edited profiles in `/etc/legion-powerctl`
 are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
-`--force-config` is supplied.
+`--force-config` is supplied, which resets every profile and `config.conf` to the shipped
+files and selects `balanced` for boot, exactly as a fresh install does. `sudo make install`
+likewise keeps existing files under `/etc/legion-powerctl` unless `FORCE_CONFIG=1` is set.
 
 To try changes in your local checkout without pushing to GitHub or reinstalling,
 run `make dev-gui` from that checkout. Close and reopen it after edits; it reads
@@ -199,7 +201,8 @@ the GUI and CLI source files directly while using the installed profiles. Privil
 edits may use a generic `pkexec` prompt because the installed polkit policy names
 `/usr/bin/legion-powerctl`. This preview does not replace the installed desktop
 launcher. A local commit is enough for a package rebuild with `./install.sh`;
-`make dist` archives local `HEAD`, so uncommitted edits are not packaged.
+`make dist` archives local `HEAD`, so uncommitted edits are not packaged. A copy that is
+not its own git checkout, such as an extracted ZIP, is packed from the working tree.
 
 ## Uninstalling
 

@@ -1508,6 +1508,18 @@ class MainWindowTest(OffscreenGuiTest):
         broken.write_text('{"schema_version": 1, "profiles": null}')
         self.poll_storm({"FAKE_CLI_STATUS_FIXTURE": str(broken)})
 
+    def test_a_repeating_poll_failure_stays_visible_until_a_poll_succeeds(self):
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+        stale = self.window.reports.stale_label
+        self.window.statusBar().clearMessage()
+        self.settle()
+        self.assertFalse(stale.isHidden(), "the failure vanished with the status-bar message")
+        self.assertIn(self.window.errors[0], stale.toolTip())
+        self.window.refresh()
+        self.assertTrue(
+            wait_until(self.app, stale.isHidden), "a successful poll left the indicator up"
+        )
+
     def test_a_missing_cli_reports_once_and_never_opens_a_modal(self):
         self.poll_storm({"LEGION_POWERCTL_GUI_CLI": str(HERE / "there-is-no-such-binary")})
 

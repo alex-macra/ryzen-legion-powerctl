@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QMessageBox, QPushButton, QStatusBar, QWidget
+from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QStatusBar, QWidget
 
 from . import a11y, styles
 
@@ -12,6 +12,7 @@ ERROR_MS = 10000
 NOTE_MS = 8000
 WARNING_MS = 15000
 OFFER_GAP = 8
+STALE_TEXT = "Status not updating"
 
 
 class ReportArea(QObject):
@@ -32,6 +33,10 @@ class ReportArea(QObject):
         self._margins = dict.fromkeys(self._offers, 0)
         status_bar.addWidget(self.go_back_button)
         status_bar.addWidget(self.details_button)
+        self.stale_label = QLabel(STALE_TEXT)
+        self.stale_label.setAccessibleName(STALE_TEXT)
+        self.stale_label.hide()
+        status_bar.addPermanentWidget(self.stale_label)
         status_bar.messageChanged.connect(self._place_offers)
         status_bar.installEventFilter(self)
         self.restyle(status_bar.palette())
@@ -54,6 +59,7 @@ class ReportArea(QObject):
         self._sheet = (
             f"{styles.ghost_button_style(palette)} QPushButton {{ background-color: {plane}; }}"
         )
+        styles.set_sheet(self.stale_label, styles.chip_style(palette, "WARN"))
         self._place_offers()
 
     def _place_offers(self, *_args) -> None:
@@ -88,8 +94,14 @@ class ReportArea(QObject):
         a11y.announce(self._bar, message, interrupt=True)
 
     def poll_error(self, message: str) -> None:
+        self.stale_label.setToolTip(message)
+        self.stale_label.setAccessibleDescription(message)
+        self.stale_label.show()
         self._bar.showMessage(message, ERROR_MS)
         a11y.announce(self._bar, message, interrupt=True)
+
+    def poll_recovered(self) -> None:
+        self.stale_label.hide()
 
     def set_busy(self, busy: bool) -> None:
         self.go_back_button.setEnabled(not busy)

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import harness
+import pyatspi
 from harness import CLI, DESKTOP_ENTRY, E2ETest, Session, wait_until, x
 
 
@@ -75,9 +76,35 @@ class DesktopSessionTest(E2ETest):
             f"Tab reaches {unnamed} which announce nothing; the stops were: {seen}",
         )
 
+    def row(self, name):
+        return next(
+            (n for n in self.session.nodes()
+             if n.getRoleName() == "list item" and (n.name or "").split(",")[0] == name),
+            None,
+        )
+
+    def select_row(self, name):
+        row = wait_until(lambda: self.row(name), f"the {name} row")
+        self.assertNotIn("boot profile", row.name, f"{name} is the boot profile")
+        windows = wait_until(self.session.window_id, "the window to be mapped")
+        subprocess.run(
+            ["xdotool", "windowactivate", "--sync", windows[0]], timeout=15, check=False
+        )
+        left, top, _width, height = row.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        subprocess.run(
+            ["xdotool", "mousemove", "--sync", str(left + 12), str(top + height // 2),
+             "click", "1"],
+            timeout=15, check=False,
+        )
+        wait_until(
+            lambda: (self.row(name) or row).getState().contains(pyatspi.STATE_SELECTED),
+            f"the {name} row to be selected",
+        )
+
     def test_delete_raises_a_real_modal_that_escape_dismisses(self):
         profiles_dir = Path(os.environ["LEGION_POWERCTL_ETC_DIR"]) / "profiles.d"
         before = sorted(p.name for p in profiles_dir.glob("*.conf"))
+        self.select_row("quiet")
 
         delete = self.session.button("Delete")
         self.assertIsNotNone(delete, "no Delete button in the tree")
@@ -91,6 +118,8 @@ class DesktopSessionTest(E2ETest):
             "the delete confirmation to appear",
         )
         self.assertNamed(dialog, "the confirmation dialog")
+        self.assertIn("quiet", " ".join(n.name or "" for n in harness.walk(dialog)),
+                      "the dialog is not the delete confirmation for the selected row")
         subprocess.run(["xdotool", "key", "Escape"], timeout=15, check=False)
         wait_until(
             lambda: not any(

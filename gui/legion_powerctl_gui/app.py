@@ -202,6 +202,7 @@ class MainWindow(QMainWindow):
             self._on_poll_failed(str(exc))
             return
         self._poll_error = ""
+        self.reports.poll_recovered()
         self.status = status
         self.header.show_status(status)
         running = str((status.last_apply or {}).get("profile", ""))

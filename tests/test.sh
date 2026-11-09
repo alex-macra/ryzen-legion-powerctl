@@ -712,27 +712,42 @@ rm -f "$ETC/config.conf"
 assert_eq 'balanced' "$(fresh_boot_profile)" 'with no config.conf the CLI does not fall back to balanced'
 
 pacman_scriptlet="$TMP/legion-powerctl.install"
-sed "s|/etc/legion-powerctl|$ETC|g" "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
-run_post_install() {
+sed -e "s|/etc/legion-powerctl|$ETC|g" -e "s|/run/legion-powerctl-fresh-config|$TMP/fresh-config|g" \
+    -e "s|legion-powerctl select|$FAKEBIN/legion-powerctl select|g" \
+    "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
+# shellcheck disable=SC2329
+pacman_install() {
+    local extracted="$1"
     (
-        PATH="$FAKEBIN:$PATH"
         # shellcheck source=/dev/null
         . "$pacman_scriptlet"
+        pre_install
+        if [[ -e "$ETC/config.conf" ]]; then
+            [[ "$extracted" == unchanged ]] || cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf.pacnew"
+        else
+            cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+        fi
         post_install
     )
 }
-cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+rm -f "$ETC/config.conf"
 : > "$LOG"
-post_install_out="$(run_post_install)"
+post_install_out="$(pacman_install new)"
 assert_contains 'The boot profile is balanced' "$post_install_out" 'post_install did not report the boot profile'
 assert_eq '' "$(<"$LOG")" 'post_install applied something'
 assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'post_install did not select balanced'
 assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh package install does not boot balanced'
 printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
-cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf.pacnew"
-run_post_install >/dev/null
+pacman_install new >/dev/null
 assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'post_install replaced a config.conf pacman kept'
-rm -f "$ETC/config.conf.pacnew"
+cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+pacman_install unchanged >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" 'post_install moved a config.conf that existed before the install'
+rm -f "$ETC/config.conf"
+pacman_install new >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
+refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
+rm -f "$ETC/config.conf.pacnew" "$TMP/fresh-config"
 
 installer_functions="$TMP/installer-functions.sh"
 awk '/^(install_preserving|install_config_files)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_functions"
@@ -741,7 +756,7 @@ assert_contains 'install_config_files()' "$(<"$installer_functions")" 'install.s
 run_script_install_config() {
     (
         SUDO=()
-        FORCE_CONFIG=0
+        FORCE_CONFIG="${1:-0}"
         CONFIG_DIR="$ETC"
         CLI_BIN="$FAKEBIN/legion-powerctl"
         info() { printf '%s\n' "$*"; }
@@ -758,6 +773,8 @@ assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh script install does not bo
 printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
 run_script_install_config >/dev/null
 assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'a script reinstall moved the boot profile'
+run_script_install_config 1 >/dev/null
+assert_eq 'balanced' "$(fresh_boot_profile)" 'install.sh --force-config did not reset boot to balanced like a fresh install'
 rm -rf "$ETC"
 mv "$TMP/etc-before-script-install" "$ETC"
 cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
@@ -791,5 +808,144 @@ backed_up="$(
     printf '%s\n' "${backup[@]}" | LC_ALL=C sort
 )"
 assert_eq "$staged" "$backed_up" 'PKGBUILD backup= does not match the files installed under /etc'
+
+printf 'Test 57: moving to the package flow removes the script install only once every precondition passed\n'
+pkg_root="$TMP/pkg-root"
+mkdir -p "$pkg_root/packaging/arch"
+: > "$pkg_root/packaging/arch/PKGBUILD"
+: > "$pkg_root/packaging/arch/legion-powerctl.install"
+printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\n' "$TMP/pkg-flow.log" > "$pkg_root/uninstall.sh"
+chmod +x "$pkg_root/uninstall.sh"
+: > "$TMP/script-installed-cli"
+package_functions="$TMP/package-install.sh"
+awk '/^package_install\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" |
+    sed -e "s|/usr/bin/legion-powerctl|$TMP/script-installed-cli|g" -e "s|\\\$ROOT_DIR|\$PKG_ROOT|g" \
+    > "$package_functions"
+assert_contains 'package_install()' "$(<"$package_functions")" 'install.sh no longer has package_install'
+# shellcheck disable=SC2034,SC2329
+run_package_install() {
+    local failing="$1"
+    : > "$TMP/pkg-flow.log"
+    (
+        PKG_ROOT="$pkg_root"
+        REPLACE_SCRIPT_INSTALL=1
+        FORCE_CONFIG=0
+        info() { :; }
+        warn() { :; }
+        die() { printf 'died: %s\n' "$*" >> "$TMP/pkg-flow.log"; exit 1; }
+        confirm() { return 1; }
+        pacman() { return 1; }
+        make() { [[ " $* " != *' print-version '* ]] || printf '0.0.0\n'; }
+        makepkg() { printf 'makepkg %s\n' "$*" >> "$TMP/pkg-flow.log"; }
+        step() { [[ "$1" != "$failing" ]] || die "$1 failed"; }
+        check_pacman_lock() { step check_pacman_lock; }
+        ensure_ryzenadj_package() { step ensure_ryzenadj_package; }
+        ensure_ryzen_smu() { step ensure_ryzen_smu; }
+        migrate_legacy() { step migrate_legacy; }
+        ensure_gui_runtime() { :; }
+        enable_service() { :; }
+        # shellcheck source=/dev/null
+        . "$package_functions"
+        package_install
+    ) >/dev/null 2>&1 || true
+}
+for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy; do
+    run_package_install "$failing"
+    refute_contains 'uninstall.sh' "$(<"$TMP/pkg-flow.log")" \
+        "a failing $failing still removed the script install first"
+done
+run_package_install none
+assert_eq "$(printf 'uninstall.sh\nmakepkg -si')" "$(<"$TMP/pkg-flow.log")" \
+    'the script install was not removed just before makepkg -si'
+
+printf 'Test 58: make dist inside an enclosing git repository still packs this tree\n'
+nested="$TMP/enclosing/legion-powerctl"
+mkdir -p "$nested"
+git -C "$TMP/enclosing" init -q
+tar -C "$ROOT_DIR" --exclude=./.git --exclude=./dist -cf - . | tar -C "$nested" -xf -
+make -s -C "$nested" dist DISTDIR="$TMP/nested-dist" >/dev/null 2>&1
+dist_version="$(make -s -C "$ROOT_DIR" print-version)"
+packed="$(tar -tzf "$TMP/nested-dist/legion-powerctl-$dist_version.tar.gz")"
+for packed_file in bin/legion-powerctl Makefile packaging/arch/PKGBUILD profiles/balanced.conf; do
+    assert_contains "legion-powerctl-$dist_version/$packed_file" "$packed" \
+        "make dist under an enclosing repository left out $packed_file"
+done
+
+printf 'Test 59: make install keeps edited /etc files unless FORCE_CONFIG=1\n'
+config_stage="$TMP/config-stage"
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
+printf 'ACTIVE_PROFILE=quiet\n' > "$config_stage/etc/legion-powerctl/config.conf"
+printf 'STAPM_W=1\n' > "$config_stage/etc/legion-powerctl/profiles.d/quiet.conf"
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$config_stage/etc/legion-powerctl/config.conf")" \
+    'make install overwrote an edited config.conf'
+assert_eq 'STAPM_W=1' "$(<"$config_stage/etc/legion-powerctl/profiles.d/quiet.conf")" \
+    'make install overwrote an edited profile'
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc FORCE_CONFIG=1 >/dev/null
+cmp -s "$ROOT_DIR/config/config.conf" "$config_stage/etc/legion-powerctl/config.conf" || {
+    printf 'FAIL: FORCE_CONFIG=1 did not reset config.conf\n' >&2
+    exit 1
+}
+cmp -s "$ROOT_DIR/profiles/quiet.conf" "$config_stage/etc/legion-powerctl/profiles.d/quiet.conf" || {
+    printf 'FAIL: FORCE_CONFIG=1 did not reset a profile\n' >&2
+    exit 1
+}
+
+printf 'Test 60: make uninstall disables the unit before removing it, and refuses when it cannot\n'
+uninstall_prefix="$TMP/uninstall-prefix"
+uninstall_bin="$TMP/uninstall-bin"
+mkdir -p "$uninstall_bin"
+cat > "$uninstall_bin/systemctl" <<EOF_FAKE
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "\$*" >> $(printf '%q' "$TMP/uninstall.log")
+[[ -z "\${FAKE_SYSTEMCTL_FAIL:-}" ]]
+EOF_FAKE
+chmod +x "$uninstall_bin/systemctl"
+uninstall_make() {
+    PATH="$uninstall_bin:$PATH" make -s -C "$ROOT_DIR" uninstall DESTDIR= \
+        PREFIX="$uninstall_prefix" SYSCONFDIR="$uninstall_prefix/etc" \
+        SYSTEMDUNITDIR="$uninstall_prefix/lib/systemd/system"
+}
+mkdir -p "$uninstall_prefix/lib/systemd/system"
+: > "$uninstall_prefix/lib/systemd/system/legion-powerctl.service"
+: > "$TMP/uninstall.log"
+FAKE_SYSTEMCTL_FAIL=1 assert_fails 'make uninstall removed a unit it could not disable' uninstall_make
+[[ -e "$uninstall_prefix/lib/systemd/system/legion-powerctl.service" ]] || {
+    printf 'FAIL: make uninstall removed the unit after systemctl disable failed\n' >&2
+    exit 1
+}
+uninstall_make >/dev/null
+assert_file_contains 'systemctl disable legion-powerctl.service' "$TMP/uninstall.log" \
+    'make uninstall did not disable the unit'
+[[ ! -e "$uninstall_prefix/lib/systemd/system/legion-powerctl.service" ]] || {
+    printf 'FAIL: make uninstall left the unit behind\n' >&2
+    exit 1
+}
+
+printf 'Test 61: uninstall.sh refreshes the desktop database and icon cache it leaves stale\n'
+uninstall_sh_bin="$TMP/uninstall-sh-bin"
+mkdir -p "$uninstall_sh_bin"
+printf '#!/usr/bin/env bash\nprintf "sudo %%s\\n" "$*" >> %q\n' "$TMP/uninstall-sh.log" > "$uninstall_sh_bin/sudo"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$uninstall_sh_bin/pacman"
+for tool in update-desktop-database gtk-update-icon-cache; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$uninstall_sh_bin/$tool"
+done
+chmod +x "$uninstall_sh_bin"/*
+: > "$TMP/uninstall-sh.log"
+PATH="$uninstall_sh_bin:$PATH" "$ROOT_DIR/uninstall.sh" >/dev/null
+uninstall_sh_log="$(<"$TMP/uninstall-sh.log")"
+assert_contains 'sudo update-desktop-database -q /usr/share/applications' "$uninstall_sh_log" \
+    'uninstall.sh did not refresh the desktop database'
+assert_contains 'sudo gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor' "$uninstall_sh_log" \
+    'uninstall.sh did not refresh the icon cache'
+assert_match "$uninstall_sh_log" '*uninstall-files*update-desktop-database*' \
+    'uninstall.sh refreshed the caches before removing the files'
+
+printf 'Test 62: the boot unit orders after power-profiles-daemon without pulling it in\n'
+unit_text="$(<"$ROOT_DIR/systemd/legion-powerctl.service")"
+assert_match "$(grep '^After=' <<<"$unit_text")" '*power-profiles-daemon.service*' \
+    'the unit can apply before power-profiles-daemon resets the platform profile'
+refute_contains 'Wants=power-profiles-daemon' "$unit_text" 'the unit pulls power-profiles-daemon in'
+refute_contains 'Requires=power-profiles-daemon' "$unit_text" 'the unit requires power-profiles-daemon'
 
 printf 'All tests passed.\n'

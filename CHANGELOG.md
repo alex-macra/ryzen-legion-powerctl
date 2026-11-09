@@ -28,8 +28,48 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - A symlinked profile or `config.conf` is refused by every command, not only `repair`.
 - `status` and `status --json` show only the keys the CLI writes to `last-apply.env`,
   with control characters removed.
+- As root, the CLI takes `powerprofilesctl` and `systemctl` only from the system
+  binary directories, under the same ownership check as `ryzenadj`, never from `PATH`.
+- `legion-powerbench` reads `ryzenadj -i` only from the two root-owned paths the CLI
+  uses, and runs only a root-owned `/usr/local/bin/legion-powerctl` or
+  `/usr/bin/legion-powerctl`, the same binary for its unprivileged reads and its `sudo`
+  writes. It refuses to start while a `LEGION_POWERCTL_*` variable is exported, since
+  `sudo` would drop it for the writes only. Its binary overrides need
+  `LEGION_POWERBENCH_TESTING=1`, which root ignores.
+- Every GitHub Action is pinned to a full commit SHA, and CI and the e2e container
+  install exact PySide6 and ruff versions from `requirements-dev.txt`, which Dependabot
+  updates after a seven-day cooldown.
 
 ### Fixed
+
+- Moving from a script install to the package flow removes the script install just
+  before `makepkg -si`, after every check and prompt, so a missing `ryzenadj` package
+  or a busy pacman no longer leaves the machine with no CLI and no boot apply.
+- `make dist` packs the working tree when the checkout sits inside another git
+  repository, such as an extracted ZIP under a tracked directory, instead of an empty
+  or unrelated tree.
+- `make install` keeps an existing `config.conf` and profiles unless `FORCE_CONFIG=1`,
+  and `make uninstall` disables the boot unit before removing it, or refuses, so no
+  dangling `.wants` link is left behind.
+- `uninstall.sh` refreshes the desktop database and icon cache, as `install.sh` does.
+- `install.sh --force-config` selects `balanced` like a fresh install instead of
+  restoring the shipped `balanced-plus` pointer. The package's `post_install` selects
+  `balanced` only when `config.conf` did not exist before the install, so a stale
+  `config.conf.pacnew` no longer stops a fresh install from booting `balanced`.
+- The boot unit orders itself after `power-profiles-daemon.service`, so the daemon
+  starting later cannot reset the platform profile the boot apply set.
+- `legion-powerbench run` refuses a `--to` that is not on the step grid instead of
+  silently skipping it, and an `--interval` above 30 s or a `--soak` below 120 s that the
+  report would call inconclusive. A failing GPU load is named and its log is shown
+  instead of discarded. Every load runs under `timeout`, so a SIGKILLed harness leaves
+  none running for more than 70 s past its soak. Each step starts with `sudo -v`, and
+  without turbostat the credential is renewed at every sample so the final restore does
+  not stop for a password. `--no-gpu` skips `nvidia-smi`.
+- A status poll that keeps failing leaves a `Status not updating` chip in the GUI's
+  status bar until a poll succeeds, instead of disappearing with the 10 s message.
+- The man page and `docs/ARCHITECTURE.md` list all seven subcommands the GUI elevates,
+  including `repair`, which always prompts; `docs/TUNING.md` describes the telemetry
+  `legion-powerbench` actually reads.
 
 - The readback after an apply says the limits are confirmed, and records `VERIFIED=yes`,
   only when `ryzenadj -i` read back all four and they match. When some were not read it

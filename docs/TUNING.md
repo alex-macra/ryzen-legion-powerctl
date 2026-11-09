@@ -77,18 +77,22 @@ you which one it got. `legion-powerbench doctor` prints the whole ladder.
 | Signal | Source | Caveat |
 |---|---|---|
 | Tctl | `/sys/class/hwmon/hwmon*/` where `name` is `k10temp`, then `temp1_input` | This is the sensor the SMU caps against, and the one `TEMP_C` sets |
-| Tccd1, Tccd2 | the same hwmon, `temp3_input` and up | Runs hotter than Tctl by design. A 95 C Tccd under an 82 C Tctl cap is not a failed cap - see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
-| Package power | `turbostat --show PkgWatt,CorWatt,Bzy_MHz,Busy%` | The most trustworthy source on Zen. Needs root and the `msr` module |
-| Package power, fallback | `ryzenadj -i`, the `STAPM VALUE` and `PPT VALUE FAST` rows | On Fire Range the metrics table is often unavailable without `ryzen_smu`, and these rows have an empty parameter column, so they must be matched by name |
+| Tccd | the same hwmon, every `temp*_input` whose `temp*_label` starts with `Tccd`; the hottest is recorded | Runs hotter than Tctl by design. A 95 C Tccd under an 82 C Tctl cap is not a failed cap - see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Package power | `sudo -n turbostat --quiet --Summary --show PkgWatt,Bzy_MHz,Busy%` | The most trustworthy source on Zen. Needs root, a cached `sudo` credential and the `msr` module |
+| Package power, fallback | `ryzenadj -i`, the `STAPM VALUE` row, from root-owned `/usr/local/bin/ryzenadj` or `/usr/bin/ryzenadj` only | On Fire Range the metrics table is often unavailable without `ryzen_smu`, and the row has an empty parameter column, so it must be matched by name |
 | System draw, diagnostic only | `/sys/class/power_supply/BAT*/power_now` | Whole-system, not package. Never stored in `pkg_w` or used for CPU limiter or efficiency conclusions |
 | Effective clock | `turbostat` `Bzy_MHz` | `scaling_cur_freq` under `amd-pstate` is a *request*, not what the core ran at. Do not tune against it |
-| Fan | `/sys/class/hwmon/*/fan*_input` | Absent unless a Legion platform driver is loaded. Treat as optional |
-| GPU | `nvidia-smi --query-gpu=power.draw,power.limit,temperature.gpu,clocks.sm,utilization.gpu` | Read only. This tool never writes GPU state |
+| Fan | the first `/sys/class/hwmon/hwmon*/fan[0-9]_input` | Absent unless a Legion platform driver is loaded. Treat as optional |
+| GPU | `nvidia-smi --query-gpu=power.draw,enforced.power.limit,temperature.gpu,utilization.gpu`, first GPU only | Read only. This tool never writes GPU state. `--no-gpu` skips it |
 
 ## 4. The harness
 
-`tools/legion-powerbench` runs the protocol. It samples unprivileged, shells out to
-`legion-powerctl apply` for profile changes, and writes CSV. Python 3 validates the
+`tools/legion-powerbench` runs the protocol. It samples unprivileged, runs
+`sudo legion-powerctl configure ... --apply` for each step, and writes CSV. It runs only
+the root-owned `/usr/local/bin/legion-powerctl` or `/usr/bin/legion-powerctl`, the same
+binary for its unprivileged status reads and its `sudo` writes, and refuses to start
+while any `LEGION_POWERCTL_*` variable is exported, because `sudo` would drop it for
+the writes but not for the reads. Python 3 validates the
 CLI status JSON, and `setsid` from util-linux isolates workloads for cleanup. Both
 are available with the Arch package and its base-system dependencies.
 
@@ -101,7 +105,9 @@ legion-powerbench run --ladder stapm --from 65 --to 105 --step 10 \
 legion-powerbench report ladder.csv
 ```
 
-`report` averages only the final 120 seconds of each completed load. Interrupted
+`report` averages only the final 120 seconds of each completed load, so `run`
+requires `--soak` of at least 120 and an `--interval` of 1 to 30 seconds, and
+`--to` must be `--from` plus a whole number of `--step`s. Interrupted
 steps, runs shorter than two minutes, and missing or malformed package-power or
 temperature readings produce an inconclusive verdict. The final window must have
 increasing timestamps and no sampling gaps longer than 30 seconds; a few readings
@@ -111,8 +117,12 @@ The report keeps the CSV header unchanged. `turbostat` is read from stderr in co
 elapsed-time preamble; a missing `PkgWatt` column cannot turn a clock into watts.
 
 Authenticate with `sudo -v` before probing telemetry. Do not grant blanket
-passwordless access to turbostat: it can execute commands as root. If credentials
-expire during a long run, authenticate when the restore command prompts. A failed
+passwordless access to turbostat: it can execute commands as root. A run calls
+`sudo -v` before each step, and while each step runs it refreshes the credential
+with `sudo -n -v` at every sample, so the restore at the end does not stop for a
+password. Without turbostat it warns at the start, because then nothing else uses
+`sudo` during a step. If credentials expire anyway, authenticate when the restore
+command prompts. A failed
 restore exits nonzero and prints the profile to reapply.
 
 Before applying any step, the harness checks the last successfully applied profile,
@@ -137,7 +147,10 @@ Load generation is pluggable. The built-in `cpu` preset probes for `stress-ng`, 
 mandatory dependency; `doctor` names what is missing. `--workload-cmd` takes a command
 you choose, run as your user. It must remain active for the measurement window; an
 early exit, including success, makes that step incomplete. Remaining workload
-processes are stopped at the end of the window. Use `--workload none` when a game
+processes are stopped at the end of the window, and every load runs under
+`timeout`, so even a harness killed with SIGKILL leaves no load running more than 70
+seconds past its soak. A load that ends early names itself, CPU or GPU, and prints
+the end of its own log. Use `--workload none` when a game
 and VM are already running outside the harness; those processes are never stopped.
 
 Only the built-in stress-ng CPU metrics have a throughput parser: it reads real-time

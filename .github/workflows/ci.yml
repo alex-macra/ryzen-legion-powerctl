@@ -12,7 +12,7 @@ jobs:
   shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck fish
       - name: Bash syntax
@@ -28,8 +28,8 @@ jobs:
   gui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: Install Qt runtime libraries
@@ -41,7 +41,7 @@ jobs:
             libdbus-1-3 libfontconfig1 libfreetype6
           sudo apt-get install -y libglib2.0-0t64 || sudo apt-get install -y libglib2.0-0
       - name: Install PySide6 and ruff
-        run: pip install PySide6 ruff
+        run: pip install -r requirements-dev.txt
       - name: Python lint
         run: make lint-py
       - name: GUI unit and offscreen tests
@@ -63,8 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - name: Install the desktop stack the GUI is driven through
@@ -86,7 +86,7 @@ jobs:
             at-spi2-core python3-gi gir1.2-atspi-2.0 python3-pyatspi
           sudo apt-get install -y libglib2.0-0t64 || sudo apt-get install -y libglib2.0-0
       - name: Install PySide6
-        run: pip install PySide6
+        run: pip install -r requirements-dev.txt
       - name: End-to-end tests
         shell: bash
         run: make test-e2e 2>&1 | tee /tmp/e2e.log
@@ -103,7 +103,7 @@ jobs:
     steps:
       - name: Install build tools
         run: pacman -Syu --noconfirm git namcap desktop-file-utils
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build package
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"

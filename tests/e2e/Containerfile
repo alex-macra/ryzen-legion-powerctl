@@ -4,10 +4,6 @@
 # recipe for that image was living in a scratch directory.
 FROM docker.io/library/python:3.12-slim
 
-# Unpinned by default, so this image tests the PySide6 CI tests; pass
-# --build-arg PYSIDE6='PySide6==6.11.1' to reproduce a specific failure.
-ARG PYSIDE6=PySide6
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         make git shellcheck fish \
@@ -26,7 +22,8 @@ RUN apt-get update \
 # on PATH and execs, so it is the interpreter the application runs on. /usr/bin/python3
 # is Debian's, and it is the only one that can have python3-pyatspi - that is the
 # driver. They share a bus and nothing else.
-RUN pip install --no-cache-dir "$PYSIDE6" ruff
+COPY requirements-dev.txt /tmp/requirements-dev.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
 
 # Not root: the CLI ignores LEGION_POWERCTL_TESTING and every test override as root,
 # so the fake laptop only exists for an unprivileged user.

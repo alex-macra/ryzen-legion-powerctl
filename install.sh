@@ -33,8 +33,9 @@ Options:
                        Remove a previous untracked script install without
                        asking, then continue with the package install
   --no-enable          Install without enabling the boot service
-  --force-config       Overwrite bundled profiles and config (script install only;
-                       the package flow always preserves /etc through pacman)
+  --force-config       Overwrite bundled profiles and config and select balanced
+                       for boot, like a fresh install (script install only; the
+                       package flow always preserves /etc through pacman)
   --migrate-legacy     Disable and archive legion-balanced-plus.service/timer
   -h, --help           Show this help
 
@@ -417,14 +418,14 @@ package_install() {
     [[ $EUID -ne 0 ]] || die "makepkg refuses to run as root. Run ./install.sh as your normal user."
     command -v tar >/dev/null 2>&1 || die "tar is required to build the package tarball."
 
+    local remove_script_install=0
     if [[ -e /usr/bin/legion-powerctl ]] && ! pacman -Qo /usr/bin/legion-powerctl >/dev/null 2>&1; then
         warn "A previous script install was detected at /usr/bin/legion-powerctl."
         warn "pacman will not overwrite files it does not own, so it has to be removed first."
         warn "Your profiles and configuration in /etc/legion-powerctl are kept either way."
-        if (( REPLACE_SCRIPT_INSTALL == 1 )) || confirm "Remove the previous script install now?"; then
-            info "Removing the previous script install..."
-            [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove /usr/bin/legion-powerctl by hand."
-            "$ROOT_DIR/uninstall.sh"
+        [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove /usr/bin/legion-powerctl by hand."
+        if (( REPLACE_SCRIPT_INSTALL == 1 )) || confirm "Remove the previous script install just before the package installs?"; then
+            remove_script_install=1
         else
             die "Run ./uninstall.sh once, then rerun this installer - or rerun with --replace-script-install."
         fi
@@ -448,6 +449,10 @@ package_install() {
     info "Building legion-powerctl $version package in $BUILD_DIR..."
     make -C "$ROOT_DIR" dist DISTDIR="$BUILD_DIR"
     cp "$ROOT_DIR/packaging/arch/PKGBUILD" "$ROOT_DIR/packaging/arch/legion-powerctl.install" "$BUILD_DIR/"
+    if (( remove_script_install == 1 )); then
+        info "Removing the previous script install..."
+        "$ROOT_DIR/uninstall.sh"
+    fi
     (cd "$BUILD_DIR" && makepkg -si)
 
     ensure_gui_runtime
@@ -469,14 +474,14 @@ install_preserving() {
 install_config_files() {
     local profile created=0
     "${SUDO[@]}" install -d -m0755 "$CONFIG_DIR/profiles.d"
-    [[ -e "$CONFIG_DIR/config.conf" ]] || created=1
+    [[ -e "$CONFIG_DIR/config.conf" && $FORCE_CONFIG -eq 0 ]] || created=1
     install_preserving "$ROOT_DIR/config/config.conf" "$CONFIG_DIR/config.conf" 0644
     for profile in "$ROOT_DIR"/profiles/*.conf; do
         install_preserving "$profile" "$CONFIG_DIR/profiles.d/${profile##*/}" 0644
     done
     (( created == 1 )) || return 0
     if "${SUDO[@]}" "$CLI_BIN" select balanced >/dev/null; then
-        info "Fresh install: the boot profile is balanced."
+        info "The boot profile is balanced."
     else
         warn "Could not select balanced for boot. Run: sudo legion-powerctl select balanced"
     fi

@@ -214,7 +214,7 @@ GUIs, and polkit's own guidance is a minimal privileged helper.
 - One polkit action namespace: `io.github.alexmacra.legion-powerctl.*`, with
   one action per subcommand pinned via `exec.argv1`. Two trust tiers -
   auth_admin_keep on configure/apply/select, always-prompt on
-  delete/enable/disable; SECURITY.md has the action table and why the split
+  delete/enable/disable/repair; SECURITY.md has the action table and why the split
   holds.
 - Implemented (GUI v1, widgets, waybar): `pkexec /usr/bin/legion-powerctl <cmd>`
   behind those actions. The GUI validates every argument through its model
@@ -269,7 +269,9 @@ are assertive; everything else waits its turn. A message is announced once per
 change, which matters most for the message a broken profile shows, because the
 fifteen-second poll re-selects the same row and would otherwise repeat it forever.
 A failing status poll goes to the status bar and never opens a dialog, and the same
-failure is reported once until a poll succeeds.
+failure is reported once until a poll succeeds. After that message times out, a
+"Status not updating" chip stays at the right of the status bar, with the error as
+its tooltip, until a poll succeeds.
 
 **Keyboard.** Every control carrying a mnemonic claims a different letter; the form
 labels deliberately have none, because a label that names a stop has no focus to hand

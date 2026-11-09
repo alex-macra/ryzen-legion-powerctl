@@ -1,12 +1,24 @@
 version: 2
 
 updates:
-  # The only third-party code this repository pins is its GitHub Actions.
   # Runtime dependencies (ryzenadj, PySide6, polkit) come from the distribution.
+  # These are the GitHub Actions and the test tooling in requirements-dev.txt.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
     labels:

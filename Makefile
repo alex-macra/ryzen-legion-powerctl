@@ -3,7 +3,7 @@ SHELL_SOURCES := bin/legion-powerctl bin/legion-powerctl-gui install.sh uninstal
 	tools/legion-powerbench \
 	tests/test.sh tests/test-branches.sh tests/test-bench.sh tests/test-repair.sh tests/lib.sh \
 	tests/fixtures/make-fake-root.sh \
-	tests/e2e/run.sh tests/e2e/podman.sh \
+	tests/e2e/run.sh tests/e2e/podman.sh packaging/arch/legion-powerctl.install \
 	gui/tests/fake-legion-powerctl gui/tests/fixtures/regenerate-doctor.sh \
 	gui/tests/fixtures/regenerate-status.sh \
 	completions/legion-powerctl.bash
@@ -16,6 +16,7 @@ SYSTEMDUNITDIR ?= $(PREFIX)/lib/systemd/system
 DOCDIR ?= $(PREFIX)/share/doc/legion-powerctl
 DESTDIR ?=
 DISTDIR ?= dist
+FORCE_CONFIG ?= 0
 VERSION := $(shell sed -n 's/^readonly VERSION="\([^"]*\)".*/\1/p' bin/legion-powerctl)
 
 .PHONY: all install install-files install-config uninstall uninstall-files \
@@ -39,7 +40,7 @@ dev-gui:
 dist:
 	@test -n "$(VERSION)" || { printf 'Could not read VERSION from bin/legion-powerctl\n' >&2; exit 1; }
 	mkdir -p "$(DISTDIR)"
-	@if git rev-parse --show-toplevel >/dev/null 2>&1; then \
+	@if [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$(CURDIR)" ]; then \
 		printf 'Packing committed HEAD with git archive.\n'; \
 		test -z "$$(git status --porcelain)" || \
 			printf 'WARNING: uncommitted changes are NOT included.\n' >&2; \
@@ -95,13 +96,28 @@ install-files:
 	chmod 0644 "$(DESTDIR)$(PREFIX)/share/polkit-1/actions/io.github.alexmacra.legion-powerctl.policy"
 
 install-config:
-	install -Dm0644 config/config.conf "$(DESTDIR)$(SYSCONFDIR)/legion-powerctl/config.conf"
 	install -d -m0755 "$(DESTDIR)$(SYSCONFDIR)/legion-powerctl/profiles.d"
-	for profile in profiles/*.conf; do \
-		install -m0644 "$$profile" "$(DESTDIR)$(SYSCONFDIR)/legion-powerctl/profiles.d/$${profile##*/}"; \
+	@for source in config/config.conf profiles/*.conf; do \
+		case "$$source" in \
+			config/*) target="$(DESTDIR)$(SYSCONFDIR)/legion-powerctl/$${source##*/}" ;; \
+			*) target="$(DESTDIR)$(SYSCONFDIR)/legion-powerctl/profiles.d/$${source##*/}" ;; \
+		esac; \
+		if [ -e "$$target" ] && [ "$(FORCE_CONFIG)" != 1 ]; then \
+			printf 'Keeping existing %s (FORCE_CONFIG=1 overwrites it)\n' "$$target"; \
+		else \
+			install -m0644 "$$source" "$$target" || exit 1; \
+		fi; \
 	done
 
-uninstall: uninstall-files
+uninstall:
+	@if [ -z "$(DESTDIR)" ] && [ -e "$(SYSTEMDUNITDIR)/legion-powerctl.service" ]; then \
+		systemctl disable legion-powerctl.service || { \
+			printf 'Could not disable legion-powerctl.service, so nothing was removed. Run as root, or disable it first.\n' >&2; \
+			exit 1; \
+		}; \
+		systemctl stop legion-powerctl.service 2>/dev/null || true; \
+	fi
+	$(MAKE) uninstall-files
 	@printf 'Configuration under %s was preserved.\n' "$(DESTDIR)$(SYSCONFDIR)/legion-powerctl"
 
 uninstall-files:

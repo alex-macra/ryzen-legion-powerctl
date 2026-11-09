@@ -321,12 +321,26 @@ ryzenadj_shadow_detail() {
     [[ -z "$unknown" && -z "$stale" ]]
 }
 
+resolve_system_command() {
+    local name="$1" dir
+    if (( EUID != 0 )); then
+        command -v "$name" 2>/dev/null || true
+        return
+    fi
+    for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+        if trusted_executable "$dir/$name"; then
+            printf '%s' "$dir/$name"
+            return
+        fi
+    done
+}
+
 resolve_powerprofilesctl() {
     if [[ -n "${LEGION_POWERCTL_POWERPROFILESCTL_BIN:-}" ]]; then
         printf '%s' "$LEGION_POWERCTL_POWERPROFILESCTL_BIN"
         return
     fi
-    command -v powerprofilesctl 2>/dev/null || true
+    resolve_system_command powerprofilesctl
 }
 
 resolve_systemctl() {
@@ -334,7 +348,7 @@ resolve_systemctl() {
         printf '%s' "$LEGION_POWERCTL_SYSTEMCTL_BIN"
         return
     fi
-    command -v systemctl 2>/dev/null || true
+    resolve_system_command systemctl
 }
 
 ensure_config_dirs() {

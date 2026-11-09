@@ -3,10 +3,9 @@
 #
 # legion-powerbench - measure which limit is actually binding, before changing one.
 #
-# This is deliberately NOT a subcommand of legion-powerctl. The polkit policy pins
-# exec.path to the CLI, so a long-running, load-generating subcommand would widen what a
-# retained auth_admin_keep grant can reach. This script samples unprivileged and shells
-# out to legion-powerctl for anything that needs privilege.
+# This is deliberately NOT a subcommand of legion-powerctl: the CLI runs as root, and
+# this generates load for many minutes. It samples unprivileged and runs legion-powerctl
+# through sudo only to configure, apply and delete profiles.
 #
 # See docs/TUNING.md for the protocol this implements.
 
@@ -16,12 +15,43 @@ shopt -s nullglob
 readonly VERSION="0.3.0"
 readonly PROGRAM="${0##*/}"
 
+if (( EUID != 0 )) && [[ "${LEGION_POWERBENCH_TESTING:-0}" == 1 ]]; then
+    readonly TESTING=1
+else
+    readonly TESTING=0
+    unset LEGION_POWERBENCH_RYZENADJ_BIN LEGION_POWERBENCH_CLI_BIN
+fi
+
+trusted_executable() {
+    local file="$1" owner mode
+    [[ -f "$file" && -x "$file" ]] || return 1
+    (( ! TESTING )) || return 0
+    read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || return 1
+    [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 ))
+}
+
+system_binary() {
+    local name="$1" override="$2" dir
+    if [[ -n "$override" ]]; then
+        printf '%s' "$override"
+        return 0
+    fi
+    for dir in /usr/local/bin /usr/bin; do
+        if trusted_executable "$dir/$name"; then
+            printf '%s' "$dir/$name"
+            return 0
+        fi
+    done
+    return 0
+}
+
 readonly HWMON_ROOT="${LEGION_POWERBENCH_HWMON_ROOT:-/sys/class/hwmon}"
 readonly POWER_SUPPLY_ROOT="${LEGION_POWERBENCH_POWER_SUPPLY_ROOT:-/sys/class/power_supply}"
 readonly TURBOSTAT_BIN="${LEGION_POWERBENCH_TURBOSTAT_BIN:-turbostat}"
 readonly NVIDIA_SMI_BIN="${LEGION_POWERBENCH_NVIDIA_SMI_BIN:-nvidia-smi}"
-readonly RYZENADJ_BIN="${LEGION_POWERBENCH_RYZENADJ_BIN:-ryzenadj}"
-readonly CLI_BIN="${LEGION_POWERBENCH_CLI_BIN:-legion-powerctl}"
+RYZENADJ_BIN="$(system_binary ryzenadj "${LEGION_POWERBENCH_RYZENADJ_BIN:-}")"
+CLI_BIN="$(system_binary legion-powerctl "${LEGION_POWERBENCH_CLI_BIN:-}")"
+readonly RYZENADJ_BIN CLI_BIN
 readonly SUDO_BIN="${LEGION_POWERBENCH_SUDO_BIN:-sudo}"
 readonly STRESS_NG_BIN="${LEGION_POWERBENCH_STRESS_NG_BIN:-stress-ng}"
 readonly OPENSSL_BIN="${LEGION_POWERBENCH_OPENSSL_BIN:-openssl}"
@@ -50,6 +80,8 @@ die()     { printf '%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
 
 SAMPLE_INTERVAL=5
 DRY_RUN=0
+NO_GPU=0
+KEEP_SUDO=0
 RESTORE_PROFILE=""
 RESTORE_RECORD=""
 RESTORE_STAPM="" RESTORE_SLOW="" RESTORE_FAST=""
@@ -58,6 +90,8 @@ LOAD_LOG=""
 RUN_DIR=""
 LOAD_GROUPS=()
 LOAD_RECORDS=()
+LOAD_NAMES=()
+LOAD_LOGS=()
 LOAD_DURATION=0
 LAST_PHASE_ELAPSED=0
 STEP_STAPM="" STEP_SLOW="" STEP_FAST="" STEP_TEMP=""
@@ -68,25 +102,26 @@ legion-powerbench - measure which power or thermal limit is actually binding
 
 Usage:
   legion-powerbench doctor
-  legion-powerbench sample [--duration S] [--interval S] [--out FILE]
+  legion-powerbench sample [--duration S] [--interval S] [--out FILE] [--no-gpu]
   legion-powerbench run --ladder stapm|temp --from N --to N [--step N]
                         [--workload cpu|crossload|none] [--workload-cmd CMD]
                         [--soak S] [--cool S] [--interval S] [--temp C]
-                        [--out FILE] [--dry-run]
+                        [--out FILE] [--no-gpu] [--dry-run]
   legion-powerbench report FILE
   legion-powerbench version
 
 Run options:
   --ladder NAME       Which dimension to step: stapm (watts) or temp (Celsius)
-  --from N --to N     Inclusive range for the ladder
+  --from N --to N     Inclusive range for the ladder; --to must be on the step grid
   --step N            Ladder increment (default 10 for stapm, 5 for temp)
   --temp C            Fixed TEMP_C while laddering stapm (default 85)
   --workload NAME     cpu, crossload, or none (default cpu)
   --workload-cmd CMD  Any command to run as the load, instead of a preset
-  --soak S            Seconds of load per step (default 600)
+  --soak S            Seconds of load per step, at least 120 (default 600)
   --cool S            Seconds of cooldown between steps (default 300)
-  --interval S        Seconds between samples (default 5)
+  --interval S        Seconds between samples, 1 to 30 (default 5)
   --out FILE          CSV output (default powerbench-<ladder>.csv)
+  --no-gpu            Never run nvidia-smi; the GPU columns stay empty
   --dry-run           Print the plan and every command; change and load nothing
 
 A run requires a successfully applied profile whose saved settings still match it.
@@ -128,7 +163,7 @@ detect_sources() {
 
     if have_cmd "$TURBOSTAT_BIN" && [[ -n "$(turbostat_read 1 2>/dev/null || true)" ]]; then
         PKG_SOURCE=turbostat
-    elif have_cmd "$RYZENADJ_BIN" && ryzenadj_value 'STAPM VALUE' >/dev/null 2>&1; then
+    elif [[ -n "$RYZENADJ_BIN" ]] && ryzenadj_value 'STAPM VALUE' >/dev/null 2>&1; then
         PKG_SOURCE=ryzenadj
     else
         PKG_SOURCE=none
@@ -143,7 +178,7 @@ detect_sources() {
         done
     done
 
-    if have_cmd "$NVIDIA_SMI_BIN" && [[ -n "$(gpu_sample 2>/dev/null || true)" ]]; then
+    if (( ! NO_GPU )) && have_cmd "$NVIDIA_SMI_BIN" && [[ -n "$(gpu_sample 2>/dev/null || true)" ]]; then
         GPU_SOURCE=nvidia-smi
     else
         GPU_SOURCE=none
@@ -307,6 +342,7 @@ sample_for() {
     local step="$1" phase="$2" duration="$3" elapsed_us=0 interval started="${EPOCHREALTIME/./}"
     while (( elapsed_us < duration * 1000000 )); do
         [[ "$phase" != load ]] || check_workloads
+        (( ! KEEP_SUDO )) || "$SUDO_BIN" -n -v >/dev/null 2>&1 || true
         interval="$SAMPLE_INTERVAL"
         (( interval * 1000000 <= duration * 1000000 - elapsed_us )) ||
             interval=$(( (duration * 1000000 - elapsed_us + 999999) / 1000000 ))
@@ -392,14 +428,14 @@ extract_throughput() {
 }
 
 start_load() {
-    local cmd="$1" log="$2" completion pid
+    local name="$1" cmd="$2" log="$3" completion pid
     if [[ "$cmd" == busy_loop* ]]; then
         cmd="$(declare -f busy_loop)
 $cmd"
     fi
     completion="$(mktemp "$RUN_DIR/completion.XXXXXX")"
     # shellcheck disable=SC2016
-    setsid bash -c '
+    setsid timeout -k 10 "$(( LOAD_DURATION + 60 ))" bash -c '
         started=$EPOCHREALTIME
         bash -c "$1"
         rc=$?
@@ -409,6 +445,8 @@ $cmd"
     pid=$!
     LOAD_GROUPS+=("$pid")
     LOAD_RECORDS+=("$completion")
+    LOAD_NAMES+=("$name")
+    LOAD_LOGS+=("$log")
 }
 
 check_workloads() {
@@ -421,10 +459,11 @@ check_workloads() {
                 'BEGIN { exit !(end - start >= duration) }'; then
                 continue
             fi
-            [[ -z "$LOAD_LOG" ]] || tail -n 12 "$LOAD_LOG" >&2
-            die "Workload ended before the measurement finished (exit $rc); this step is incomplete."
+            tail -n 12 "${LOAD_LOGS[index]}" >&2 || true
+            die "The ${LOAD_NAMES[index]} ended before the measurement finished (exit $rc); this step is incomplete."
         elif ! kill -0 "$pid" 2>/dev/null; then
-            die "Workload exited without a completion record; this step is incomplete."
+            tail -n 12 "${LOAD_LOGS[index]}" >&2 || true
+            die "The ${LOAD_NAMES[index]} exited without a completion record; this step is incomplete."
         fi
     done
 }
@@ -448,6 +487,8 @@ stop_loads() {
     done
     LOAD_GROUPS=()
     LOAD_RECORDS=()
+    LOAD_NAMES=()
+    LOAD_LOGS=()
 }
 
 # ---------------------------------------------------------------- privileged calls
@@ -547,7 +588,14 @@ doctor_line() {
     printf '%s%-4s%s %-16s %s\n' "$colour" "$state" "$C_RESET" "$name" "$detail"
 }
 
+refuse_cli_environment() {
+    local exported
+    exported="$(compgen -e LEGION_POWERCTL_ | tr '\n' ' ' || true)"
+    [[ -z "$exported" ]] || die "Unset ${exported% }: sudo drops them for the writes, so the reads and the writes would see different machines."
+}
+
 cmd_doctor() {
+    refuse_cli_environment
     detect_sources
     DOCTOR_RC=0
 
@@ -596,10 +644,10 @@ cmd_doctor() {
         doctor_line WARN Workloads "none found; the busy-loop fallback has no throughput measurement"
     fi
 
-    if have_cmd "$CLI_BIN"; then
+    if [[ -n "$CLI_BIN" ]]; then
         doctor_line OK CLI "$CLI_BIN, active profile '$(active_profile || printf unknown)'"
     else
-        doctor_line FAIL CLI "$CLI_BIN not found; a ladder cannot change limits"
+        doctor_line FAIL CLI "no root-owned legion-powerctl in /usr/local/bin or /usr/bin; a ladder cannot change limits"
     fi
 
     return "$DOCTOR_RC"
@@ -612,6 +660,7 @@ cmd_sample() {
             --duration) duration="${2:?--duration needs a value}"; shift ;;
             --interval) SAMPLE_INTERVAL="${2:?--interval needs a value}"; shift ;;
             --out) out="${2:?--out needs a value}"; shift ;;
+            --no-gpu) NO_GPU=1 ;;
             -h|--help) usage; return 0 ;;
             *) die "Unknown sample option: $1" ;;
         esac
@@ -648,6 +697,7 @@ cmd_run() {
             --cool) cool="${2:?--cool needs a value}"; shift ;;
             --interval) SAMPLE_INTERVAL="${2:?--interval needs a value}"; shift ;;
             --out) out="${2:?--out needs a value}"; shift ;;
+            --no-gpu) NO_GPU=1 ;;
             --dry-run) DRY_RUN=1 ;;
             -h|--help) usage; return 0 ;;
             *) die "Unknown run option: $1" ;;
@@ -671,14 +721,21 @@ cmd_run() {
     esac
     validate_uint --step "$step" 1 200
     validate_uint --temp "$fixed_temp" 50 100
-    validate_uint --soak "$soak" 1 86400
+    local min_soak=120
+    (( ! TESTING )) || min_soak=1
+    validate_uint --soak "$soak" "$min_soak" 86400
     validate_uint --cool "$cool" 0 86400
-    validate_uint --interval "$SAMPLE_INTERVAL" 1 86400
+    validate_uint --interval "$SAMPLE_INTERVAL" 1 30
     (( from <= to )) || die "--from must not exceed --to."
+    (( (to - from) % step == 0 )) ||
+        die "--to $to is not on the ladder from $from by $step; use --to $(( to - (to - from) % step )) or $(( to - (to - from) % step + step ))."
     case "$workload" in cpu|crossload|none) ;; *) die "Unknown workload '$workload'." ;; esac
     [[ "$BENCH_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die "Invalid scratch profile name."
     have_cmd python3 || die "Python 3 is required to validate the restoration profile."
     have_cmd setsid || die "setsid (util-linux) is required for workload cleanup."
+    have_cmd timeout || die "timeout (coreutils) is required for workload cleanup."
+    refuse_cli_environment
+    [[ -n "$CLI_BIN" ]] || die "No root-owned legion-powerctl in /usr/local/bin or /usr/bin."
     out="${out:-powerbench-$ladder.csv}"
 
     local state
@@ -689,7 +746,8 @@ cmd_run() {
     RESTORE_STAPM="${values[1]}" RESTORE_SLOW="${values[2]}" RESTORE_FAST="${values[3]}"
     RESTORE_RECORD="${values[5]}"
 
-    local cmd gpu_cmd="" throughput_kind=""
+    local cmd gpu_cmd="" throughput_kind="" load_name="CPU workload"
+    [[ -z "$workload_cmd" && "$workload" != none ]] || load_name="workload"
     cmd="${workload_cmd:-$(resolve_workload "$workload" "$soak")}" || return 1
     if [[ "$workload" == crossload && -z "$workload_cmd" ]]; then
         gpu_cmd="$(resolve_gpu_workload)" || return 1
@@ -703,6 +761,10 @@ cmd_run() {
         [[ "$TEMP_SOURCE" != none ]] || die "No temperature source; refusing to change limits."
         if [[ "$PKG_SOURCE" == none ]]; then
             warn "No CPU package-power source; limiter and efficiency results will be inconclusive."
+        fi
+        if [[ "$PKG_SOURCE" != turbostat ]]; then
+            KEEP_SUDO=1
+            warn "turbostat is not reading, so nothing else renews sudo during a step; renewing it with 'sudo -n -v' at every sample."
         fi
         open_csv "$out"
         trap 'exit 130' INT
@@ -730,6 +792,9 @@ cmd_run() {
         label="${ladder}-${value}"
 
         info "Step $label: ${STEP_STAPM}/${STEP_SLOW}/${STEP_FAST} W, ${STEP_TEMP} C"
+        if (( ! DRY_RUN )); then
+            "$SUDO_BIN" -v || die "sudo authentication failed before step $label."
+        fi
         apply_step "$STEP_STAPM" "$STEP_SLOW" "$STEP_FAST" "$STEP_TEMP"
 
         if (( DRY_RUN )); then
@@ -745,9 +810,9 @@ cmd_run() {
         LOAD_LOG="$RUN_DIR/load.log"
         LOAD_DURATION="$soak"
         if [[ -n "$gpu_cmd" ]]; then
-            start_load "$gpu_cmd" /dev/null
+            start_load "GPU workload" "$gpu_cmd" "$RUN_DIR/gpu.log"
         fi
-        start_load "$cmd" "$LOAD_LOG"
+        start_load "$load_name" "$cmd" "$LOAD_LOG"
         sample_for "$label" load "$soak"
         load_elapsed="$LAST_PHASE_ELAPSED"
         check_workloads

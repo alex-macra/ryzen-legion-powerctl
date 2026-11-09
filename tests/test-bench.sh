@@ -494,4 +494,124 @@ PY
 done
 reset_machine
 
+printf 'Test 35: a --to off the step grid is refused, not silently skipped\n'
+output="$(run_bench run --ladder stapm --from 65 --to 100 --step 10 --dry-run --out "$TMP/grid.csv" 2>&1 || true)"
+assert_contains '--to 100 is not on the ladder from 65 by 10; use --to 95 or 105' "$output" \
+    'an off-grid --to was not refused with the nearest grid values'
+refute_contains 'DRY-RUN' "$output" 'an off-grid ladder still printed a plan'
+assert_eq '' "$(<"$LOG")" 'an off-grid ladder invoked a helper'
+reset_machine
+
+printf 'Test 36: run refuses an interval or soak the report would call inconclusive\n'
+assert_fails 'run accepted a 31 s interval' short_run "$TMP/interval.csv" --interval 31
+untested_bench() {
+    env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 "$BENCH_CLI" "$@"
+}
+output="$(untested_bench run --ladder stapm --from 65 --to 65 --soak 119 --dry-run --out "$TMP/soak.csv" 2>&1 || true)"
+assert_contains '--soak must be 120..86400' "$output" 'run accepted a soak shorter than the report window'
+output="$(untested_bench run --ladder stapm --from 65 --to 65 --soak 120 --dry-run --out "$TMP/soak.csv" 2>&1 || true)"
+refute_contains '--soak must be' "$output" 'run refused a 120 s soak'
+reset_machine
+
+printf 'Test 37: a failing GPU load is named and its own log is shown\n'
+cat > "$TMP/failing-vkmark" <<'EOF_FAKE'
+#!/usr/bin/env bash
+printf 'vkmark: no Vulkan device was found\n' >&2
+exit 3
+EOF_FAKE
+chmod +x "$TMP/failing-vkmark"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_VKMARK_BIN="$TMP/failing-vkmark"
+    LEGION_POWERBENCH_STRESS_NG_BIN="$FAKEBIN/stress-ng")
+output="$(run_bench run --ladder stapm --from 65 --to 65 --workload crossload \
+    --soak 5 --cool 0 --interval 1 --out "$TMP/gpu-fail.csv" 2>&1 || true)"
+assert_contains 'vkmark: no Vulkan device was found' "$output" "the GPU load's error was discarded"
+assert_contains 'The GPU workload ended before the measurement finished (exit 3)' "$output" \
+    'the failing load was not named'
+assert_restored_once
+reset_machine
+
+printf 'Test 38: every load runs under timeout, so a SIGKILLed harness cannot strand it\n'
+# shellcheck disable=SC2016
+printf -v wrapper_probe 'tr "\\0" " " < /proc/$(ps -o ppid= -p $PPID | tr -d " ")/cmdline > %q; sleep 300' \
+    "$TMP/load-wrapper"
+short_run "$TMP/wrapped.csv" --workload-cmd "$wrapper_probe" >/dev/null 2>&1
+assert_match "$(<"$TMP/load-wrapper")" 'timeout -k 10 61 bash -c *' \
+    'the load is not wrapped in a timeout of soak plus 60 seconds'
+assert_restored_once
+reset_machine
+
+printf 'Test 39: without turbostat each step renews sudo, and the run says why\n'
+cat > "$TMP/logging-sudo" <<EOF_FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> $(printf '%q' "$TMP/sudo.log")
+while [[ "\${1:-}" == -* ]]; do shift; done
+exec "\$@"
+EOF_FAKE
+chmod +x "$TMP/logging-sudo"
+: > "$TMP/sudo.log"
+LEGION_BENCH_ENV=(LEGION_FAKE_NO_TURBOSTAT=1 LEGION_POWERBENCH_SUDO_BIN="$TMP/logging-sudo")
+output="$(run_bench run --ladder stapm --from 65 --to 75 --workload none \
+    --soak 2 --cool 0 --interval 1 --out "$TMP/sudo.csv" 2>&1)"
+assert_contains "renewing it with 'sudo -n -v'" "$output" 'a run without turbostat did not warn'
+assert_eq '2' "$(grep -cx -- '-v' "$TMP/sudo.log" || true)" 'sudo -v did not run once before each step'
+[[ "$(grep -cx -- '-n -v' "$TMP/sudo.log" || true)" -ge 4 ]] || {
+    printf 'FAIL: the sudo credential was not renewed during each step\n%s\n' "$(<"$TMP/sudo.log")" >&2
+    exit 1
+}
+reset_machine
+: > "$TMP/sudo.log"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_SUDO_BIN="$TMP/logging-sudo")
+output="$(short_run "$TMP/sudo-turbostat.csv" 2>&1)"
+refute_contains "sudo -n -v" "$output" 'a run with turbostat warned about sudo'
+assert_eq '0' "$(grep -cx -- '-n -v' "$TMP/sudo.log" || true)" 'turbostat already renews sudo'
+reset_machine
+
+printf 'Test 40: --no-gpu never runs nvidia-smi\n'
+cat > "$TMP/counting-nvidia-smi" <<EOF_FAKE
+#!/usr/bin/env bash
+printf 'called\n' >> $(printf '%q' "$TMP/nvidia-smi.log")
+exec $(printf '%q' "$FAKEBIN/nvidia-smi") "\$@"
+EOF_FAKE
+chmod +x "$TMP/counting-nvidia-smi"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_NVIDIA_SMI_BIN="$TMP/counting-nvidia-smi")
+run_bench sample --duration 2 --interval 1 --no-gpu --out "$TMP/no-gpu.csv" >/dev/null 2>&1
+[[ ! -e "$TMP/nvidia-smi.log" ]] || { printf 'FAIL: --no-gpu still ran nvidia-smi\n' >&2; exit 1; }
+assert_eq ',,,' "$(awk -F, 'NR == 2 { print $14 "," $15 "," $16 "," $17 }' "$TMP/no-gpu.csv")" \
+    '--no-gpu still recorded GPU telemetry'
+run_bench sample --duration 1 --interval 1 --out "$TMP/gpu.csv" >/dev/null 2>&1
+assert_file_contains 'called' "$TMP/nvidia-smi.log" 'the counting nvidia-smi was never reached'
+short_run "$TMP/no-gpu-run.csv" --no-gpu >/dev/null 2>&1
+assert_eq ',,,' "$(awk -F, '$2 == "load" { print $14 "," $15 "," $16 "," $17; exit }' "$TMP/no-gpu-run.csv")" \
+    'run --no-gpu still recorded GPU telemetry'
+reset_machine
+
+printf 'Test 41: an exported LEGION_POWERCTL_* variable is refused, since sudo would drop it\n'
+LEGION_BENCH_ENV=(LEGION_POWERCTL_ETC_DIR="$TMP/elsewhere")
+assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(run_bench doctor 2>&1 || true)" \
+    'doctor read a machine the sudo writes would not see'
+assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(short_run "$TMP/env.csv" --dry-run 2>&1 || true)" \
+    'run read a machine the sudo writes would not see'
+assert_eq '' "$(<"$LOG")" 'a refused environment still invoked a helper'
+reset_machine
+
+printf 'Test 42: without TESTING the ryzenadj and CLI overrides are never executed\n'
+mkdir -p "$TMP/planted"
+for planted in ryzenadj legion-powerctl; do
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$0" >> %q\nexit 1\n' "$TMP/planted.log" > "$TMP/planted/$planted"
+    chmod +x "$TMP/planted/$planted"
+done
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_FAKE_NO_TURBOSTAT=1 \
+    LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
+    LEGION_POWERBENCH_CLI_BIN="$TMP/planted/legion-powerctl" \
+    PATH="$TMP/planted:$PATH" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+[[ ! -e "$TMP/planted.log" ]] || {
+    printf 'FAIL: powerbench ran a planted binary without TESTING:\n%s\n' "$(<"$TMP/planted.log")" >&2
+    exit 1
+}
+env "${BENCH_ENV[@]}" LEGION_FAKE_NO_TURBOSTAT=1 LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
+    "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+assert_file_contains "$TMP/planted/ryzenadj" "$TMP/planted.log" 'TESTING no longer reaches the ryzenadj override'
+reset_machine
+
 printf '\nAll legion-powerbench tests passed.\n'
