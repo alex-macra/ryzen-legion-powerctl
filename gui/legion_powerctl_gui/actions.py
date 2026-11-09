@@ -245,10 +245,10 @@ class ProfileActions(QObject):
             if code == 0:
                 self.previous_profile, self.previous_boot, self.previous_applied = go_back
             elif on_error is not None:
-                cancelled = self._is_cancelled_elevation(code, stdout)
-                on_error("authorisation was cancelled." if cancelled else (
-                    stderr.strip() or stdout.strip() or "the command failed."
-                ))
+                reason = "authorisation was cancelled." if self._is_cancelled_elevation(
+                    code, stdout
+                ) else (stderr.strip() or stdout.strip() or "the command failed.")
+                on_error("\n".join(part for part in (reason, carried.strip()) if part))
                 return
             stderr = "\n".join(part for part in (carried.strip(), stderr.strip()) if part)
             if code == 0 and then is not None:

@@ -3050,6 +3050,34 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
         )
         self.assertNotIn("nothing changed", self.window.errors[-1])
 
+    def test_a_half_done_go_back_still_reports_the_first_step_warning(self):
+        self.assert_half_done(
+            {"FAKE_CLI_EXIT": "select:1", "FAKE_CLI_APPLY_WARNING": "WARNING: quiet drifted."},
+            "WARNING: quiet drifted.",
+        )
+
+    def assert_first_step_keeps_the_offer(self, env: dict) -> None:
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(os.environ, env):
+            refreshes = self.window.refresh_count
+            self.offer.click()
+            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        self.assertFalse(self.actions.busy)
+        self.assertNotIn("select balanced-plus", self.privileged())
+        self.assertFalse(self.offer.isHidden(), "the stopped Go back can no longer be retried")
+        self.assertTrue(self.offer.isEnabled())
+        self.assertIn("quiet", self.offer.text())
+        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
+                         ("quiet", "balanced-plus"))
+
+    def test_a_dismissed_prompt_for_the_first_step_of_go_back_keeps_the_offer(self):
+        self.assert_first_step_keeps_the_offer(
+            {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("apply")}
+        )
+
+    def test_a_failed_first_step_of_go_back_keeps_the_offer(self):
+        self.assert_first_step_keeps_the_offer({"FAKE_CLI_EXIT": "apply:1"})
+
     def test_a_cancelled_unrelated_action_leaves_the_offer_true_to_its_label(self):
         self.apply_profile("performance-capped")
         with unittest.mock.patch.dict(

@@ -13,7 +13,9 @@ P-State EPP. Its systemd service is a one-shot unit that runs once at boot.
 .TP
 .B apply [PROFILE] [--dry-run] [--boot]
 Apply a named profile or the selected active profile. A powerbench-* scratch
-profile is refused; legion-powerbench applies it through configure --apply.
+profile is refused; legion-powerbench applies it through configure --apply. If
+config.conf names a scratch profile or sets no ACTIVE_PROFILE, balanced is
+applied instead and the command exits with an error naming the reason.
 .TP
 .B configure PROFILE [OPTIONS]
 Create or update a profile. Options include --stapm, --slow, --fast, --temp,
@@ -22,7 +24,7 @@ Create or update a profile. Options include --stapm, --slow, --fast, --temp,
 after the apply succeeds.
 .TP
 .B wizard [PROFILE]
-Open an interactive profile editor.
+Open an interactive profile editor. powerbench-* scratch names are refused.
 .TP
 .B select PROFILE [--apply]
 Select the profile used at boot. The profile is validated first. With --apply,

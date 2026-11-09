@@ -42,8 +42,11 @@ directly and stay untracked by any package manager.
 
 If you used a script install before, pacman will not overwrite those unowned files. The
 installer detects them and offers to run `./uninstall.sh` for you first, keeping
-`/etc/legion-powerctl`. The prompt defaults to no; `--replace-script-install` answers it
-for unattended runs.
+`/etc/legion-powerctl` and rewriting the `ryzen_smu` boot entry if the script install had
+one. The package is built before anything is removed, and rebuilt even if one of the same
+version already exists. If `pacman -U` then fails, the installer prints the recovery:
+`sudo pacman -U` on the built package, then `sudo legion-powerctl enable`. The prompt
+defaults to no; `--replace-script-install` answers it for unattended runs.
 
 For a machine that already has an earlier `legion-balanced-plus.service` created by
 hand:
@@ -144,7 +147,7 @@ applying anything. Upgrades and reinstalls leave an existing `config.conf` alone
 succeeded, so what you apply in the GUI survives a reboot. **Go back** puts back both
 the profile that was running and the boot profile that was set before that apply. If it
 re-applies the old profile but cannot set the old boot profile back, it says so and keeps
-the offer so you can finish it. The
+the offer so you can finish it; a cancelled or failed Go back keeps the offer too. The
 `BOOT` pin on a profile row sets the boot profile without applying it, and
 `legion-powerctl apply` from a terminal stays a one-off that leaves the boot profile
 alone.

@@ -757,6 +757,27 @@ case_a_powerbench_scratch_profile_cannot_become_the_boot_profile() {
         'powerbench can no longer apply its scratch profile without selecting it'
 }
 
+case_a_scratch_boot_pointer_cannot_be_written_and_boots_balanced_loudly() {
+    local before out rc=0 report
+    before="$(<"$ETC/config.conf")"
+    out="$(run_wizard powerbench-77 '52\n58\n64\n79\n\n\n\n\n\ny\nn\n')"
+    assert_contains 'scratch profile' "$out" 'the wizard did not refuse a scratch profile name'
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'the wizard made a scratch profile the boot profile'
+    assert_eq '' "$(ls "$PROFILES"/powerbench-77.conf 2>/dev/null || true)" 'the refused wizard still wrote the scratch profile'
+
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    cp "$PROFILES/quiet.conf" "$PROFILES/powerbench-77.conf"
+    printf 'ACTIVE_PROFILE=powerbench-77\n' > "$ETC/config.conf"
+    out="$(run_cli apply --boot 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'a scratch boot pointer booted silently'
+    assert_contains "scratch profile 'powerbench-77'" "$out" 'the boot did not name the scratch pointer'
+    assert_file_contains 'PROFILE=balanced' "$STATE/last-apply.env" \
+        'a scratch boot pointer left the machine without limits'
+    report="$(run_cli doctor 2>&1 || true)"
+    assert_doctor_line WARN Profile "scratch profile 'powerbench-77'" "$report" \
+        'doctor did not flag the scratch boot pointer'
+}
+
 case_deleting_balanced_while_it_boots_says_why() {
     cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
     run_cli select balanced >/dev/null
@@ -1846,6 +1867,8 @@ run_case case_select_refuses_an_invalid_profile \
     'select refuses an invalid profile before writing config.conf'
 run_case case_a_powerbench_scratch_profile_cannot_become_the_boot_profile \
     'a powerbench scratch profile cannot become the boot profile'
+run_case case_a_scratch_boot_pointer_cannot_be_written_and_boots_balanced_loudly \
+    'the wizard cannot point boot at a scratch profile, and a stale pointer boots balanced loudly'
 run_case case_deleting_balanced_while_it_boots_says_why \
     'deleting balanced while it boots names the real reason'
 run_case case_delete_waits_for_the_power_lock \

@@ -43,9 +43,17 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Moving from a script install to the package flow builds the package first with
-  `makepkg -s`, then removes the script install and installs the built package with
+  `makepkg -sf`, then removes the script install and installs the built package with
   `pacman -U --noconfirm`, so a missing `ryzenadj` package, a busy pacman, a failed
   build or a "n" at a prompt no longer leaves the machine with no CLI and no boot apply.
+  Rerunning `./install.sh` without a version bump rebuilds instead of stopping on an
+  already built package, the `ryzen_smu` boot entry the script install wrote is kept,
+  and a failed `pacman -U` names the full recovery, including `legion-powerctl enable`.
+- `wizard` refuses a `powerbench-*` scratch name, so it can no longer make one the boot
+  profile. A `config.conf` that already names one boots `balanced`, and the boot unit
+  and `doctor` name the scratch pointer, instead of the boot holding no limits at all.
+- Cancelling or failing the first step of the GUI's Go back keeps the Go back button, so
+  it can be retried, and a Go back left half done also reports the first step's warning.
 - A fresh `sudo make install` boots `balanced` like every other fresh install; a staged
   install (`DESTDIR`) still ships `config.conf` byte for byte, and `make uninstall` runs
   `systemctl daemon-reload` after removing the unit.

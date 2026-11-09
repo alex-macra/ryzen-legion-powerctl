@@ -1176,13 +1176,17 @@ cmd_apply() {
 
     [[ "$dry_run" == "1" ]] || require_root
 
-    local unnamed_config=0
+    local fallback_reason=""
     if [[ -z "$profile" ]]; then
         load_global_config
         profile="$ACTIVE_PROFILE"
         if [[ -e "$CONFIG_FILE" && "$CONFIG_NAMES_PROFILE" == 0 ]]; then
-            unnamed_config=1
+            fallback_reason="$CONFIG_FILE sets no ACTIVE_PROFILE"
             warn "$CONFIG_FILE exists but sets no ACTIVE_PROFILE; applying 'balanced' so the limits are still held."
+        elif [[ "$profile" == powerbench-* ]]; then
+            fallback_reason="$CONFIG_FILE names the legion-powerbench scratch profile '$profile' as the boot profile"
+            warn "$fallback_reason, which cannot boot; applying 'balanced' so the limits are still held."
+            profile=balanced
         fi
     fi
 
@@ -1191,8 +1195,8 @@ cmd_apply() {
     load_profile "$profile"
     validate_profile "$profile"
     apply_loaded_profile "$profile" "$dry_run" "$boot"
-    (( unnamed_config == 0 )) || \
-        die "$CONFIG_FILE sets no ACTIVE_PROFILE, so 'balanced' was applied as a fallback. Choose the boot profile with 'sudo legion-powerctl select PROFILE'."
+    [[ -z "$fallback_reason" ]] || \
+        die "$fallback_reason, so 'balanced' was applied as a fallback. Choose the boot profile with 'sudo legion-powerctl select PROFILE'."
 }
 
 record_failed_apply() {
@@ -1458,6 +1462,7 @@ cmd_wizard() {
     [[ -t 0 ]] || die "wizard needs an interactive terminal. Use 'configure' for scripting."
     local name="${1:-custom}" path answer
     valid_profile_name "$name" || die "Invalid profile name '$name'."
+    refuse_scratch_boot_profile "$name"
     path="$(profile_path "$name")"
     if [[ -r "$path" ]]; then
         load_profile "$name"
@@ -2035,13 +2040,20 @@ cmd_doctor() {
     fi
 
     load_global_config
-    local profile_error=""
+    local profile_error="" scratch_pointer=""
+    if [[ "$ACTIVE_PROFILE" == powerbench-* ]]; then
+        scratch_pointer="$ACTIVE_PROFILE"
+        ACTIVE_PROFILE=balanced
+    fi
     if [[ ! -r "$(profile_path "$ACTIVE_PROFILE")" ]]; then
         doctor_line FAIL Profile "active profile '$ACTIVE_PROFILE' is missing"
         ((failures += 1))
     elif profile_error="$( (load_profile "$ACTIVE_PROFILE" && validate_profile "$ACTIVE_PROFILE") 2>&1 >/dev/null )"; then
         if [[ -e "$CONFIG_FILE" && "$CONFIG_NAMES_PROFILE" == 0 ]]; then
             doctor_line WARN Profile "$CONFIG_FILE sets no ACTIVE_PROFILE; boot falls back to balanced and the boot unit reports a failure"
+            ((warnings += 1))
+        elif [[ -n "$scratch_pointer" ]]; then
+            doctor_line WARN Profile "$CONFIG_FILE names the scratch profile '$scratch_pointer'; boot falls back to balanced and the boot unit reports a failure"
             ((warnings += 1))
         else
             doctor_line OK Profile "$ACTIVE_PROFILE"

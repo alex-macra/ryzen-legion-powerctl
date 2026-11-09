@@ -139,7 +139,7 @@ interruption (SIGINT, SIGTERM or SIGHUP, including a closed terminal or a `tee` 
 died first) and failures stop the workload process groups and restore the previously
 applied profile once. If the restore fails or that profile was edited during the run,
 the command fails and prints the profile to reapply. A scratch profile is applied only by
-`legion-powerbench`, through `configure --apply`; `apply` and `select` refuse it. Existing output files are rejected, so use a fresh filename for
+`legion-powerbench`, through `configure --apply`; `apply`, `select` and `wizard` refuse it. Existing output files are rejected, so use a fresh filename for
 each comparison.
 
 Load generation is pluggable. The built-in `cpu` preset probes for `stress-ng`, then

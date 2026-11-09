@@ -822,7 +822,8 @@ pkg_root="$TMP/pkg-root"
 mkdir -p "$pkg_root/packaging/arch"
 : > "$pkg_root/packaging/arch/PKGBUILD"
 : > "$pkg_root/packaging/arch/legion-powerctl.install"
-printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\n' "$TMP/pkg-flow.log" > "$pkg_root/uninstall.sh"
+printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\nrm -f %q\n' "$TMP/pkg-flow.log" "$TMP/modules-load.conf" \
+    > "$pkg_root/uninstall.sh"
 chmod +x "$pkg_root/uninstall.sh"
 : > "$TMP/script-installed-cli"
 package_functions="$TMP/package-install.sh"
@@ -842,7 +843,9 @@ run_package_install() {
         warn() { :; }
         die() { printf 'died: %s\n' "$*" >> "$TMP/pkg-flow.log"; exit 1; }
         SUDO=()
+        MODULES_LOAD_CONF="$TMP/modules-load.conf"
         confirm() { return 1; }
+        persist_ryzen_smu() { printf 'persist_ryzen_smu\n' >> "$TMP/pkg-flow.log"; }
         pacman() {
             [[ "$1" == -U ]] || return 1
             printf 'pacman %s %s %s\n' "$1" "$2" "${3##*/}" >> "$TMP/pkg-flow.log"
@@ -877,8 +880,16 @@ for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy makepkg;
         "a failing $failing still removed the script install first"
 done
 run_package_install none
-assert_eq "$(printf 'makepkg -s\nuninstall.sh\npacman -U --noconfirm legion-powerctl-0.0.0-1-any.pkg.tar.zst')" "$(<"$TMP/pkg-flow.log")" \
-    'the script install was not removed between a finished build and the pacman install'
+assert_eq "$(printf 'makepkg -sf\nuninstall.sh\npacman -U --noconfirm legion-powerctl-0.0.0-1-any.pkg.tar.zst')" "$(<"$TMP/pkg-flow.log")" \
+    'the script install was not removed between a finished (re)build and the pacman install'
+: > "$TMP/modules-load.conf"
+run_package_install pacman
+assert_match "$(<"$TMP/pkg-flow.log")" "*$(printf 'uninstall.sh\npersist_ryzen_smu\npacman -U')*" \
+    'moving to the package dropped the ryzen_smu boot entry the script install had written'
+pkg_failure="$(<"$TMP/pkg-flow.log")"
+for recovery_step in 'sudo pacman -U ' 'legion-powerctl-0.0.0-1-any.pkg.tar.zst' 'then: sudo legion-powerctl enable'; do
+    assert_contains "$recovery_step" "$pkg_failure" 'a failed pacman install after the script removal gave an incomplete recovery'
+done
 
 printf 'Test 58: make dist inside an enclosing git repository still packs this tree\n'
 nested="$TMP/enclosing/legion-powerctl"

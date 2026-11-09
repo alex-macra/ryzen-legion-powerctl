@@ -48,6 +48,7 @@ case "$command" in
             printf 'DRY RUN: ryzenadj --stapm-limit=60000 --slow-limit=65000 --fast-limit=75000 --tctl-temp=82\n'
         else
             printf "Profile '%s' applied successfully.\n" "${2:-}"
+            [[ -z "${FAKE_CLI_APPLY_WARNING:-}" ]] || printf '%s\n' "$FAKE_CLI_APPLY_WARNING" >&2
         fi
         ;;
     configure|select|delete|enable|disable)

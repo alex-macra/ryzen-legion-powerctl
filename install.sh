@@ -470,19 +470,24 @@ package_install() {
     info "Building legion-powerctl $version package in $BUILD_DIR..."
     make -C "$ROOT_DIR" dist DISTDIR="$BUILD_DIR"
     cp "$ROOT_DIR/packaging/arch/PKGBUILD" "$ROOT_DIR/packaging/arch/legion-powerctl.install" "$BUILD_DIR/"
-    (cd "$BUILD_DIR" && makepkg -s) || die "The package build failed. Nothing was installed or removed."
+    (cd "$BUILD_DIR" && makepkg -sf) || die "The package build failed. Nothing was installed or removed."
     local package="" built
     while IFS= read -r built; do
         [[ "${built##*/}" != "legion-powerctl-$version-"* ]] || package="$built"
     done < <(cd "$BUILD_DIR" && makepkg --packagelist)
     [[ -n "$package" && -f "$package" ]] || die "makepkg finished without a legion-powerctl $version package. Nothing was installed or removed."
+    local recovery="Install it with: sudo pacman -U $package"
     if (( remove_script_install == 1 )); then
+        local had_modules_load=0
+        [[ ! -e "$MODULES_LOAD_CONF" ]] || had_modules_load=1
         info "Removing the previous script install..."
         "$ROOT_DIR/uninstall.sh"
+        (( had_modules_load == 0 )) || persist_ryzen_smu
+        recovery="The script install was already removed and its boot service disabled. Recover with: sudo pacman -U $package, then: sudo legion-powerctl enable"
     fi
     if ! "${SUDO[@]}" pacman -U --noconfirm "$package"; then
         trap - EXIT
-        die "pacman could not install $package. Install it with: sudo pacman -U $package"
+        die "pacman could not install $package. $recovery"
     fi
 
     ensure_gui_runtime

@@ -130,6 +130,7 @@ class MainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self.errors.append(message)
         self.reports.error(message)
+        self.reports.offer_go_back(self.profile_actions.previous_profile)
 
     def _on_action_succeeded(self, message: str) -> None:
         self.reports.success(message, self.profile_actions.previous_profile)
@@ -153,12 +154,12 @@ class MainWindow(QMainWindow):
     def _on_action_cancelled(self, message: str) -> None:
         self._pending_open = ""
         self.reports.note(message)
+        self.reports.offer_go_back(self.profile_actions.previous_profile)
         self.refresh()
 
     def _on_go_back_half_done(self, message: str) -> None:
         self._pending_open = ""
         self._show_error(message)
-        self.reports.offer_go_back(self.profile_actions.previous_profile)
         self.refresh()
 
     def _on_go_back(self) -> None:
