@@ -23,7 +23,7 @@ RUN apt-get update \
 # is Debian's, and it is the only one that can have python3-pyatspi - that is the
 # driver. They share a bus and nothing else.
 COPY requirements-dev.txt /tmp/requirements-dev.txt
-RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -r /tmp/requirements-dev.txt
 
 # Not root: the CLI ignores LEGION_POWERCTL_TESTING and every test override as root,
 # so the fake laptop only exists for an unprivileged user.
