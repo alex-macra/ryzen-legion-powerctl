@@ -292,10 +292,10 @@ ensure_config_dirs() {
     install -d -m 0755 "$ETC_DIR" "$PROFILES_DIR"
 }
 
-ACTIVE_PROFILE="balanced-plus"
+ACTIVE_PROFILE="balanced"
 RYZENADJ_DRIFT=""
 load_global_config() {
-    ACTIVE_PROFILE="balanced-plus"
+    ACTIVE_PROFILE="balanced"
     [[ -r "$CONFIG_FILE" ]] || return 0
 
     local raw line key value lineno=0

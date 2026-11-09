@@ -397,7 +397,7 @@ class MainWindowTest(OffscreenGuiTest):
         line = next(line for line in self.read_log() if line.startswith("configure"))
         self.assertIn("configure balanced-plus --stapm 55 --slow 75 --fast 85 --temp 72", line)
         self.assertIn("--power-profile balanced", line)
-        self.assertIn("--apply", line)
+        self.assertIn("--select --apply", line)
 
     def test_ctrl_s_saves_without_applying(self):
         self.editor.stapm_spin.setValue(55)
@@ -1364,7 +1364,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.reports.go_back_button.click()
         self.assertTrue(
             wait_until(self.app, lambda: any(
-                line.startswith("apply balanced-plus") for line in self.read_log()
+                line.startswith("select balanced-plus --apply") for line in self.read_log()
             ))
         )
         self.assertTrue(self.window.reports.go_back_button.isHidden())

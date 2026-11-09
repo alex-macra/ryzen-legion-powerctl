@@ -7,6 +7,12 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The GUI's **Apply now** and **Go back** now also set the boot profile, so the profile
+  you apply is the one the boot service applies after a restart. Before, they changed
+  only the running limits and the next boot went back to the old pointer.
+- A fresh install boots `balanced` instead of `balanced-plus`. Upgrades keep the boot
+  profile already in `/etc/legion-powerctl/config.conf`; change it with
+  `sudo legion-powerctl select balanced --apply`.
 - Refuse a known broken SMU backend before changing power policy, and record
   ordinary apply failures as partial instead of leaving a stale success visible.
 - Unload an unusable module newly loaded by the installer, and respect a recovery

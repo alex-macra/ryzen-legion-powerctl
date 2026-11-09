@@ -267,8 +267,8 @@ class CommandBuildingTest(unittest.TestCase):
         self.assertLess(args.index("--select"), args.index("--apply"))
 
     def test_apply_and_select_args(self):
-        self.assertEqual(model.build_apply_args("p"), ["apply", "p"])
         self.assertEqual(model.build_select_args("p"), ["select", "p"])
+        self.assertEqual(model.build_select_args("p", apply_now=True), ["select", "p", "--apply"])
         self.assertEqual(model.build_delete_args("p"), ["delete", "p"])
 
     def test_the_description_is_still_sent_though_nothing_edits_it(self):

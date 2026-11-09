@@ -81,7 +81,6 @@ class PackageShapeTest(unittest.TestCase):
 
         builders = {
             "build_configure_args": lambda: model.build_configure_args(model.Profile(name="x")),
-            "build_apply_args": lambda: model.build_apply_args("x"),
             "build_select_args": lambda: model.build_select_args("x"),
             "build_delete_args": lambda: model.build_delete_args("x"),
         }
@@ -114,7 +113,7 @@ class PackageShapeTest(unittest.TestCase):
         policy = (REPO / "packaging/polkit/io.github.alexmacra.legion-powerctl.policy")
         pinned = set(re.findall(r"exec\.argv1\">([a-z-]+)<", policy.read_text(encoding="utf-8")))
         self.assertEqual(
-            sent, {"configure", "apply", "select", "delete", "enable", "disable", "repair"}
+            sent, {"configure", "select", "delete", "enable", "disable", "repair"}
         )
         self.assertLessEqual(
             sent, pinned, f"the GUI runs {sorted(sent - pinned)} through pkexec unpinned"
