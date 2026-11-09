@@ -104,6 +104,10 @@ install-config:
 		esac; \
 		if [ -e "$$target" ] && [ "$(FORCE_CONFIG)" != 1 ]; then \
 			printf 'Keeping existing %s (FORCE_CONFIG=1 overwrites it)\n' "$$target"; \
+		elif [ "$$source" = config/config.conf ] && [ -z "$(DESTDIR)" ]; then \
+			sed 's/^ACTIVE_PROFILE=.*/ACTIVE_PROFILE=balanced/' "$$source" > "$$target.tmp" && \
+				chmod 0644 "$$target.tmp" && mv -f "$$target.tmp" "$$target" || exit 1; \
+			printf 'Installed %s; the boot profile is balanced.\n' "$$target"; \
 		else \
 			install -m0644 "$$source" "$$target" || exit 1; \
 		fi; \
@@ -118,6 +122,7 @@ uninstall:
 		systemctl stop legion-powerctl.service 2>/dev/null || true; \
 	fi
 	$(MAKE) uninstall-files
+	@if [ -z "$(DESTDIR)" ]; then systemctl daemon-reload 2>/dev/null || true; fi
 	@printf 'Configuration under %s was preserved.\n' "$(DESTDIR)$(SYSCONFDIR)/legion-powerctl"
 
 uninstall-files:

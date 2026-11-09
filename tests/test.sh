@@ -712,7 +712,11 @@ rm -f "$ETC/config.conf"
 assert_eq 'balanced' "$(fresh_boot_profile)" 'with no config.conf the CLI does not fall back to balanced'
 
 pacman_scriptlet="$TMP/legion-powerctl.install"
-sed -e "s|/etc/legion-powerctl|$ETC|g" -e "s|/run/legion-powerctl-fresh-config|$TMP/fresh-config|g" \
+pacman_varlib="$TMP/pacstrap-var-lib"
+mkdir -p "$TMP/pacstrap-run"
+chmod 0555 "$TMP/pacstrap-run"
+sed -e "s|/etc/legion-powerctl|$ETC|g" -e "s|/var/lib/legion-powerctl|$pacman_varlib|g" \
+    -e "s|/run/|$TMP/pacstrap-run/|g" \
     -e "s|legion-powerctl select|$FAKEBIN/legion-powerctl select|g" \
     "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
 # shellcheck disable=SC2329
@@ -747,7 +751,11 @@ rm -f "$ETC/config.conf"
 pacman_install new >/dev/null
 assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
 refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
-rm -f "$ETC/config.conf.pacnew" "$TMP/fresh-config"
+[[ ! -e "$pacman_varlib/fresh-config" ]] || {
+    printf 'FAIL: post_install left its fresh-install marker behind\n' >&2
+    exit 1
+}
+rm -f "$ETC/config.conf.pacnew"
 
 installer_functions="$TMP/installer-functions.sh"
 awk '/^(install_preserving|install_config_files)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_functions"
@@ -833,10 +841,24 @@ run_package_install() {
         info() { :; }
         warn() { :; }
         die() { printf 'died: %s\n' "$*" >> "$TMP/pkg-flow.log"; exit 1; }
+        SUDO=()
         confirm() { return 1; }
-        pacman() { return 1; }
+        pacman() {
+            [[ "$1" == -U ]] || return 1
+            printf 'pacman %s %s %s\n' "$1" "$2" "${3##*/}" >> "$TMP/pkg-flow.log"
+            [[ "$failing" != pacman ]]
+        }
         make() { [[ " $* " != *' print-version '* ]] || printf '0.0.0\n'; }
-        makepkg() { printf 'makepkg %s\n' "$*" >> "$TMP/pkg-flow.log"; }
+        makepkg() {
+            if [[ "$1" == --packagelist ]]; then
+                printf '%s/legion-powerctl-debug-0.0.0-1-x86_64.pkg.tar.zst\n' "$BUILD_DIR"
+                printf '%s/legion-powerctl-0.0.0-1-any.pkg.tar.zst\n' "$BUILD_DIR"
+                return 0
+            fi
+            printf 'makepkg %s\n' "$*" >> "$TMP/pkg-flow.log"
+            [[ "$failing" != makepkg ]] || return 1
+            : > "$BUILD_DIR/legion-powerctl-0.0.0-1-any.pkg.tar.zst"
+        }
         step() { [[ "$1" != "$failing" ]] || die "$1 failed"; }
         check_pacman_lock() { step check_pacman_lock; }
         ensure_ryzenadj_package() { step ensure_ryzenadj_package; }
@@ -849,14 +871,14 @@ run_package_install() {
         package_install
     ) >/dev/null 2>&1 || true
 }
-for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy; do
+for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy makepkg; do
     run_package_install "$failing"
     refute_contains 'uninstall.sh' "$(<"$TMP/pkg-flow.log")" \
         "a failing $failing still removed the script install first"
 done
 run_package_install none
-assert_eq "$(printf 'uninstall.sh\nmakepkg -si')" "$(<"$TMP/pkg-flow.log")" \
-    'the script install was not removed just before makepkg -si'
+assert_eq "$(printf 'makepkg -s\nuninstall.sh\npacman -U --noconfirm legion-powerctl-0.0.0-1-any.pkg.tar.zst')" "$(<"$TMP/pkg-flow.log")" \
+    'the script install was not removed between a finished build and the pacman install'
 
 printf 'Test 58: make dist inside an enclosing git repository still packs this tree\n'
 nested="$TMP/enclosing/legion-powerctl"
@@ -874,6 +896,10 @@ done
 printf 'Test 59: make install keeps edited /etc files unless FORCE_CONFIG=1\n'
 config_stage="$TMP/config-stage"
 make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
+cmp -s "$ROOT_DIR/config/config.conf" "$config_stage/etc/legion-powerctl/config.conf" || {
+    printf 'FAIL: a staged (DESTDIR) install changed the config.conf bytes pacman relies on\n' >&2
+    exit 1
+}
 printf 'ACTIVE_PROFILE=quiet\n' > "$config_stage/etc/legion-powerctl/config.conf"
 printf 'STAPM_W=1\n' > "$config_stage/etc/legion-powerctl/profiles.d/quiet.conf"
 make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
@@ -890,6 +916,15 @@ cmp -s "$ROOT_DIR/profiles/quiet.conf" "$config_stage/etc/legion-powerctl/profil
     printf 'FAIL: FORCE_CONFIG=1 did not reset a profile\n' >&2
     exit 1
 }
+
+fresh_etc="$TMP/fresh-make-etc"
+make -s -C "$ROOT_DIR" install-config DESTDIR= SYSCONFDIR="$fresh_etc" >/dev/null
+assert_eq 'ACTIVE_PROFILE=balanced' "$(grep '^ACTIVE_PROFILE=' "$fresh_etc/legion-powerctl/config.conf")" \
+    'a fresh make install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$fresh_etc/legion-powerctl/config.conf"
+make -s -C "$ROOT_DIR" install-config DESTDIR= SYSCONFDIR="$fresh_etc" >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$fresh_etc/legion-powerctl/config.conf")" \
+    'make install moved the boot profile of an existing install'
 
 printf 'Test 60: make uninstall disables the unit before removing it, and refuses when it cannot\n'
 uninstall_prefix="$TMP/uninstall-prefix"
@@ -917,6 +952,8 @@ FAKE_SYSTEMCTL_FAIL=1 assert_fails 'make uninstall removed a unit it could not d
 uninstall_make >/dev/null
 assert_file_contains 'systemctl disable legion-powerctl.service' "$TMP/uninstall.log" \
     'make uninstall did not disable the unit'
+assert_eq 'systemctl daemon-reload' "$(tail -n1 "$TMP/uninstall.log")" \
+    'make uninstall left systemd holding the removed unit'
 [[ ! -e "$uninstall_prefix/lib/systemd/system/legion-powerctl.service" ]] || {
     printf 'FAIL: make uninstall left the unit behind\n' >&2
     exit 1
@@ -947,5 +984,34 @@ assert_match "$(grep '^After=' <<<"$unit_text")" '*power-profiles-daemon.service
     'the unit can apply before power-profiles-daemon resets the platform profile'
 refute_contains 'Wants=power-profiles-daemon' "$unit_text" 'the unit pulls power-profiles-daemon in'
 refute_contains 'Requires=power-profiles-daemon' "$unit_text" 'the unit requires power-profiles-daemon'
+
+run_package_install pacman
+assert_contains 'died: pacman could not install' "$(<"$TMP/pkg-flow.log")" \
+    'a failed pacman -U did not say how to install the built package'
+
+printf 'Test 63: install.sh trusts exactly the ryzenadj locations the CLI runs from\n'
+cli_dirs="$(grep '^readonly -a RYZENADJ_DIRS=' "$ROOT_DIR/bin/legion-powerctl" | sed 's/^readonly -a RYZENADJ_DIRS=//')"
+installer_dirs="$(grep '^readonly RYZENADJ_DIRS=' "$ROOT_DIR/install.sh" | sed 's/^readonly RYZENADJ_DIRS=//')"
+assert_contains '/usr/bin' "$cli_dirs" 'the CLI ryzenadj directory list was not found'
+assert_eq "$cli_dirs" "$installer_dirs" 'install.sh and the CLI trust different ryzenadj directories'
+ryzenadj_functions="$TMP/ryzenadj-functions.sh"
+awk '/^(trusted_ryzenadj|ensure_ryzenadj_binary)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$ryzenadj_functions"
+assert_contains 'ensure_ryzenadj_binary()' "$(<"$ryzenadj_functions")" 'install.sh no longer has ensure_ryzenadj_binary'
+mkdir -p "$TMP/path-only" "$TMP/no-ryzenadj"
+cp "$FAKEBIN/ryzenadj" "$TMP/path-only/ryzenadj"
+installer_rc=0
+# shellcheck disable=SC2034,SC2329
+installer_out="$(
+    RYZENADJ_DIRS=("$TMP/no-ryzenadj")
+    ARCH_FAMILY=0
+    info() { printf '%s\n' "$*"; }
+    warn() { printf 'WARNING: %s\n' "$*"; }
+    die() { printf 'ERROR: %s\n' "$*"; exit 1; }
+    # shellcheck source=/dev/null
+    . "$ryzenadj_functions"
+    PATH="$TMP/path-only:$PATH" ensure_ryzenadj_binary
+)" || installer_rc=$?
+assert_eq '1' "$installer_rc" 'install.sh accepted a ryzenadj the CLI will never run'
+assert_contains "$TMP/path-only/ryzenadj" "$installer_out" 'install.sh did not name the ryzenadj it cannot use'
 
 printf 'All tests passed.\n'

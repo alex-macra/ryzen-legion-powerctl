@@ -164,6 +164,7 @@ refuse_without_dry_run() {
 }
 
 MUTATION_LOCK_FD=""
+APPLY_SCRATCH_OK=0
 acquire_mutation_lock() {
     [[ -z "$MUTATION_LOCK_FD" ]] || return 0
     [[ -x /usr/bin/flock ]] || die "flock from util-linux is required for power operations."
@@ -275,7 +276,7 @@ resolve_ryzenadj() {
 
 ryzenadj_version() {
     local ryzenadj="$1"
-    "$ryzenadj" --help 2>/dev/null \
+    run_unlocked "$ryzenadj" --help 2>/dev/null \
         | sed -n 's/^[[:space:]]*Version:[[:space:]]*v\{0,1\}\([0-9][0-9.]*\).*/\1/p' \
         | head -n1 || true
 }
@@ -319,6 +320,23 @@ ryzenadj_shadow_detail() {
         printf '. Stale: %s - running ryzenadj by hand may pick it; safe to delete if no package owns it' "$stale"
     fi
     [[ -z "$unknown" && -z "$stale" ]]
+}
+
+ryzenadj_missing_detail() {
+    local dir found
+    for dir in "${RYZENADJ_DIRS[@]}"; do
+        if [[ -e "$dir/ryzenadj" || -L "$dir/ryzenadj" ]]; then
+            printf '%s is not a root-owned executable that only root can change, so it is never run; reinstall ryzenadj (AUR)' "$dir/ryzenadj"
+            return 0
+        fi
+    done
+    found="$(command -v ryzenadj 2>/dev/null || true)"
+    if [[ -n "$found" ]]; then
+        printf '%s is on PATH, but only a root-owned ryzenadj in %s is ever run; install ryzenadj (AUR) there' \
+            "$found" "${RYZENADJ_DIRS[*]}"
+        return 0
+    fi
+    printf 'not found; install ryzenadj (AUR)'
 }
 
 resolve_system_command() {
@@ -782,7 +800,9 @@ boost_control_files() {
     for file in "$SYSFS_CPU_ROOT"/cpufreq/policy*/boost \
                 "$SYSFS_CPU_ROOT"/cpufreq/policy*/cpb \
                 "$SYSFS_CPU_ROOT"/cpu[0-9]*/cpufreq/boost; do
-        [[ -e "$file" ]] && files+=("$file")
+        [[ -e "$file" ]] || continue
+        [[ "$file" != */cpu[0-9]*/cpufreq/boost || ! -L "${file%/boost}" ]] || continue
+        files+=("$file")
     done
     (( ${#files[@]} > 0 )) || return 1
     printf '%s\n' "${files[@]}"
@@ -952,6 +972,14 @@ mark_smu_written() {
     atomic_write 0644 "$STATE_DIR/smu-written" "${id:-unknown}"$'\n'
 }
 
+capture_note() {
+    if (( $1 == 1 )); then
+        info "$2"
+    else
+        warn "$2"
+    fi
+}
+
 capture_stock_limits() {
     local ryzenadj="$1" quiet="${2:-0}" report spec label parameter value
     stock_limits_captured && return 0
@@ -964,7 +992,7 @@ capture_stock_limits() {
         return 1
     fi
     if ! report="$(run_unlocked "$ryzenadj" -i 2>&1)"; then
-        warn "Stock limits not captured: '$ryzenadj -i' failed. Nothing was recorded."
+        capture_note "$quiet" "Stock limits not captured: '$ryzenadj -i' failed. Nothing was recorded."
         return 1
     fi
 
@@ -981,9 +1009,9 @@ capture_stock_limits() {
     done
     if (( ${#unread[@]} > 0 )); then
         if (( ${#captured[@]} == 0 )); then
-            warn "Stock limits not captured: '$ryzenadj -i' returned no limits. On Fire Range the metrics table needs ryzen_smu; see docs/INSTALL.md."
+            capture_note "$quiet" "Stock limits not captured: '$ryzenadj -i' returned no limits. On Fire Range the metrics table needs ryzen_smu; see docs/INSTALL.md."
         else
-            warn "Stock limits not captured: '$ryzenadj -i' did not return a number for $(join_list "${unread[@]}"). Nothing was recorded; a partial baseline is no baseline."
+            capture_note "$quiet" "Stock limits not captured: '$ryzenadj -i' did not return a number for $(join_list "${unread[@]}"). Nothing was recorded; a partial baseline is no baseline."
         fi
         return 1
     fi
@@ -1158,6 +1186,8 @@ cmd_apply() {
         fi
     fi
 
+    [[ "$profile" != powerbench-* || "${APPLY_SCRATCH_OK:-0}" == 1 ]] || \
+        die "'$profile' is a legion-powerbench scratch profile; only legion-powerbench applies it, through configure --apply."
     load_profile "$profile"
     validate_profile "$profile"
     apply_loaded_profile "$profile" "$dry_run" "$boot"
@@ -1379,10 +1409,11 @@ cmd_configure() {
     done
 
     (( select_profile == 0 )) || refuse_scratch_boot_profile "$name"
-    (( apply_now == 0 )) || acquire_mutation_lock
+    (( apply_now == 0 && select_profile == 0 )) || acquire_mutation_lock
     write_profile "$name"
-    (( apply_now == 0 )) || cmd_apply "$name"
+    (( apply_now == 0 )) || APPLY_SCRATCH_OK=1 cmd_apply "$name"
     if (( select_profile == 1 )); then
+        require_profile_still_exists "$name"
         write_global_config "$name"
         success "Selected '$name' as the active boot profile."
     fi
@@ -1469,6 +1500,8 @@ cmd_wizard() {
         cmd_apply "$name"
     fi
     if (( select_now == 1 )); then
+        acquire_mutation_lock
+        require_profile_still_exists "$name"
         write_global_config "$name"
         success "Selected '$name'."
     fi
@@ -1489,14 +1522,18 @@ cmd_select() {
         shift
     done
     refuse_scratch_boot_profile "$name"
+    acquire_mutation_lock
     load_profile "$name"
     validate_profile "$name"
-    if (( apply_now == 1 )); then
-        acquire_mutation_lock
-        cmd_apply "$name"
-    fi
+    (( apply_now == 0 )) || cmd_apply "$name"
+    require_profile_still_exists "$name"
     write_global_config "$name"
     success "Selected '$name' as the active boot profile."
+}
+
+require_profile_still_exists() {
+    [[ -f "$(profile_path "$1")" ]] || \
+        die "Profile '$1' was deleted while this command ran, so the boot profile was left unchanged."
 }
 
 refuse_scratch_boot_profile() {
@@ -1544,11 +1581,14 @@ cmd_delete() {
         shift
     done
     path="$(profile_path "$name")"
+    acquire_mutation_lock
     [[ -e "$path" || -L "$path" ]] || die "Profile '$name' does not exist."
     load_global_config
     if [[ "$name" == "$ACTIVE_PROFILE" ]]; then
         (( force == 1 )) || die "'$name' is the active boot profile. Select another profile first or use --force."
-        if [[ "$name" == balanced ]] || ! (load_profile balanced && validate_profile balanced) >/dev/null 2>&1; then
+        [[ "$name" != balanced ]] || \
+            die "'balanced' is the active boot profile and also the fallback a forced delete switches boot to, so it cannot be deleted while boot uses it. Select another profile first."
+        if ! (load_profile balanced && validate_profile balanced) >/dev/null 2>&1; then
             die "'$name' is the active boot profile and 'balanced' is missing or invalid, so boot would have nothing to apply. Select another profile first."
         fi
         write_global_config balanced
@@ -1885,7 +1925,7 @@ cmd_doctor() {
             fi
         fi
     else
-        doctor_line FAIL RyzenAdj "not found; install ryzenadj (AUR)"
+        doctor_line FAIL RyzenAdj "$(ryzenadj_missing_detail)"
         ((failures += 1))
     fi
 

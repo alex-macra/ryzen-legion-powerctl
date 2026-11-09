@@ -19,6 +19,8 @@ PKEXEC_NOT_RUN = 127
 
 SERVICE_ON = "Boot service on; the boot profile was applied."
 BUSY = "Still working on the previous action; nothing else was started."
+SCRATCH_PREFIX = "powerbench-"
+NO_OFFER = ("", "", "")
 
 
 class ProfileActions(QObject):
@@ -30,6 +32,7 @@ class ProfileActions(QObject):
     refused = Signal(str)
     repaired = Signal()
     repair_backup = Signal(str)
+    half_done = Signal(str)
 
     def __init__(
         self,
@@ -46,6 +49,7 @@ class ProfileActions(QObject):
         self._busy = False
         self.previous_profile = ""
         self.previous_boot = ""
+        self.previous_applied = ""
 
     @property
     def busy(self) -> bool:
@@ -65,28 +69,35 @@ class ProfileActions(QObject):
         profile = self._guard_editor()
         if profile is None:
             return
-        running = runstate.run_state(self._window.status) if self._window.status else None
-        go_back = ""
-        boot = self._window.status.active_profile if self._window.status else ""
+        status = self._window.status
+        running = runstate.run_state(status) if status else None
+        offer = NO_OFFER
         if running is not None:
             deltas = runstate.raising_deltas(running, profile)
-            if deltas and self._window.dialogs:
-                if not dialogs.confirm_raise(self._window, profile.name, deltas):
-                    return
-            go_back = running.profile if running.profile != profile.name else ""
+            service_on = status.service_enabled == "enabled"
+            if deltas and self._window.dialogs and not dialogs.confirm_raise(
+                self._window, profile.name, deltas, service_on
+            ):
+                return
+            if running.profile not in ("", profile.name) and not running.profile.startswith(
+                SCRATCH_PREFIX
+            ):
+                offer = (running.profile, status.active_profile, profile.name)
         self._run(
             model.build_configure_args(profile, apply_now=True, select=True),
             f"Applied '{profile.name}'. It will also be applied at boot.",
             saved=profile,
-            go_back=go_back,
-            go_back_boot=boot,
+            go_back=offer,
         )
 
-    def go_back(self, name: str, boot: str) -> None:
+    def go_back(self, name: str, boot: str, applied: str = "") -> None:
         for candidate in (name, boot):
             if candidate and not model.valid_profile_name(candidate):
                 self.failed.emit(f"Refusing to act on an invalid profile name: {candidate!r}")
                 return
+        if boot and boot == applied:
+            self._run(model.build_apply_args(name), f"Applied '{name}'. '{boot}' still boots.")
+            return
         if not boot or boot == name:
             self._run(
                 model.build_select_args(name, apply_now=True),
@@ -94,11 +105,16 @@ class ProfileActions(QObject):
             )
             return
 
+        def half_done(reason: str) -> None:
+            self.previous_profile, self.previous_boot, self.previous_applied = name, boot, ""
+            self.half_done.emit(
+                f"Applied '{name}', but could not set '{boot}' back as the boot profile: {reason}"
+            )
+
         def restore_boot(warning: str) -> None:
             self._run(
-                model.build_select_args(boot),
-                f"Applied '{name}'. '{boot}' is still the boot profile.",
-                carried=warning,
+                model.build_select_args(boot), f"Applied '{name}'. '{boot}' boots again.",
+                carried=warning, on_error=half_done,
             )
 
         self._run(model.build_apply_args(name), f"Applied '{name}'.", then=restore_boot)
@@ -215,28 +231,25 @@ class ProfileActions(QObject):
         return name
 
     def _run(
-        self,
-        args: list[str],
-        message: str,
-        saved: model.Profile | None = None,
-        on_fail=None,
-        go_back: str = "",
-        on_success=None,
-        go_back_boot: str = "",
-        then=None,
-        carried: str = "",
-        on_output=None,
-        after=None,
+        self, args: list[str], message: str, saved: model.Profile | None = None, on_fail=None,
+        go_back: tuple[str, str, str] = NO_OFFER, on_success=None, then=None, carried: str = "",
+        on_output=None, after=None, on_error=None,
     ) -> None:
         if self._busy:
             self.refused.emit(BUSY)
             return
-        self.previous_profile = go_back
-        self.previous_boot = go_back_boot if go_back else ""
         self._set_busy(True)
 
         def done(code: int, stdout: str, stderr: str) -> None:
             self._set_busy(False)
+            if code == 0:
+                self.previous_profile, self.previous_boot, self.previous_applied = go_back
+            elif on_error is not None:
+                cancelled = self._is_cancelled_elevation(code, stdout)
+                on_error("authorisation was cancelled." if cancelled else (
+                    stderr.strip() or stdout.strip() or "the command failed."
+                ))
+                return
             stderr = "\n".join(part for part in (carried.strip(), stderr.strip()) if part)
             if code == 0 and then is not None:
                 then(stderr)
@@ -245,15 +258,12 @@ class ProfileActions(QObject):
                 stderr = on_output(code, stdout, stderr)
             if code == 0 and on_success is not None:
                 on_success()
-            self.handle_result(
-                code, stdout, stderr, saved=saved, message=message, on_fail=on_fail
-            )
+            self.handle_result(code, stdout, stderr, saved=saved, message=message, on_fail=on_fail)
             if after is not None:
                 after()
 
         self._runner.run(
-            model.privileged_command(args), done,
-            on_start_failed=lambda: self._set_busy(False),
+            model.privileged_command(args), done, on_start_failed=lambda: self._set_busy(False)
         )
 
     def _set_busy(self, busy: bool) -> None:
@@ -262,19 +272,12 @@ class ProfileActions(QObject):
             self.busy_changed.emit(busy)
 
     def handle_result(
-        self,
-        code: int,
-        stdout: str,
-        stderr: str,
-        saved: model.Profile | None = None,
-        message: str = "Done.",
-        on_fail=None,
+        self, code: int, stdout: str, stderr: str, saved: model.Profile | None = None,
+        message: str = "Done.", on_fail=None,
     ) -> None:
         if code != 0:
             if self._is_cancelled_elevation(code, stdout):
-                self.cancelled.emit(
-                    stderr.strip() or "Authorisation was cancelled; nothing changed."
-                )
+                self.cancelled.emit(stderr.strip() or "Authorisation was cancelled; nothing changed.")
                 return
             if on_fail is not None and on_fail(stdout, stderr):
                 return

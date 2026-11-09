@@ -1520,6 +1520,28 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, stale.isHidden), "a successful poll left the indicator up"
         )
 
+    def test_the_stale_chip_is_named_reachable_and_its_recovery_is_announced(self):
+        from legion_powerctl_gui.reports import RECOVERED_TEXT, STALE_TEXT
+        from PySide6.QtCore import Qt
+
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+        stale = self.window.reports.stale_label
+        self.assertEqual(self.accessible_name(stale), STALE_TEXT)
+        self.assertIn(self.window.errors[0], stale.accessibleDescription())
+        self.assertTrue(
+            stale.focusPolicy() & Qt.FocusPolicy.TabFocus,
+            "the error behind the chip is only in a tooltip nobody can reach by keyboard",
+        )
+        with self.announcements() as announce:
+            self.window.refresh()
+            self.assertTrue(wait_until(self.app, stale.isHidden))
+            self.window.refresh()
+            refreshes = self.window.refresh_count
+            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        recovered = [call for call in announce.call_args_list if self.spoken(call) == RECOVERED_TEXT]
+        self.assertEqual(len(recovered), 1, announce.call_args_list)
+        self.assertFalse(recovered[0][1].get("interrupt", False), "recovery interrupted the reader")
+
     def test_a_missing_cli_reports_once_and_never_opens_a_modal(self):
         self.poll_storm({"LEGION_POWERCTL_GUI_CLI": str(HERE / "there-is-no-such-binary")})
 
@@ -1709,7 +1731,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.sidebar.list.setCurrentRow(self._row_of("quiet"))
         asked = {}
 
-        def fake_confirm(parent, name, deltas):
+        def fake_confirm(parent, name, deltas, service_on=False):
             asked["name"] = name
             asked["deltas"] = [(d.label, d.was, d.now) for d in deltas]
             return False
@@ -2555,7 +2577,7 @@ class PanelSeamTest(OffscreenGuiTest):
             header.deleteLater()
             row.deleteLater()
 
-    def test_the_raise_warning_says_the_profile_also_applies_at_every_boot(self):
+    def test_the_raise_warning_says_when_the_profile_applies_at_boot(self):
         from legion_powerctl_gui import dialogs, runstate
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QMessageBox, QWidget
@@ -2568,14 +2590,18 @@ class PanelSeamTest(OffscreenGuiTest):
             seen.append(box.informativeText())
             box.button(QMessageBox.StandardButton.Cancel).click()
 
+        delta = [runstate.Delta("Fast PPT", 102, 110, "W")]
         try:
-            QTimer.singleShot(0, answer)
-            dialogs.confirm_raise(parent, "quiet", [runstate.Delta("Fast PPT", 102, 110, "W")])
+            for service_on in (True, False):
+                QTimer.singleShot(0, answer)
+                dialogs.confirm_raise(parent, "quiet", delta, service_on)
         finally:
             parent.deleteLater()
-        self.assertEqual(len(seen), 1)
+        self.assertEqual(len(seen), 2)
         self.assertIn("applied at every boot", seen[0])
         self.assertNotIn("nothing here puts them back", seen[0])
+        self.assertNotIn("every boot", seen[1], "a disabled boot service applies nothing at boot")
+        self.assertIn("boot service is off", seen[1])
 
     def test_a_message_box_marks_the_action_and_keeps_the_safe_default(self):
         from legion_powerctl_gui import dialogs, runstate
@@ -2931,40 +2957,138 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
     def mutate(self, document):
         document["last_apply"]["profile"] = "quiet"
 
-    def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
-        log = tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False)
-        self.addCleanup(os.unlink, log.name)
-        self.addCleanup(log.close)
-        actions = self.window.profile_actions
-        sidebar = self.window.sidebar
+    def setUp(self):
+        super().setUp()
+        self.log = tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False)
+        self.addCleanup(os.unlink, self.log.name)
+        self.addCleanup(self.log.close)
+        env = unittest.mock.patch.dict(os.environ, {"FAKE_CLI_LOG": self.log.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.actions = self.window.profile_actions
+        self.offer = self.window.reports.go_back_button
+
+    def privileged(self):
+        return [
+            line.split(" --")[0] if line.startswith("configure") else line
+            for line in Path(self.log.name).read_text().splitlines()
+            if not line.startswith(("status", "doctor"))
+        ]
+
+    def apply_profile(self, name):
         from PySide6.QtCore import Qt
 
+        sidebar = self.window.sidebar
         row = next(
             index for index in range(sidebar.list.count())
             if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
-            == "performance-capped"
+            == name
         )
-        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_LOG": log.name}):
-            sidebar.list.setCurrentRow(row)
-            self.assertEqual(self.window.editor.editing.name, "performance-capped")
-            actions.apply()
-            offer = self.window.reports.go_back_button
-            self.assertTrue(wait_until(self.app, lambda: not offer.isHidden()))
-            self.assertEqual((actions.previous_profile, actions.previous_boot),
-                             ("quiet", "balanced-plus"))
-            offer.click()
+        sidebar.list.setCurrentRow(row)
+        self.assertEqual(self.window.editor.editing.name, name)
+        self.actions.apply()
+        self.assertTrue(wait_until(self.app, lambda: not self.offer.isHidden()))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
 
-            def privileged():
-                return [line for line in Path(log.name).read_text().splitlines()
-                        if not line.startswith(("status", "doctor"))]
+    def pkexec_shim(self, refuse: str) -> str:
+        shim = Path(tempfile.mkdtemp()) / "pkexec"
+        shim.write_text(f'#!/bin/sh\ncase "$2" in {refuse}) exit 126 ;; esac\nexec "$@"\n')
+        shim.chmod(0o755)
+        return str(shim)
 
-            self.assertTrue(wait_until(self.app, lambda: len(privileged()) >= 3))
-            self.assertTrue(wait_until(self.app, lambda: not actions._busy))
+    def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
+        self.apply_profile("performance-capped")
+        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
+                         ("quiet", "balanced-plus"))
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 3))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
         self.assertEqual(
-            [line.split(" --")[0] if line.startswith("configure") else line
-             for line in privileged()],
+            self.privileged(),
             ["configure performance-capped", "apply quiet", "select balanced-plus"],
         )
+
+    def test_go_back_after_applying_the_boot_profile_only_re_applies(self):
+        self.apply_profile("balanced-plus")
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertEqual(self.privileged(), ["configure balanced-plus", "apply quiet"])
+
+    def assert_half_done(self, env: dict, reason: str) -> None:
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(os.environ, env):
+            refreshes = self.window.refresh_count
+            self.offer.click()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        message = self.window.errors[-1]
+        self.assertTrue(
+            message.startswith(
+                "Applied 'quiet', but could not set 'balanced-plus' back as the boot profile: "
+            ),
+            message,
+        )
+        self.assertIn(reason, message)
+        self.assertIn(message, self.window.statusBar().currentMessage())
+        self.assertFalse(self.offer.isHidden(), "the half-done Go back left no way to finish it")
+        self.assertIn("quiet", self.offer.text())
+        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
+                         ("quiet", "balanced-plus"))
+
+    def test_a_failed_boot_step_of_go_back_says_what_was_left_half_done(self):
+        self.assert_half_done(
+            {"FAKE_CLI_EXIT": "select:1",
+             "FAKE_CLI_EXIT_STDOUT": "Profile 'balanced-plus' does not exist."},
+            "Profile 'balanced-plus' does not exist.",
+        )
+
+    def test_a_dismissed_prompt_for_the_boot_step_of_go_back_is_still_half_done(self):
+        self.assert_half_done(
+            {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("select")}, "cancelled"
+        )
+        self.assertNotIn("nothing changed", self.window.errors[-1])
+
+    def test_a_cancelled_unrelated_action_leaves_the_offer_true_to_its_label(self):
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("*")}
+        ):
+            self.actions.pin_boot("quiet")
+            self.assertTrue(wait_until(self.app, lambda: "cancelled" in (
+                self.window.statusBar().currentMessage().lower()
+            )))
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertFalse(self.offer.isHidden())
+        self.assertIn("quiet", self.offer.text())
+        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
+                         ("quiet", "balanced-plus"))
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: "apply quiet" in self.privileged()))
+
+
+class ScratchRunningVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "powerbench-4242"
+
+    def test_go_back_is_never_offered_to_a_powerbench_scratch_profile(self):
+        from PySide6.QtCore import Qt
+
+        sidebar = self.window.sidebar
+        row = next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == "quiet"
+        )
+        sidebar.list.setCurrentRow(row)
+        self.window.profile_actions.apply()
+        self.assertTrue(wait_until(
+            self.app, lambda: "Applied 'quiet'" in self.window.statusBar().currentMessage()
+        ))
+        self.settle()
+        self.assertTrue(self.window.reports.go_back_button.isHidden())
+        self.assertEqual(self.window.profile_actions.previous_profile, "")
 
 
 class PartialApplyVariantTest(VariantFixtureTest):

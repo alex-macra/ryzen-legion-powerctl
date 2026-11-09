@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
         self.profile_actions.cancelled.connect(self._on_action_cancelled)
         self.profile_actions.busy_changed.connect(self._set_busy)
         self.profile_actions.refused.connect(self.reports.note)
+        self.profile_actions.half_done.connect(self._on_go_back_half_done)
 
     def _show_error(self, message: str) -> None:
         self.errors.append(message)
@@ -154,13 +155,20 @@ class MainWindow(QMainWindow):
         self.reports.note(message)
         self.refresh()
 
+    def _on_go_back_half_done(self, message: str) -> None:
+        self._pending_open = ""
+        self._show_error(message)
+        self.reports.offer_go_back(self.profile_actions.previous_profile)
+        self.refresh()
+
     def _on_go_back(self) -> None:
-        previous = self.profile_actions.previous_profile
-        if self.profile_actions.busy:
+        actions = self.profile_actions
+        previous = actions.previous_profile
+        if actions.busy:
             return
         self.reports.clear_offers()
         if previous:
-            self.profile_actions.go_back(previous, self.profile_actions.previous_boot)
+            actions.go_back(previous, actions.previous_boot, actions.previous_applied)
 
     def _set_busy(self, busy: bool) -> None:
         if busy:

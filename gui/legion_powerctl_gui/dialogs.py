@@ -191,7 +191,7 @@ def ask_profile_name(parent: QWidget) -> str | None:
     return name.strip()
 
 
-def confirm_raise(parent: QWidget, name: str, deltas: list) -> bool:
+def confirm_raise(parent: QWidget, name: str, deltas: list, service_on: bool = False) -> bool:
     rows = "\n".join(
         f"    {delta.label:<12} {delta.was} {delta.unit}  ->  {delta.now} {delta.unit}"
         for delta in deltas
@@ -202,7 +202,12 @@ def confirm_raise(parent: QWidget, name: str, deltas: list) -> bool:
     box.setText(f"'{name}' raises what the machine is allowed to draw:")
     box.setInformativeText(
         f"{rows}\n\nHigher limits raise heat, noise and power draw.\n"
-        "Applying also makes it the boot profile, so it will be applied at every boot."
+        + (
+            "Applying also makes it the boot profile, so it will be applied at every boot."
+            if service_on
+            else "Applying also makes it the boot profile. The boot service is off, so it is "
+            "applied at boot only once the service is turned on."
+        )
     )
     apply_button = _primary(box.addButton("Apply anyway", QMessageBox.ButtonRole.AcceptRole))
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)

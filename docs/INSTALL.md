@@ -142,7 +142,9 @@ install that creates `config.conf`, runs `legion-powerctl select balanced` witho
 applying anything. Upgrades and reinstalls leave an existing `config.conf` alone.
 **Apply now** also makes the profile the boot profile, but only once the apply has
 succeeded, so what you apply in the GUI survives a reboot. **Go back** puts back both
-the profile that was running and the boot profile that was set before that apply. The
+the profile that was running and the boot profile that was set before that apply. If it
+re-applies the old profile but cannot set the old boot profile back, it says so and keeps
+the offer so you can finish it. The
 `BOOT` pin on a profile row sets the boot profile without applying it, and
 `legion-powerctl apply` from a terminal stays a one-off that leaves the boot profile
 alone.
@@ -193,7 +195,9 @@ upgrades the previous one through pacman, and edited profiles in `/etc/legion-po
 are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
 `--force-config` is supplied, which resets every profile and `config.conf` to the shipped
 files and selects `balanced` for boot, exactly as a fresh install does. `sudo make install`
-likewise keeps existing files under `/etc/legion-powerctl` unless `FORCE_CONFIG=1` is set.
+likewise keeps existing files under `/etc/legion-powerctl` unless `FORCE_CONFIG=1` is set;
+when it writes `config.conf` itself it selects `balanced`. A staged install with
+`DESTDIR` ships the file unchanged for the package.
 
 To try changes in your local checkout without pushing to GitHub or reinstalling,
 run `make dev-gui` from that checkout. Close and reopen it after edits; it reads

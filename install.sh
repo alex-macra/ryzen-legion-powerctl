@@ -92,6 +92,7 @@ readonly RYZEN_SMU_SYSFS_DIR='/sys/kernel/ryzen_smu_drv'
 readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
 readonly RYZEN_SMU_MODULE_DIR='/sys/module/ryzen_smu'
 readonly SMU_BLACKLIST_FILE='/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf'
+readonly RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
 CONFIG_DIR='/etc/legion-powerctl'
 CLI_BIN='/usr/bin/legion-powerctl'
 
@@ -128,18 +129,38 @@ ensure_ryzenadj_package() {
     pacman -T "$RYZENADJ_DEP" >/dev/null 2>&1 || die "The ryzenadj installation still does not satisfy '${RYZENADJ_DEP}'."
 }
 
+trusted_ryzenadj() {
+    local dir file owner mode
+    for dir in "${RYZENADJ_DIRS[@]}"; do
+        [[ -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
+        file="$(readlink -f -- "$dir/ryzenadj" 2>/dev/null || true)"
+        [[ -n "$file" && -f "$file" ]] || continue
+        read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || continue
+        if [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )); then
+            printf '%s' "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+
 ensure_ryzenadj_binary() {
-    if command -v ryzenadj >/dev/null 2>&1; then
-        info "RyzenAdj found at $(command -v ryzenadj)."
+    local found elsewhere
+    if found="$(trusted_ryzenadj)"; then
+        info "RyzenAdj found at $found."
         return 0
+    fi
+    elsewhere="$(command -v ryzenadj 2>/dev/null || true)"
+    if [[ -n "$elsewhere" ]]; then
+        warn "A ryzenadj exists at $elsewhere, but legion-powerctl only runs a root-owned ryzenadj in ${RYZENADJ_DIRS[*]} that only root can change."
     fi
 
     if (( ARCH_FAMILY == 0 )); then
-        die "RyzenAdj is missing and this is not an Arch-family system. Build it from source first: https://github.com/FlyGoat/RyzenAdj"
+        die "No usable RyzenAdj in ${RYZENADJ_DIRS[*]} and this is not an Arch-family system. Build it from source and install it as root to /usr/local/bin: https://github.com/FlyGoat/RyzenAdj"
     fi
     aur_install_ryzenadj
-    command -v ryzenadj >/dev/null 2>&1 || die "RyzenAdj installation completed without exposing a ryzenadj executable."
-    info "Installed RyzenAdj at $(command -v ryzenadj)."
+    found="$(trusted_ryzenadj)" || die "RyzenAdj installation completed without a root-owned ryzenadj in ${RYZENADJ_DIRS[*]}."
+    info "Installed RyzenAdj at $found."
 }
 
 secure_boot_on() {
@@ -449,11 +470,20 @@ package_install() {
     info "Building legion-powerctl $version package in $BUILD_DIR..."
     make -C "$ROOT_DIR" dist DISTDIR="$BUILD_DIR"
     cp "$ROOT_DIR/packaging/arch/PKGBUILD" "$ROOT_DIR/packaging/arch/legion-powerctl.install" "$BUILD_DIR/"
+    (cd "$BUILD_DIR" && makepkg -s) || die "The package build failed. Nothing was installed or removed."
+    local package="" built
+    while IFS= read -r built; do
+        [[ "${built##*/}" != "legion-powerctl-$version-"* ]] || package="$built"
+    done < <(cd "$BUILD_DIR" && makepkg --packagelist)
+    [[ -n "$package" && -f "$package" ]] || die "makepkg finished without a legion-powerctl $version package. Nothing was installed or removed."
     if (( remove_script_install == 1 )); then
         info "Removing the previous script install..."
         "$ROOT_DIR/uninstall.sh"
     fi
-    (cd "$BUILD_DIR" && makepkg -si)
+    if ! "${SUDO[@]}" pacman -U --noconfirm "$package"; then
+        trap - EXIT
+        die "pacman could not install $package. Install it with: sudo pacman -U $package"
+    fi
 
     ensure_gui_runtime
     enable_service || true

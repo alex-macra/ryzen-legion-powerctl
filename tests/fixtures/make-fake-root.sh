@@ -99,6 +99,9 @@ case "$FAKE_BOOST_SHAPE" in
         ;;
 esac
 
+mkdir -p "$SYSFS/cpu0"
+ln -sfn ../cpufreq/policy0 "$SYSFS/cpu0/cpufreq"
+
 : > "$DEV_MEM"
 
 fake_add_policy() {

@@ -105,7 +105,7 @@ grant does not authorize it. The GUI confirms the reset and any discarded edits.
   from the two root-owned paths above, runs only a root-owned
   `/usr/local/bin/legion-powerctl` or `/usr/bin/legion-powerctl` for both its
   unprivileged reads and its `sudo` writes, and refuses to start while any
-  `LEGION_POWERCTL_*` variable is exported. Its own binary overrides need
+  `LEGION_POWERCTL_*` variable other than the GUI's `LEGION_POWERCTL_GUI_*` is exported. Its own binary overrides need
   `LEGION_POWERBENCH_TESTING=1`, which root ignores.
 - **`LEGION_POWERCTL_DRY_RUN=1`** is honoured by every mutating subcommand:
   `apply`, `repair` and `restore-frequency` preview, and the rest (`configure`,

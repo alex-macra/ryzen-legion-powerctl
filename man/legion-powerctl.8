@@ -12,7 +12,8 @@ P-State EPP. Its systemd service is a one-shot unit that runs once at boot.
 .SH COMMANDS
 .TP
 .B apply [PROFILE] [--dry-run] [--boot]
-Apply a named profile or the selected active profile.
+Apply a named profile or the selected active profile. A powerbench-* scratch
+profile is refused; legion-powerbench applies it through configure --apply.
 .TP
 .B configure PROFILE [OPTIONS]
 Create or update a profile. Options include --stapm, --slow, --fast, --temp,
@@ -25,8 +26,8 @@ Open an interactive profile editor.
 .TP
 .B select PROFILE [--apply]
 Select the profile used at boot. The profile is validated first. With --apply,
-config.conf is written only after the apply succeeds. powerbench-* scratch
-profiles cannot be selected.
+config.conf is written only after the apply succeeds, and only if the profile
+still exists then. powerbench-* scratch profiles cannot be selected.
 .TP
 .B list
 List profiles. The active profile is marked with an asterisk.
@@ -37,7 +38,8 @@ Show a profile, defaulting to the active profile.
 .B delete PROFILE [--force]
 Delete a profile. The active profile is protected unless --force is used.
 Forcing the delete of the boot profile moves boot to balanced, and is refused
-when balanced is missing or invalid.
+when balanced is missing or invalid, or is itself the boot profile. Delete refuses while another power operation holds
+the lock.
 .TP
 .B status [--json|--waybar]
 Show configuration, service state, CPU driver, frequency range, and the most
@@ -79,7 +81,8 @@ cannot be combined. The capture stores nothing unless all four limits read back 
 numbers, and a complete capture is never overwritten. It is refused once any apply or
 repair has started to write limits this boot, because the SMU no longer holds the
 firmware values by then. The first apply after installation captures them
-automatically and warns once if it could not.
+automatically and, if it could not, says so once on standard output rather than as
+a warning.
 .SH ENVIRONMENT
 .TP
 .B LEGION_POWERCTL_DRY_RUN=1

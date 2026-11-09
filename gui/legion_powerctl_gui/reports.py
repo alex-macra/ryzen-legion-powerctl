@@ -13,6 +13,7 @@ NOTE_MS = 8000
 WARNING_MS = 15000
 OFFER_GAP = 8
 STALE_TEXT = "Status not updating"
+RECOVERED_TEXT = "Status is updating again."
 
 
 class ReportArea(QObject):
@@ -35,6 +36,7 @@ class ReportArea(QObject):
         status_bar.addWidget(self.details_button)
         self.stale_label = QLabel(STALE_TEXT)
         self.stale_label.setAccessibleName(STALE_TEXT)
+        self.stale_label.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.stale_label.hide()
         status_bar.addPermanentWidget(self.stale_label)
         status_bar.messageChanged.connect(self._place_offers)
@@ -101,7 +103,10 @@ class ReportArea(QObject):
         a11y.announce(self._bar, message, interrupt=True)
 
     def poll_recovered(self) -> None:
+        if self.stale_label.isHidden():
+            return
         self.stale_label.hide()
+        a11y.announce(self._bar, RECOVERED_TEXT)
 
     def set_busy(self, busy: bool) -> None:
         self.go_back_button.setEnabled(not busy)
@@ -125,6 +130,10 @@ class ReportArea(QObject):
         a11y.announce(self._bar, text, interrupt=True)
         self._offer_go_back(go_back_to)
         self.details_button.show()
+        self._place_offers()
+
+    def offer_go_back(self, go_back_to: str) -> None:
+        self._offer_go_back(go_back_to)
         self._place_offers()
 
     def _offer_go_back(self, go_back_to: str) -> None:

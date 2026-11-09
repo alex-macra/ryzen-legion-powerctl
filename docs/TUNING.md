@@ -91,8 +91,9 @@ you which one it got. `legion-powerbench doctor` prints the whole ladder.
 `sudo legion-powerctl configure ... --apply` for each step, and writes CSV. It runs only
 the root-owned `/usr/local/bin/legion-powerctl` or `/usr/bin/legion-powerctl`, the same
 binary for its unprivileged status reads and its `sudo` writes, and refuses to start
-while any `LEGION_POWERCTL_*` variable is exported, because `sudo` would drop it for
-the writes but not for the reads. Python 3 validates the
+while any `LEGION_POWERCTL_*` variable the CLI reads is exported, because `sudo` would
+drop it for the writes but not for the reads. `LEGION_POWERCTL_GUI_*` variables, such as
+`LEGION_POWERCTL_GUI_SCHEME`, are for the GUI and are allowed. Python 3 validates the
 CLI status JSON, and `setsid` from util-linux isolates workloads for cleanup. Both
 are available with the Arch package and its base-system dependencies.
 
@@ -137,8 +138,8 @@ Each run uses a separate scratch profile and removes it on exit. Normal completi
 interruption (SIGINT, SIGTERM or SIGHUP, including a closed terminal or a `tee` that
 died first) and failures stop the workload process groups and restore the previously
 applied profile once. If the restore fails or that profile was edited during the run,
-the command fails and prints the profile to reapply. A scratch profile can be applied
-but never selected for boot. Existing output files are rejected, so use a fresh filename for
+the command fails and prints the profile to reapply. A scratch profile is applied only by
+`legion-powerbench`, through `configure --apply`; `apply` and `select` refuse it. Existing output files are rejected, so use a fresh filename for
 each comparison.
 
 Load generation is pluggable. The built-in `cpu` preset probes for `stress-ng`, then

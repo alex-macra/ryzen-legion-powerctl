@@ -589,8 +589,10 @@ doctor_line() {
 }
 
 refuse_cli_environment() {
-    local exported
-    exported="$(compgen -e LEGION_POWERCTL_ | tr '\n' ' ' || true)"
+    local exported="" name
+    while IFS= read -r name; do
+        [[ "$name" == LEGION_POWERCTL_GUI_* ]] || exported+="$name "
+    done < <(compgen -e LEGION_POWERCTL_ || true)
     [[ -z "$exported" ]] || die "Unset ${exported% }: sudo drops them for the writes, so the reads and the writes would see different machines."
 }
 

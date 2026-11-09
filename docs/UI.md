@@ -271,7 +271,9 @@ fifteen-second poll re-selects the same row and would otherwise repeat it foreve
 A failing status poll goes to the status bar and never opens a dialog, and the same
 failure is reported once until a poll succeeds. After that message times out, a
 "Status not updating" chip stays at the right of the status bar, with the error as
-its tooltip, until a poll succeeds.
+its tooltip and accessible description, until a poll succeeds. The chip takes Tab focus
+so a keyboard or screen reader user can reach that error, and the recovery is announced
+politely.
 
 **Keyboard.** Every control carrying a mnemonic claims a different letter; the form
 labels deliberately have none, because a label that names a stop has no focus to hand

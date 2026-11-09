@@ -42,9 +42,40 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- Moving from a script install to the package flow removes the script install just
-  before `makepkg -si`, after every check and prompt, so a missing `ryzenadj` package
-  or a busy pacman no longer leaves the machine with no CLI and no boot apply.
+- Moving from a script install to the package flow builds the package first with
+  `makepkg -s`, then removes the script install and installs the built package with
+  `pacman -U --noconfirm`, so a missing `ryzenadj` package, a busy pacman, a failed
+  build or a "n" at a prompt no longer leaves the machine with no CLI and no boot apply.
+- A fresh `sudo make install` boots `balanced` like every other fresh install; a staged
+  install (`DESTDIR`) still ships `config.conf` byte for byte, and `make uninstall` runs
+  `systemctl daemon-reload` after removing the unit.
+- The package's fresh-install marker lives in `/var/lib/legion-powerctl` instead of
+  `/run`, so a `pacstrap` or chroot install without a writable `/run` still boots
+  `balanced`.
+- `install.sh` accepts only the `ryzenadj` the CLI will run, a root-owned file in
+  `/usr/local/bin` or `/usr/bin`, and `doctor` names a `ryzenadj` it will not run
+  instead of saying none was found.
+- `legion-powerbench` no longer refuses `LEGION_POWERCTL_GUI_*` variables such as the
+  `LEGION_POWERCTL_GUI_SCHEME` the docs recommend; the CLI never reads them.
+- A stock-limits capture that fails during an apply is reported on standard output, not
+  as a warning, so a machine without `ryzen_smu` no longer shows a GUI warning on the
+  first apply of every boot; `baseline --capture` still warns and fails.
+- `delete` takes the power lock, and `select`, `configure --select` and the wizard check
+  under the lock that the profile still exists before pointing boot at it, so a
+  concurrent delete can no longer leave `config.conf` naming a missing profile.
+  `delete balanced --force` while `balanced` boots says why it is refused.
+- `apply` refuses a `powerbench-*` scratch profile; only `legion-powerbench` applies it,
+  through `configure --apply`. The GUI never offers to go back to one.
+- `ryzenadj --help`, run to pick between two installed copies, no longer inherits the
+  power lock.
+- A per-CPU boost file reached through the kernel's `cpuN/cpufreq` symlink is no longer
+  written a second time after its `policyN` file.
+- **Go back** in the GUI says so when it applied the old profile but could not set the
+  old boot profile back, including when that prompt is dismissed, and keeps the offer
+  to finish. A cancelled or failed action no longer changes what **Go back** does, and
+  going back after applying the boot profile itself only re-applies.
+- The `Status not updating` chip can be reached by keyboard, carries the error as its
+  description, and its recovery is announced.
 - `make dist` packs the working tree when the checkout sits inside another git
   repository, such as an extracted ZIP under a tracked directory, instead of an empty
   or unrelated tree.
@@ -140,7 +171,8 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - `select` and `configure --select` refuse `powerbench-*` scratch profiles.
 - The GUI re-reads the status after a failed or cancelled action, so the header and
   the boot-service switch show what is on disk.
-- The raise warning says the profile will also be applied at every boot.
+- The raise warning says the profile will also be applied at every boot when the boot
+  service is on, and that it applies at boot only once the service is on otherwise.
 - pacman now tracks `profiles.d/balanced.conf` as a backup file, so an upgrade no longer
   overwrites an edited `balanced` profile and removal keeps it as `.pacsave`.
 - An interrupted `legion-powerbench run` whose output was piped through `tee` now

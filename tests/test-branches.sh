@@ -748,9 +748,76 @@ case_a_powerbench_scratch_profile_cannot_become_the_boot_profile() {
     assert_fails 'configure --select accepted a scratch profile' \
         run_cli configure powerbench-4242 --stapm 40 --select --apply
     assert_eq "$before" "$(<"$ETC/config.conf")" 'a scratch profile became the boot profile'
+    out="$(run_cli apply powerbench-4242 2>&1 || true)"
+    assert_contains 'only legion-powerbench applies it' "$out" 'apply ran a scratch profile outside powerbench'
+    [[ ! -e "$STATE/last-apply.env" ]] || refute_contains 'PROFILE=powerbench-4242' "$(<"$STATE/last-apply.env")" \
+        'apply ran a scratch profile outside powerbench'
     run_cli configure powerbench-4242 --stapm 40 --apply >/dev/null
     assert_file_contains 'PROFILE=powerbench-4242' "$STATE/last-apply.env" \
         'powerbench can no longer apply its scratch profile without selecting it'
+}
+
+case_deleting_balanced_while_it_boots_says_why() {
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    run_cli select balanced >/dev/null
+    local out
+    out="$(run_cli delete balanced --force 2>&1 || true)"
+    assert_contains 'fallback a forced delete switches boot to' "$out" \
+        'deleting the booting balanced blamed a missing balanced'
+    refute_contains 'missing or invalid' "$out" 'deleting the booting balanced blamed a missing balanced'
+    [[ -f "$PROFILES/balanced.conf" ]] || assert_eq 'kept' 'deleted' 'balanced was deleted'
+}
+
+case_delete_waits_for_the_power_lock() {
+    local lock_fd rc=0 out
+    cp "$PROFILES/quiet.conf" "$PROFILES/victim.conf"
+    exec {lock_fd}>> "$STATE/power.lock"
+    flock -n "$lock_fd"
+    out="$(exec {lock_fd}>&-; run_cli delete victim 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'delete ran while another power operation held the lock'
+    assert_contains 'Another power operation is already running' "$out" 'delete did not explain the lock'
+    [[ -f "$PROFILES/victim.conf" ]] || assert_eq 'kept' 'deleted' 'delete removed a profile under a held lock'
+    flock -u "$lock_fd"
+    exec {lock_fd}>&-
+    run_cli delete victim >/dev/null
+    [[ ! -e "$PROFILES/victim.conf" ]] || assert_eq 'deleted' 'kept' 'delete failed once the lock was free'
+}
+
+case_select_never_points_boot_at_a_profile_deleted_during_its_apply() {
+    local before rc=0 out
+    cp "$PROFILES/quiet.conf" "$PROFILES/vanishing.conf"
+    before="$(<"$ETC/config.conf")"
+    cat > "$FAKEBIN/ryzenadj-deleting" <<EOF_FAKE
+#!/usr/bin/env bash
+rm -f "$PROFILES/vanishing.conf"
+exec "$FAKEBIN/ryzenadj" "\$@"
+EOF_FAKE
+    chmod +x "$FAKEBIN/ryzenadj-deleting"
+    out="$(LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-deleting" run_cli select vanishing --apply 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'select reported success for a profile that no longer exists'
+    assert_contains 'was deleted while this command ran' "$out" 'select did not say why boot was left alone'
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'select pointed boot at a deleted profile'
+
+    cp "$PROFILES/quiet.conf" "$PROFILES/vanishing.conf"
+    rc=0
+    LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-deleting" run_cli configure vanishing --stapm 40 \
+        --select --apply >/dev/null 2>&1 || rc=$?
+    assert_eq '1' "$rc" 'configure --select reported success for a profile that no longer exists'
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'configure --select pointed boot at a deleted profile'
+}
+
+case_per_cpu_boost_through_the_real_symlink_layout_is_written_once() {
+    rm -f "$SYSFS/cpufreq/boost"
+    [[ -L "$SYSFS/cpu0/cpufreq" ]] || assert_eq 'symlink' 'not' 'the fixture lost the real cpuN/cpufreq symlink'
+    local out
+    out="$(run_cli configure symboost --stapm 50 --slow 55 --fast 60 --temp 80 \
+        --boost on --min-mhz unchanged --max-mhz unchanged --epp unchanged --apply 2>&1)"
+    refute_contains 'Refusing to write' "$out" 'a per-policy boost write through cpuN/cpufreq was refused'
+    assert_eq '1' "$(<"$SYSFS/cpufreq/policy0/boost")" 'the per-policy boost was not written'
+    assert_file_contains 'BOOST_APPLIED=yes' "$STATE/last-apply.env" 'boost was not recorded as applied'
+    out="$(run_cli apply symboost --dry-run 2>&1)"
+    assert_eq '1' "$(grep -c 'DRY RUN: write 1 to .*boost' <<<"$out")" \
+        'one policy boost file was written twice, once through its cpuN/cpufreq symlink'
 }
 
 case_the_power_lock_is_private_and_never_follows_a_symlink() {
@@ -770,12 +837,24 @@ case_the_power_lock_is_private_and_never_follows_a_symlink() {
     cat > "$FAKEBIN/ryzenadj-fds" <<EOF_FAKE
 #!/usr/bin/env bash
 for fd in /proc/\$\$/fd/*; do readlink "\$fd"; done >> "$fds" 2>/dev/null
+[[ "\${1:-}" != --help ]] || printf '%s\n' "\$1" >> "$FAKE_ROOT/help-calls"
 exec "$FAKEBIN/ryzenadj" "\$@"
 EOF_FAKE
     chmod +x "$FAKEBIN/ryzenadj-fds"
     LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-fds" run_cli apply quiet >/dev/null
     assert_file_contains "$FAKE_ROOT" "$fds" 'the fd probe recorded nothing'
     refute_contains 'power.lock' "$(<"$fds")" 'ryzenadj inherited the power lock'
+
+    local dir
+    : > "$fds"
+    for dir in "$FAKE_ROOT/cand-a" "$FAKE_ROOT/cand-b"; do
+        mkdir -p "$dir"
+        cp "$FAKEBIN/ryzenadj-fds" "$dir/ryzenadj"
+    done
+    PATH="$FAKE_ROOT/cand-a:$FAKE_ROOT/cand-b:$PATH" LEGION_TEST_RYZENADJ_BIN='' run_cli apply quiet >/dev/null
+    [[ "$(grep -c '^--help' "$FAKE_ROOT/help-calls" 2>/dev/null || true)" -ge 2 ]] || \
+        assert_eq 'two or more' 'fewer' 'the two candidates were not both asked for their version'
+    refute_contains 'power.lock' "$(<"$fds")" 'ryzenadj --help inherited the power lock'
 }
 
 case_configure_names_the_flag_it_could_not_parse() {
@@ -1083,10 +1162,16 @@ case_a_symlinked_stock_limits_file_is_never_read() {
 case_apply_reports_a_failed_capture_once() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT='tctl-temp')
     local out
+    local err="$FAKE_ROOT_DIR/capture-stderr"
     fresh_boot
-    out="$(run_cli apply balanced-plus 2>&1 || true)"
+    out="$(run_cli apply balanced-plus 2>"$err" || true)"
     assert_eq '1' "$(grep -c 'Stock limits not captured' <<<"$out")" \
         'the apply-time capture failure was not reported exactly once'
+    refute_contains 'Stock limits' "$(<"$err")" \
+        'the apply-time capture failure went to stderr, which the GUI shows as a warning on every boot'
+    fresh_boot
+    out="$(run_cli baseline --capture 2>&1 >/dev/null || true)"
+    assert_contains 'Stock limits not captured' "$out" 'baseline --capture no longer warns when it fails'
 
     LEGION_TEST_ENV=()
     out="$(run_cli apply balanced-plus 2>&1)"
@@ -1433,7 +1518,13 @@ case_doctor_and_status_never_run_a_ryzenadj_planted_on_path() {
     plant_ryzenadj "$FAKE_ROOT/planted" "$marker"
     out="$(env "${production_env[@]}" PATH="$FAKE_ROOT/planted:$PATH" \
         "$FAKE_CLI" doctor 2>&1 || true)"
-    refute_contains "$FAKE_ROOT/planted" "$out" 'doctor chose a ryzenadj from PATH'
+    if [[ -e /usr/local/bin/ryzenadj || -e /usr/bin/ryzenadj ]]; then
+        refute_contains "$FAKE_ROOT/planted" "$(grep -E '^OK +RyzenAdj ' <<<"$out" || true)" \
+            'doctor chose a ryzenadj from PATH'
+    else
+        assert_doctor_line FAIL RyzenAdj "$FAKE_ROOT/planted/ryzenadj is on PATH, but only a root-owned ryzenadj in /usr/local/bin /usr/bin" \
+            "$out" 'doctor said ryzenadj was not found instead of naming the one on PATH it will not run'
+    fi
     out="$(env "${production_env[@]}" PATH="$FAKE_ROOT/planted:$PATH" \
         "$FAKE_CLI" status --json 2>&1 || true)"
     refute_contains "$FAKE_ROOT/planted" "$out" 'status --json chose a ryzenadj from PATH'
@@ -1460,7 +1551,10 @@ case_root_ignores_testing_and_every_test_override() {
     out="$(unshare --map-root-user env "${FAKE_ENV[@]}" \
         LEGION_POWERCTL_RYZENADJ_BIN="$FAKE_ROOT/planted/ryzenadj" \
         PATH="$FAKE_ROOT/planted:$PATH" "$FAKE_CLI" doctor 2>&1 || true)"
-    refute_contains "$FAKE_ROOT" "$out" 'root honoured a test path or binary override'
+    refute_contains "$FAKE_ROOT" "$(grep -Ev '^(OK|WARN|FAIL) +RyzenAdj ' <<<"$out")" \
+        'root honoured a test path or binary override'
+    refute_contains "$FAKE_ROOT" "$(grep -E '^OK +RyzenAdj ' <<<"$out" || true)" \
+        'root honoured the ryzenadj override'
     [[ ! -e "$marker" ]] || {
         printf 'FAIL: root executed the ryzenadj named by a test override\n' >&2
         exit 1
@@ -1752,6 +1846,14 @@ run_case case_select_refuses_an_invalid_profile \
     'select refuses an invalid profile before writing config.conf'
 run_case case_a_powerbench_scratch_profile_cannot_become_the_boot_profile \
     'a powerbench scratch profile cannot become the boot profile'
+run_case case_deleting_balanced_while_it_boots_says_why \
+    'deleting balanced while it boots names the real reason'
+run_case case_delete_waits_for_the_power_lock \
+    'delete refuses while another power operation holds the lock'
+run_case case_select_never_points_boot_at_a_profile_deleted_during_its_apply \
+    'select and configure re-check the profile under the lock before moving boot'
+run_case case_per_cpu_boost_through_the_real_symlink_layout_is_written_once \
+    'per-policy boost works through the real cpuN/cpufreq symlink and is written once'
 run_case case_the_power_lock_is_private_and_never_follows_a_symlink \
     'the power lock is private, never follows a symlink, and stays out of children'
 run_case case_the_gui_launcher_refuses_before_it_execs_anything \

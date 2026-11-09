@@ -592,6 +592,10 @@ assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(run_bench doctor 2>&1 || true
 assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(short_run "$TMP/env.csv" --dry-run 2>&1 || true)" \
     'run read a machine the sudo writes would not see'
 assert_eq '' "$(<"$LOG")" 'a refused environment still invoked a helper'
+LEGION_BENCH_ENV=(LEGION_POWERCTL_GUI_SCHEME=desktop)
+refute_contains 'Unset' "$(run_bench doctor 2>&1 || true)" \
+    'the GUI scheme the docs recommend was refused although the CLI never reads it'
+LEGION_BENCH_ENV=()
 reset_machine
 
 printf 'Test 42: without TESTING the ryzenadj and CLI overrides are never executed\n'
