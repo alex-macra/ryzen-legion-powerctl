@@ -10,6 +10,9 @@ if [[ -n "${FAKE_CLI_LOG:-}" ]]; then
 fi
 
 command="${1:-}"
+if [[ -n "${FAKE_CLI_EXIT:-}" && "${FAKE_CLI_EXIT%%:*}" == "$command" ]]; then
+    exit "${FAKE_CLI_EXIT#*:}"
+fi
 case "$command" in
     status)
         if [[ "${2:-}" == "--json" ]]; then

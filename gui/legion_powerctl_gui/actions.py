@@ -43,6 +43,7 @@ class ProfileActions(QObject):
         self._sidebar = sidebar
         self._busy = False
         self.previous_profile = ""
+        self.previous_boot = ""
 
     def save(self) -> None:
         profile = self._guard_editor()
@@ -60,6 +61,7 @@ class ProfileActions(QObject):
             return
         running = runstate.run_state(self._window.status) if self._window.status else None
         go_back = ""
+        boot = self._window.status.active_profile if self._window.status else ""
         if running is not None:
             deltas = runstate.raising_deltas(running, profile)
             if deltas and self._window.dialogs:
@@ -71,16 +73,29 @@ class ProfileActions(QObject):
             f"Applied '{profile.name}'. It will also be applied at boot.",
             saved=profile,
             go_back=go_back,
+            go_back_boot=boot,
         )
 
-    def apply_saved(self, name: str) -> None:
-        if not model.valid_profile_name(name):
-            self.failed.emit(f"Refusing to act on an invalid profile name: {name!r}")
+    def go_back(self, name: str, boot: str) -> None:
+        for candidate in (name, boot):
+            if candidate and not model.valid_profile_name(candidate):
+                self.failed.emit(f"Refusing to act on an invalid profile name: {candidate!r}")
+                return
+        if not boot or boot == name:
+            self._run(
+                model.build_select_args(name, apply_now=True),
+                f"Applied '{name}'. It will also be applied at boot.",
+            )
             return
-        self._run(
-            model.build_select_args(name, apply_now=True),
-            f"Applied '{name}'. It will also be applied at boot.",
-        )
+
+        def restore_boot(warning: str) -> None:
+            self._run(
+                model.build_select_args(boot),
+                f"Applied '{name}'. '{boot}' is still the boot profile.",
+                carried=warning,
+            )
+
+        self._run(model.build_apply_args(name), f"Applied '{name}'.", then=restore_boot)
 
     def repair_balanced_plus(self) -> None:
         if self._busy:
@@ -184,14 +199,22 @@ class ProfileActions(QObject):
         on_fail=None,
         go_back: str = "",
         on_success=None,
+        go_back_boot: str = "",
+        then=None,
+        carried: str = "",
     ) -> None:
         if self._busy:
             return
         self.previous_profile = go_back
+        self.previous_boot = go_back_boot if go_back else ""
         self._set_busy(True)
 
         def done(code: int, stdout: str, stderr: str) -> None:
             self._set_busy(False)
+            stderr = "\n".join(part for part in (carried.strip(), stderr.strip()) if part)
+            if code == 0 and then is not None:
+                then(stderr)
+                return
             backup = ""
             if args == ["repair", "balanced-plus"]:
                 backup = next((line for line in stdout.splitlines()

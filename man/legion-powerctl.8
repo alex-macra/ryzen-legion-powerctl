@@ -17,13 +17,16 @@ Apply a named profile or the selected active profile.
 .B configure PROFILE [OPTIONS]
 Create or update a profile. Options include --stapm, --slow, --fast, --temp,
 --power-profile, --min-mhz, --max-mhz, --boost, --epp, --description,
---select, and --apply.
+--select, and --apply. With --select and --apply, the boot profile changes only
+after the apply succeeds.
 .TP
 .B wizard [PROFILE]
 Open an interactive profile editor.
 .TP
 .B select PROFILE [--apply]
-Select the profile used at boot.
+Select the profile used at boot. The profile is validated first. With --apply,
+config.conf is written only after the apply succeeds. powerbench-* scratch
+profiles cannot be selected.
 .TP
 .B list
 List profiles. The active profile is marked with an asterisk.

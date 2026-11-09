@@ -302,6 +302,10 @@ def build_configure_args(
     return args
 
 
+def build_apply_args(profile_name: str) -> list[str]:
+    return ["apply", profile_name]
+
+
 def build_select_args(profile_name: str, apply_now: bool = False) -> list[str]:
     args = ["select", profile_name]
     if apply_now:

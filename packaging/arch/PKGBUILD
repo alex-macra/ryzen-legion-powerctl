@@ -21,6 +21,7 @@ optdepends=('power-profiles-daemon: apply Linux power profiles through powerprof
             'pyside6: graphical control panel (legion-powerctl-gui)'
             'polkit: authentication for privileged GUI and widget actions')
 backup=('etc/legion-powerctl/config.conf'
+        'etc/legion-powerctl/profiles.d/balanced.conf'
         'etc/legion-powerctl/profiles.d/balanced-plus.conf'
         'etc/legion-powerctl/profiles.d/quiet.conf'
         'etc/legion-powerctl/profiles.d/performance-capped.conf')

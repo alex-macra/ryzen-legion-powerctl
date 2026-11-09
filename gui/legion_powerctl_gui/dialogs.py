@@ -202,7 +202,7 @@ def confirm_raise(parent: QWidget, name: str, deltas: list) -> bool:
     box.setText(f"'{name}' raises what the machine is allowed to draw:")
     box.setInformativeText(
         f"{rows}\n\nHigher limits raise heat, noise and power draw.\n"
-        "Limits are volatile: a power cycle clears them, and nothing here puts them back."
+        "Applying also makes it the boot profile, so it will be applied at every boot."
     )
     apply_button = _primary(box.addButton("Apply anyway", QMessageBox.ButtonRole.AcceptRole))
     cancel = box.addButton(QMessageBox.StandardButton.Cancel)

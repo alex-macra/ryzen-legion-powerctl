@@ -117,11 +117,12 @@ for the running profile. A temperature ladder preserves all three running wattag
 `--temp` is valid only for a power ladder. Scratch profiles leave platform policy,
 boost, frequency range and EPP unchanged.
 
-Each run uses a separate scratch profile and removes it after successful restoration.
-Normal completion, interruption and failures stop the workload process groups and
-restore the previously applied profile once. If the restore fails or that profile
-was edited during the run, the scratch profile remains available for diagnosis and
-the command fails. Existing output files are rejected, so use a fresh filename for
+Each run uses a separate scratch profile and removes it on exit. Normal completion,
+interruption (SIGINT, SIGTERM or SIGHUP, including a closed terminal or a `tee` that
+died first) and failures stop the workload process groups and restore the previously
+applied profile once. If the restore fails or that profile was edited during the run,
+the command fails and prints the profile to reapply. A scratch profile can be applied
+but never selected for boot. Existing output files are rejected, so use a fresh filename for
 each comparison.
 
 Load generation is pluggable. The built-in `cpu` preset probes for `stress-ng`, then

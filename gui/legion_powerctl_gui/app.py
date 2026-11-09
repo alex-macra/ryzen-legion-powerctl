@@ -143,16 +143,18 @@ class MainWindow(QMainWindow):
     def _on_action_failed(self, message: str) -> None:
         self._pending_open = ""
         self._show_error(message)
+        self.refresh()
 
     def _on_action_cancelled(self, message: str) -> None:
         self._pending_open = ""
         self.reports.note(message)
+        self.refresh()
 
     def _on_go_back(self) -> None:
         previous = self.profile_actions.previous_profile
         self.reports.clear_offers()
         if previous:
-            self.profile_actions.apply_saved(previous)
+            self.profile_actions.go_back(previous, self.profile_actions.previous_boot)
 
     def _set_busy(self, busy: bool) -> None:
         if busy:

@@ -145,7 +145,14 @@ acquire_mutation_lock() {
     [[ -z "$MUTATION_LOCK_FD" ]] || return 0
     [[ -x /usr/bin/flock ]] || die "flock from util-linux is required for power operations."
     mkdir -p -- "$STATE_DIR" || die "Could not create state directory: $STATE_DIR"
-    exec {MUTATION_LOCK_FD}> "$STATE_DIR/power.lock" || die "Could not open the power-operation lock."
+    local lock="$STATE_DIR/power.lock" old_umask
+    [[ ! -L "$lock" ]] || die "Refusing the power-operation lock: $lock is a symlink."
+    [[ ! -e "$lock" || -f "$lock" ]] || die "Refusing the power-operation lock: $lock is not a regular file."
+    old_umask="$(umask)"
+    umask 077
+    exec {MUTATION_LOCK_FD}>> "$lock" || die "Could not open the power-operation lock."
+    umask "$old_umask"
+    chmod 0600 -- "$lock" || die "Could not restrict the power-operation lock."
     /usr/bin/flock -n "$MUTATION_LOCK_FD" || die "Another power operation is already running. Try again when it finishes."
 }
 
@@ -493,7 +500,15 @@ run_or_print() {
         printf '\n'
         return 0
     fi
-    "$@"
+    run_unlocked "$@"
+}
+
+run_unlocked() {
+    if [[ -n "$MUTATION_LOCK_FD" ]]; then
+        "$@" {MUTATION_LOCK_FD}>&-
+    else
+        "$@"
+    fi
 }
 
 apply_power_profile() {
@@ -758,7 +773,7 @@ values_match() {
 verify_ryzenadj_limits() {
     local ryzenadj="$1" report parsed=0 spec label parameter want got joined
     local -a drift=()
-    report="$("$ryzenadj" -i 2>&1)" || return 3
+    report="$(run_unlocked "$ryzenadj" -i 2>&1)" || return 3
 
     for spec in "STAPM:stapm-limit:$STAPM_W" \
                 "Slow PPT:slow-limit:$SLOW_W" \
@@ -793,7 +808,7 @@ capture_stock_limits() {
         (( quiet == 1 )) || warn "A profile was already applied this boot, so the SMU no longer holds the firmware values. Run 'legion-powerctl disable', reboot, then capture."
         return 1
     fi
-    report="$("$ryzenadj" -i 2>&1)" || return 1
+    report="$(run_unlocked "$ryzenadj" -i 2>&1)" || return 1
 
     local -a captured=()
     for spec in "STAPM_W:stapm-limit" "SLOW_W:slow-limit" "FAST_W:fast-limit" "TEMP_C:tctl-temp"; do
@@ -1117,7 +1132,7 @@ cmd_repair() {
         chmod 0600 "$TMP_WRITE"
         mv -f -- "$TMP_WRITE" "$pending"
         TMP_WRITE=""
-        modprobe -r ryzen_smu || die "Could not unload ryzen_smu; it may be in use. No profile or boot configuration was changed. Backup: $backup"
+        run_unlocked modprobe -r ryzen_smu || die "Could not unload ryzen_smu; it may be in use. No profile or boot configuration was changed. Backup: $backup"
         [[ ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" ]] || \
             die "ryzen_smu still exposes an interface after unload; stopping before power or profile changes. Backup: $backup"
         info "Removed the incomplete module for this boot. If the apply fails, persistent settings remain unchanged."
@@ -1182,13 +1197,13 @@ cmd_configure() {
         shift
     done
 
+    (( select_profile == 0 )) || refuse_scratch_boot_profile "$name"
+    (( apply_now == 0 )) || acquire_mutation_lock
     write_profile "$name"
+    (( apply_now == 0 )) || cmd_apply "$name"
     if (( select_profile == 1 )); then
         write_global_config "$name"
         success "Selected '$name' as the active boot profile."
-    fi
-    if (( apply_now == 1 )); then
-        cmd_apply "$name"
     fi
 }
 
@@ -1267,11 +1282,20 @@ cmd_select() {
         esac
         shift
     done
-    write_global_config "$name"
-    success "Selected '$name' as the active boot profile."
+    refuse_scratch_boot_profile "$name"
+    load_profile "$name"
+    validate_profile "$name"
     if (( apply_now == 1 )); then
+        acquire_mutation_lock
         cmd_apply "$name"
     fi
+    write_global_config "$name"
+    success "Selected '$name' as the active boot profile."
+}
+
+refuse_scratch_boot_profile() {
+    [[ "$1" != powerbench-* ]] || \
+        die "'$1' is a legion-powerbench scratch profile and cannot be the boot profile."
 }
 
 cmd_list() {
@@ -1792,9 +1816,9 @@ cmd_enable() {
     local systemctl_bin
     systemctl_bin="$(resolve_systemctl)"
     [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]] || die "systemctl not found."
-    "$systemctl_bin" daemon-reload
-    "$systemctl_bin" enable "$SERVICE_NAME"
-    "$systemctl_bin" restart "$SERVICE_NAME"
+    run_unlocked "$systemctl_bin" daemon-reload
+    run_unlocked "$systemctl_bin" enable "$SERVICE_NAME"
+    run_unlocked "$systemctl_bin" restart "$SERVICE_NAME"
     success "$SERVICE_NAME is enabled and the active profile was applied."
 }
 
@@ -1803,7 +1827,7 @@ cmd_disable() {
     local systemctl_bin
     systemctl_bin="$(resolve_systemctl)"
     [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]] || die "systemctl not found."
-    "$systemctl_bin" disable --now "$SERVICE_NAME"
+    run_unlocked "$systemctl_bin" disable --now "$SERVICE_NAME"
     success "$SERVICE_NAME is disabled. Existing SMU settings remain until firmware changes them or the machine reboots."
 }
 

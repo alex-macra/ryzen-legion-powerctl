@@ -15,6 +15,13 @@ Fire Range / HX CPUs need ryzenadj 0.19.0 or newer.
 The optional ryzen_smu-dkms-git exposes /sys/kernel/ryzen_smu_drv. RyzenAdj
 needs a compatible driver and PM-table files to use it for applying limits.
 EOF
+    if [ -e /etc/legion-powerctl/config.conf.pacnew ]; then
+        printf '\nKept the existing boot profile in /etc/legion-powerctl/config.conf.\n'
+    elif legion-powerctl select balanced >/dev/null 2>&1; then
+        printf '\nThe boot profile is balanced. Nothing was applied.\n'
+    else
+        printf '\nCould not select balanced for boot. Run: sudo legion-powerctl select balanced\n'
+    fi
 }
 
 pre_remove() {

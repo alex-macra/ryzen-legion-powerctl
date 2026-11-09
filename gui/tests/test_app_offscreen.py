@@ -647,6 +647,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertEqual(self.editor.slow_spin.value(), 75)
 
     def test_failed_action_keeps_unsaved_edits(self):
+        self.window._refresh_timer.stop()
         self.editor.stapm_spin.setValue(58)
         self.editor.advanced.min_freq_edit.setCurrentText("2400")
         self.editor._on_edited()
@@ -654,12 +655,12 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.profile_actions.handle_result(
             126, "", "Request dismissed", saved=self.editor.collect()
         )
-        self.settle()
-        self.assertEqual(
-            self.window.refresh_count, refreshes,
-            "a failed action must not refresh; the reload discards the edits",
+        self.assertTrue(
+            wait_until(self.app, lambda: self.window.refresh_count > refreshes),
+            "a failed action did not re-read the status from disk",
         )
-        self.assertTrue(self.editor.dirty)
+        self.settle()
+        self.assertTrue(self.editor.dirty, "the refresh after a failure discarded the edits")
         self.assertEqual(self.editor.stapm_spin.value(), 58)
         self.assertEqual(self.editor.advanced.min_freq_edit.currentText(), "2400")
 
@@ -822,7 +823,8 @@ class MainWindowTest(OffscreenGuiTest):
 
         self.editor.editing = model.Profile(name="--force")
         self.window.profile_actions.pin_boot("--force")
-        self.window.profile_actions.apply_saved("--force")
+        self.window.profile_actions.go_back("--force", "balanced-plus")
+        self.window.profile_actions.go_back("quiet", "--force")
         self.window.profile_actions.delete()
         self.settle(5)
         log = "\n".join(self.read_log())
@@ -1369,6 +1371,18 @@ class MainWindowTest(OffscreenGuiTest):
         )
         self.assertTrue(self.window.reports.go_back_button.isHidden())
 
+    def test_a_failed_apply_refreshes_the_header_from_disk(self):
+        self.window._refresh_timer.stop()
+        before = self.window.refresh_count
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "configure:1"}):
+            self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+            self.window.profile_actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+            self.assertTrue(
+                wait_until(self.app, lambda: self.window.refresh_count > before),
+                "a failed apply left the header showing what it believed before",
+            )
+
     def test_a_successful_save_is_announced(self):
         with self.announcements() as announce:
             self.window.profile_actions.handle_result(
@@ -1409,6 +1423,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertNotIn("delete", "\n".join(self.read_log()))
 
     def test_a_dismissed_pkexec_prompt_is_not_an_error(self):
+        self.window._refresh_timer.stop()
         with unittest.mock.patch.dict(
             os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "pkexec"}
         ):
@@ -1418,10 +1433,10 @@ class MainWindowTest(OffscreenGuiTest):
             self.window.profile_actions.handle_result(
                 126, "", "", saved=self.editor.collect()
             )
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
         self.settle()
         self.assertFalse(self.window.errors, "Cancel raised a critical modal")
         self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
-        self.assertEqual(self.window.refresh_count, refreshes)
         self.assertTrue(self.editor.dirty, "Cancel must not discard the edits")
 
     def test_the_same_code_from_the_cli_itself_is_still_an_error(self):
@@ -2403,6 +2418,28 @@ class PanelSeamTest(OffscreenGuiTest):
             header.deleteLater()
             row.deleteLater()
 
+    def test_the_raise_warning_says_the_profile_also_applies_at_every_boot(self):
+        from legion_powerctl_gui import dialogs, runstate
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox, QWidget
+
+        parent = QWidget()
+        seen = []
+
+        def answer():
+            box = self.app.activeModalWidget()
+            seen.append(box.informativeText())
+            box.button(QMessageBox.StandardButton.Cancel).click()
+
+        try:
+            QTimer.singleShot(0, answer)
+            dialogs.confirm_raise(parent, "quiet", [runstate.Delta("Fast PPT", 102, 110, "W")])
+        finally:
+            parent.deleteLater()
+        self.assertEqual(len(seen), 1)
+        self.assertIn("applied at every boot", seen[0])
+        self.assertNotIn("nothing here puts them back", seen[0])
+
     def test_a_message_box_marks_the_action_and_keeps_the_safe_default(self):
         from legion_powerctl_gui import dialogs, runstate
         from PySide6.QtCore import QTimer
@@ -2727,6 +2764,69 @@ class QuietRunningVariantTest(VariantFixtureTest):
         tallest = max(-metrics.tightBoundingRect(value).top() for value, _u, _c in readout.tiles)
         self.assertGreaterEqual(
             drawn, tallest, "the readout box is shorter than its figures and cuts their tops off"
+        )
+
+
+class DismissedEnableVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["service"] = {"enabled": "disabled", "active": "inactive"}
+
+    def test_a_dismissed_enable_leaves_the_switch_matching_the_status(self):
+        from legion_powerctl_gui.actions import ProfileActions
+
+        self.window._refresh_timer.stop()
+        switch = self.window.header.service_check
+        self.assertFalse(switch.isChecked())
+        before = self.window.refresh_count
+        dismissed = staticmethod(lambda code: code == 126)
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "enable:126"}), \
+                unittest.mock.patch.object(ProfileActions, "_is_cancelled_elevation", dismissed):
+            switch.setChecked(True)
+            self.assertTrue(
+                wait_until(self.app, lambda: self.window.refresh_count > before),
+                "a dismissed enable did not re-read the status",
+            )
+        self.assertFalse(switch.isChecked(), "the switch claims a service the status says is off")
+        self.assertFalse(self.window.errors)
+
+
+class GoBackToAnotherBootVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+
+    def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
+        log = tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False)
+        self.addCleanup(os.unlink, log.name)
+        self.addCleanup(log.close)
+        actions = self.window.profile_actions
+        sidebar = self.window.sidebar
+        from PySide6.QtCore import Qt
+
+        row = next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == "performance-capped"
+        )
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_LOG": log.name}):
+            sidebar.list.setCurrentRow(row)
+            self.assertEqual(self.window.editor.editing.name, "performance-capped")
+            actions.apply()
+            offer = self.window.reports.go_back_button
+            self.assertTrue(wait_until(self.app, lambda: not offer.isHidden()))
+            self.assertEqual((actions.previous_profile, actions.previous_boot),
+                             ("quiet", "balanced-plus"))
+            offer.click()
+
+            def privileged():
+                return [line for line in Path(log.name).read_text().splitlines()
+                        if not line.startswith(("status", "doctor"))]
+
+            self.assertTrue(wait_until(self.app, lambda: len(privileged()) >= 3))
+            self.assertTrue(wait_until(self.app, lambda: not actions._busy))
+        self.assertEqual(
+            [line.split(" --")[0] if line.startswith("configure") else line
+             for line in privileged()],
+            ["configure performance-capped", "apply quiet", "select balanced-plus"],
         )
 
 

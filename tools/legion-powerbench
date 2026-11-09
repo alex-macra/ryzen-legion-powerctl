@@ -508,21 +508,28 @@ apply_step() {
 }
 
 cleanup_run() {
-    local rc="$1"
+    local rc="$1" log restore_failed=0 scratch_left=0
+    set +e
     trap - EXIT
-    trap '' INT TERM
+    trap '' INT TERM HUP PIPE
     stop_loads
     if (( PROFILE_CHANGED )); then
-        info "Restoring profile '$RESTORE_PROFILE'."
-        if restorable_state >/dev/null && "$SUDO_BIN" "$CLI_BIN" apply "$RESTORE_PROFILE"; then
-            if ! "$SUDO_BIN" "$CLI_BIN" delete "$BENCH_PROFILE"; then
-                warn "Could not remove scratch profile '$BENCH_PROFILE'."
-                rc=1
-            fi
-        else
-            warn "RESTORATION FAILED. Check the profile and run: sudo $CLI_BIN apply $RESTORE_PROFILE"
+        info "Restoring profile '$RESTORE_PROFILE'." || true
+        log="$(mktemp 2>/dev/null)" || log=/dev/null
+        if ! { restorable_state >/dev/null && "$SUDO_BIN" "$CLI_BIN" apply "$RESTORE_PROFILE"; } >>"$log" 2>&1; then
             rc=1
+            restore_failed=1
         fi
+        if ! "$SUDO_BIN" "$CLI_BIN" delete "$BENCH_PROFILE" >>"$log" 2>&1; then
+            rc=1
+            scratch_left=1
+        fi
+        if [[ "$log" != /dev/null ]]; then
+            cat -- "$log" >&2 2>/dev/null || true
+            rm -f -- "$log"
+        fi
+        (( ! restore_failed )) || warn "RESTORATION FAILED. Check the profile and run: sudo $CLI_BIN apply $RESTORE_PROFILE" || true
+        (( ! scratch_left )) || warn "Could not remove scratch profile '$BENCH_PROFILE'." || true
     fi
     [[ -z "$RUN_DIR" ]] || rm -rf -- "$RUN_DIR"
     exit "$rc"
@@ -700,6 +707,7 @@ cmd_run() {
         open_csv "$out"
         trap 'exit 130' INT
         trap 'exit 143' TERM
+        trap 'exit 129' HUP
         trap 'cleanup_run $?' EXIT
     fi
 

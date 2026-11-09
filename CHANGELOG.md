@@ -7,12 +7,30 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- The GUI's **Apply now** and **Go back** now also set the boot profile, so the profile
-  you apply is the one the boot service applies after a restart. Before, they changed
-  only the running limits and the next boot went back to the old pointer.
-- A fresh install boots `balanced` instead of `balanced-plus`. Upgrades keep the boot
-  profile already in `/etc/legion-powerctl/config.conf`; change it with
-  `sudo legion-powerctl select balanced --apply`.
+- The GUI's **Apply now** now also sets the boot profile, so the profile you apply is
+  the one the boot service applies after a restart. Before, it changed only the running
+  limits and the next boot went back to the old pointer. **Go back** restores both the
+  profile that was running and the boot profile that was set before that apply.
+- A fresh install boots `balanced` instead of `balanced-plus`: the pacman package's
+  `post_install` and a script install that creates `config.conf` run
+  `legion-powerctl select balanced` without applying it. The shipped `config.conf` is
+  unchanged, so a pacman upgrade or a script reinstall never rewrites the boot profile
+  of an existing install. Change it with `sudo legion-powerctl select balanced --apply`.
+- `select --apply` and `configure --select --apply` take the power lock first and move
+  the boot profile only after the apply succeeds, so a blocked or failed apply no longer
+  changes what boots. `select` validates the profile before it writes `config.conf`.
+- `select` and `configure --select` refuse `powerbench-*` scratch profiles.
+- The GUI re-reads the status after a failed or cancelled action, so the header and
+  the boot-service switch show what is on disk.
+- The raise warning says the profile will also be applied at every boot.
+- pacman now tracks `profiles.d/balanced.conf` as a backup file, so an upgrade no longer
+  overwrites an edited `balanced` profile and removal keeps it as `.pacsave`.
+- An interrupted `legion-powerbench run` whose output was piped through `tee` now
+  still restores the previous profile; the scratch profile is removed even when the
+  restore fails, and SIGHUP is handled like SIGINT and SIGTERM.
+- The power-operation lock in `/run/legion-powerctl` is created mode 0600, is never
+  opened through a symlink or truncated, and is no longer inherited by RyzenAdj,
+  `powerprofilesctl`, `systemctl` or `modprobe`.
 - Refuse a known broken SMU backend before changing power policy, and record
   ordinary apply failures as partial instead of leaving a stale success visible.
 - Unload an unusable module newly loaded by the installer, and respect a recovery

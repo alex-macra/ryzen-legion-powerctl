@@ -692,14 +692,66 @@ assert_contains 'already applied this boot' "$tainted_out" \
     exit 1
 }
 
-printf 'Test 53: a fresh install boots the shipped balanced profile\n'
-cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+printf 'Test 53: every fresh-install path boots balanced; an existing pointer is kept\n'
+fresh_boot_profile() {
+    rm -f "$STATE/last-apply.env"
+    : > "$LOG"
+    run_cli apply --boot 2>&1 | sed -n "s/^Boot apply: profile '\(.*\)'$/\1/p"
+}
 cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
-rm -f "$STATE/last-apply.env"
-boot_out="$(run_cli apply --boot 2>&1)"
-assert_contains "Boot apply: profile 'balanced'" "$boot_out" 'the shipped config does not boot balanced'
-assert_file_contains 'PROFILE=balanced' "$STATE/last-apply.env" 'the boot apply did not record balanced'
-refute_contains 'PROFILE=balanced-plus' "$(<"$STATE/last-apply.env")" 'the boot apply recorded balanced-plus'
+rm -f "$ETC/config.conf"
+assert_eq 'balanced' "$(fresh_boot_profile)" 'with no config.conf the CLI does not fall back to balanced'
+
+pacman_scriptlet="$TMP/legion-powerctl.install"
+sed "s|/etc/legion-powerctl|$ETC|g" "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
+run_post_install() {
+    (
+        PATH="$FAKEBIN:$PATH"
+        # shellcheck source=/dev/null
+        . "$pacman_scriptlet"
+        post_install
+    )
+}
+cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+: > "$LOG"
+post_install_out="$(run_post_install)"
+assert_contains 'The boot profile is balanced' "$post_install_out" 'post_install did not report the boot profile'
+assert_eq '' "$(<"$LOG")" 'post_install applied something'
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'post_install did not select balanced'
+assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh package install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf.pacnew"
+run_post_install >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'post_install replaced a config.conf pacman kept'
+rm -f "$ETC/config.conf.pacnew"
+
+installer_functions="$TMP/installer-functions.sh"
+awk '/^(install_preserving|install_config_files)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_functions"
+assert_contains 'install_config_files()' "$(<"$installer_functions")" 'install.sh no longer has install_config_files'
+# shellcheck disable=SC2034,SC2329
+run_script_install_config() {
+    (
+        SUDO=()
+        FORCE_CONFIG=0
+        CONFIG_DIR="$ETC"
+        CLI_BIN="$FAKEBIN/legion-powerctl"
+        info() { printf '%s\n' "$*"; }
+        warn() { printf 'WARNING: %s\n' "$*" >&2; }
+        # shellcheck source=/dev/null
+        . "$installer_functions"
+        install_config_files
+    )
+}
+mv "$ETC" "$TMP/etc-before-script-install"
+run_script_install_config >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'a fresh script install did not select balanced'
+assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh script install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+run_script_install_config >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'a script reinstall moved the boot profile'
+rm -rf "$ETC"
+mv "$TMP/etc-before-script-install" "$ETC"
+cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
 
 printf 'Test 54: the profile the GUI applies is the one the next boot applies\n'
 run_cli select balanced-plus >/dev/null
@@ -713,5 +765,22 @@ for gui_argv in "select quiet --apply" "select balanced --apply"; do
     assert_contains "Boot apply: profile '$expected'" "$boot_out" "the next boot did not apply '$expected'"
     assert_eq "PROFILE=$expected" "$(grep '^PROFILE=' "$STATE/last-apply.env")" "the next boot recorded the wrong profile"
 done
+
+printf 'Test 55: the shipped config.conf still points at balanced-plus, so a pacman upgrade never flips boot\n'
+assert_eq "$(printf '# Profile applied by legion-powerctl.service once at boot.\nACTIVE_PROFILE=balanced-plus\nx')" \
+    "$(cat "$ROOT_DIR/config/config.conf"; printf x)" \
+    'config/config.conf changed; pacman installs an unedited backup file silently and flips boot'
+
+printf 'Test 56: every file make install puts under /etc is in the PKGBUILD backup array\n'
+stage="$TMP/stage"
+make -s -C "$ROOT_DIR" install DESTDIR="$stage" PREFIX=/usr SYSCONFDIR=/etc >/dev/null
+staged="$(cd "$stage" && find etc -type f | LC_ALL=C sort)"
+backed_up="$(
+    # shellcheck source=/dev/null
+    . "$ROOT_DIR/packaging/arch/PKGBUILD"
+    # shellcheck disable=SC2154
+    printf '%s\n' "${backup[@]}" | LC_ALL=C sort
+)"
+assert_eq "$staged" "$backed_up" 'PKGBUILD backup= does not match the files installed under /etc'
 
 printf 'All tests passed.\n'

@@ -355,11 +355,12 @@ PY
 done
 reset_machine
 
-printf 'Test 26: restoration failure is returned to the caller\n'
+printf 'Test 26: restoration failure is returned to the caller and the scratch profile still goes\n'
 LEGION_BENCH_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=72)
 assert_fails 'a failed restoration was reported as successful' short_run "$TMP/failed-restore.csv"
 assert_eq '1' "$(grep -c -- '--tctl-temp=72' "$LOG" || true)" 'restoration was attempted more than once'
-rm -f -- "$PROFILES"/powerbench-*.conf
+assert_eq '' "$(find "$PROFILES" -maxdepth 1 -name 'powerbench-*.conf' -print)" \
+    'a failed restoration left its scratch profile behind'
 reset_machine
 
 printf 'Test 27: the GPU is only ever read\n'
@@ -429,5 +430,68 @@ awk -F, '$2 == "load" && $3 == 595 { print } { print }' \
     "$TMP/covered.csv" > "$TMP/duplicate-time.csv"
 assert_contains 'inconclusive' "$(run_bench report "$TMP/duplicate-time.csv")" \
     'duplicate timestamps were accepted as continuous sustained measurements'
+
+reset_machine
+for signal_name in SIGINT SIGHUP; do
+    printf 'Test 34: %s with stderr piped into a reader that dies still restores and cleans up\n' "$signal_name"
+    reset_machine
+    python3 - "$BENCH_CLI" "$TMP" "$signal_name" "${BENCH_ENV[@]}" <<'PY'
+import os
+from pathlib import Path
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+bench, root, signal_name, *environment = sys.argv[1:]
+env = os.environ | dict(item.split("=", 1) for item in environment)
+root = Path(root)
+leader_file = root / f"pipe-{signal_name}.leader"
+workload = f"printf '%s\\n' \"$$\" > {shlex.quote(str(leader_file))}; sleep 300"
+run = [bench, "run", "--ladder", "stapm", "--from", "65", "--to", "65",
+       "--workload-cmd", workload, "--soak", "30", "--cool", "0", "--interval", "1",
+       "--out", str(root / f"pipe-{signal_name}.csv")]
+pipeline = " ".join(shlex.quote(arg) for arg in run) + " 2>&1 | cat >/dev/null"
+
+
+def restore_default_signals():
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(number, signal.SIG_DFL)
+
+
+process = subprocess.Popen(
+    ["bash", "-c", pipeline], env=env, start_new_session=True,
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    preexec_fn=restore_default_signals,
+)
+group = process.pid
+try:
+    deadline = time.monotonic() + 15
+    while not (leader_file.exists() and leader_file.stat().st_size):
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError(f"{signal_name}: workload did not start")
+        time.sleep(0.02)
+    os.killpg(group, getattr(signal, signal_name))
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        process.poll()
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"{signal_name}: the run did not finish")
+finally:
+    process.poll()
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+PY
+    assert_restored_once
+done
+reset_machine
 
 printf '\nAll legion-powerbench tests passed.\n'

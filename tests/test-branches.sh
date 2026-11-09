@@ -648,6 +648,104 @@ case_power_mutations_refuse_a_concurrent_operation() {
         'apply could not proceed after the other operation ended'
 }
 
+case_a_blocked_apply_does_not_move_the_boot_profile() {
+    local lock_fd out rc before
+    before="$(<"$ETC/config.conf")"
+    exec {lock_fd}>> "$STATE/power.lock"
+    flock -n "$lock_fd"
+
+    rc=0
+    out="$(exec {lock_fd}>&-; run_cli configure blocked --stapm 40 --slow 45 --fast 50 --temp 70 \
+        --select --apply 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'configure --select --apply did not refuse a held lock'
+    assert_contains 'Another power operation is already running' "$out" \
+        'configure did not explain the lock contention'
+    assert_eq "$before" "$(<"$ETC/config.conf")" \
+        'a blocked configure --select --apply moved the boot profile'
+
+    rc=0
+    out="$(exec {lock_fd}>&-; run_cli select quiet --apply 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'select --apply did not refuse a held lock'
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'a blocked select --apply moved the boot profile'
+
+    flock -u "$lock_fd"
+    exec {lock_fd}>&-
+}
+
+case_a_failed_apply_does_not_move_the_boot_profile() {
+    local before
+    before="$(<"$ETC/config.conf")"
+    LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=78)
+    assert_fails 'select --apply succeeded with a failing ryzenadj' run_cli select quiet --apply
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'a failed select --apply moved the boot profile'
+
+    LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=77)
+    assert_fails 'configure --select --apply succeeded with a failing ryzenadj' \
+        run_cli configure failing --stapm 40 --slow 45 --fast 50 --temp 77 --select --apply
+    assert_eq "$before" "$(<"$ETC/config.conf")" \
+        'a failed configure --select --apply moved the boot profile'
+
+    LEGION_TEST_ENV=()
+    run_cli select quiet --apply >/dev/null
+    assert_file_contains 'ACTIVE_PROFILE=quiet' "$ETC/config.conf" \
+        'a successful select --apply did not move the boot profile'
+}
+
+case_select_refuses_an_invalid_profile() {
+    local before
+    before="$(<"$ETC/config.conf")"
+    cat > "$PROFILES/inverted.conf" <<'EOF_PROFILE'
+STAPM_W=80
+SLOW_W=60
+FAST_W=70
+TEMP_C=80
+EOF_PROFILE
+    assert_fails 'an invalid profile was selected' run_cli select inverted
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'select wrote an invalid boot profile'
+    assert_fails 'an invalid profile was selected and applied' run_cli select inverted --apply
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'select --apply wrote an invalid boot profile'
+}
+
+case_a_powerbench_scratch_profile_cannot_become_the_boot_profile() {
+    local before out
+    before="$(<"$ETC/config.conf")"
+    cp "$PROFILES/quiet.conf" "$PROFILES/powerbench-4242.conf"
+    out="$(run_cli select powerbench-4242 2>&1 || true)"
+    assert_contains 'scratch profile' "$out" 'select did not explain why it refused a scratch profile'
+    assert_fails 'select accepted a scratch profile' run_cli select powerbench-4242 --apply
+    assert_fails 'configure --select accepted a scratch profile' \
+        run_cli configure powerbench-4242 --stapm 40 --select --apply
+    assert_eq "$before" "$(<"$ETC/config.conf")" 'a scratch profile became the boot profile'
+    run_cli configure powerbench-4242 --stapm 40 --apply >/dev/null
+    assert_file_contains 'PROFILE=powerbench-4242' "$STATE/last-apply.env" \
+        'powerbench can no longer apply its scratch profile without selecting it'
+}
+
+case_the_power_lock_is_private_and_never_follows_a_symlink() {
+    local target="$FAKE_ROOT/victim" fds="$FAKE_ROOT/child-fds"
+    run_cli apply quiet >/dev/null
+    assert_eq '600' "$(stat -c %a "$STATE/power.lock")" 'the power lock is readable by other users'
+
+    printf 'keep\n' > "$target"
+    rm -f "$STATE/power.lock"
+    ln -s "$target" "$STATE/power.lock"
+    assert_fails 'apply followed a symlinked lock' run_cli apply quiet
+    assert_contains 'symlink' "$(run_cli apply quiet 2>&1 || true)" 'the symlinked lock was not named'
+    assert_eq 'keep' "$(<"$target")" 'the symlinked lock target was changed'
+    assert_eq '644' "$(stat -c %a "$target")" 'the symlinked lock target was chmodded'
+
+    rm -f "$STATE/power.lock"
+    cat > "$FAKEBIN/ryzenadj-fds" <<EOF_FAKE
+#!/usr/bin/env bash
+for fd in /proc/\$\$/fd/*; do readlink "\$fd"; done >> "$fds" 2>/dev/null
+exec "$FAKEBIN/ryzenadj" "\$@"
+EOF_FAKE
+    chmod +x "$FAKEBIN/ryzenadj-fds"
+    LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-fds" run_cli apply quiet >/dev/null
+    assert_file_contains "$FAKE_ROOT" "$fds" 'the fd probe recorded nothing'
+    refute_contains 'power.lock' "$(<"$fds")" 'ryzenadj inherited the power lock'
+}
+
 case_configure_names_the_flag_it_could_not_parse() {
     local out rc=0
     out="$(run_cli configure flagtest --nope 5 2>&1)" || rc=$?
@@ -1083,6 +1181,16 @@ run_case case_power_mutations_refuse_a_concurrent_operation \
     'power mutations refuse a concurrent operation before writing hardware'
 run_case case_configure_names_the_flag_it_could_not_parse \
     'configure names the flag it could not parse'
+run_case case_a_blocked_apply_does_not_move_the_boot_profile \
+    'a blocked apply does not move the boot profile'
+run_case case_a_failed_apply_does_not_move_the_boot_profile \
+    'a failed apply does not move the boot profile'
+run_case case_select_refuses_an_invalid_profile \
+    'select refuses an invalid profile before writing config.conf'
+run_case case_a_powerbench_scratch_profile_cannot_become_the_boot_profile \
+    'a powerbench scratch profile cannot become the boot profile'
+run_case case_the_power_lock_is_private_and_never_follows_a_symlink \
+    'the power lock is private, never follows a symlink, and stays out of children'
 run_case case_the_gui_launcher_refuses_before_it_execs_anything \
     'the GUI launcher refuses before it execs anything'
 run_case case_the_launcher_tells_a_graphical_session_and_only_a_graphical_session \

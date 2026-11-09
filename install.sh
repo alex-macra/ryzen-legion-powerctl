@@ -91,6 +91,8 @@ readonly RYZEN_SMU_SYSFS_DIR='/sys/kernel/ryzen_smu_drv'
 readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
 readonly RYZEN_SMU_MODULE_DIR='/sys/module/ryzen_smu'
 readonly SMU_BLACKLIST_FILE='/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf'
+CONFIG_DIR='/etc/legion-powerctl'
+CLI_BIN='/usr/bin/legion-powerctl'
 
 aur_install_ryzenadj() {
     (( INSTALL_RYZENADJ == 1 )) || die "Rerun with --install-ryzenadj, or install the AUR 'ryzenadj' package first (it replaces ryzenadj-git)."
@@ -464,6 +466,22 @@ install_preserving() {
     fi
 }
 
+install_config_files() {
+    local profile created=0
+    "${SUDO[@]}" install -d -m0755 "$CONFIG_DIR/profiles.d"
+    [[ -e "$CONFIG_DIR/config.conf" ]] || created=1
+    install_preserving "$ROOT_DIR/config/config.conf" "$CONFIG_DIR/config.conf" 0644
+    for profile in "$ROOT_DIR"/profiles/*.conf; do
+        install_preserving "$profile" "$CONFIG_DIR/profiles.d/${profile##*/}" 0644
+    done
+    (( created == 1 )) || return 0
+    if "${SUDO[@]}" "$CLI_BIN" select balanced >/dev/null; then
+        info "Fresh install: the boot profile is balanced."
+    else
+        warn "Could not select balanced for boot. Run: sudo legion-powerctl select balanced"
+    fi
+}
+
 script_install() {
     warn "Script install: files will NOT be tracked by a package manager."
     warn "On Arch/CachyOS prefer the default makepkg flow; run ./uninstall.sh before switching to it."
@@ -475,12 +493,7 @@ script_install() {
     info "Installing legion-powerctl..."
     "${SUDO[@]}" make -C "$ROOT_DIR" install-files PREFIX=/usr
 
-    "${SUDO[@]}" install -d -m0755 /etc/legion-powerctl/profiles.d
-    install_preserving "$ROOT_DIR/config/config.conf" /etc/legion-powerctl/config.conf 0644
-    local profile
-    for profile in "$ROOT_DIR"/profiles/*.conf; do
-        install_preserving "$profile" "/etc/legion-powerctl/profiles.d/${profile##*/}" 0644
-    done
+    install_config_files
 
     "${SUDO[@]}" systemd-analyze verify /usr/lib/systemd/system/legion-powerctl.service
     "${SUDO[@]}" systemctl daemon-reload
