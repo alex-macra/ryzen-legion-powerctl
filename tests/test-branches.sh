@@ -993,6 +993,25 @@ case_a_partial_readback_is_not_reported_as_confirmed() {
         'doctor reported partly read back limits as in force'
 }
 
+case_a_child_exit_126_or_127_leaves_as_1() {
+    local out rc code
+    for code in 126 127; do
+        local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_SET_RC="$code")
+        rc=0
+        out="$(run_cli configure partial --stapm 40 --slow 45 --fast 50 --temp 77 --apply 2>&1)" \
+            || rc=$?
+        assert_eq '1' "$rc" "a ryzenadj exit $code passed through, which pkexec callers read as cancelled"
+        assert_contains 'Saved profile' "$out" 'the save before the failed apply was not reported'
+    done
+
+    printf '#!/bin/sh\nexit 127\n' > "$FAKEBIN/systemctl-127"
+    chmod +x "$FAKEBIN/systemctl-127"
+    local -a LEGION_TEST_ENV=(LEGION_POWERCTL_SYSTEMCTL_BIN="$FAKEBIN/systemctl-127")
+    rc=0
+    run_cli disable >/dev/null 2>&1 || rc=$?
+    assert_eq '1' "$rc" 'a systemctl exit 127 passed through disable'
+}
+
 case_a_nan_readback_is_unread_not_drift() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NAN='tctl-temp')
     local out rc=0
@@ -1012,12 +1031,12 @@ case_a_nan_readback_is_unread_not_drift() {
         'an all-nan readback was recorded as anything but unknown'
 }
 
-case_doctor_warns_when_it_cannot_read_the_limits() {
+case_unprivileged_doctor_prints_no_limits_row_when_it_cannot_read_them() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NO_INFO=1)
     local report
     report="$(run_cli doctor 2>&1)"
-    assert_doctor_line WARN Limits 'failed, so the limits in force are unknown' "$report" \
-        'doctor printed no Limits row when ryzenadj -i failed'
+    refute_contains 'Limits' "$report" \
+        'an unprivileged doctor warned about the limits it needs root to read'
     assert_contains 'OK    Profile' "$report" 'the rest of the report did not survive'
 }
 
@@ -1725,10 +1744,12 @@ run_case case_doctor_reports_limits_that_drifted_from_the_profile \
     'doctor reports limits that drifted from the profile'
 run_case case_a_partial_readback_is_not_reported_as_confirmed \
     'a partial readback is not reported as confirmed'
+run_case case_a_child_exit_126_or_127_leaves_as_1 \
+    'a child exit 126 or 127 leaves as 1'
 run_case case_a_nan_readback_is_unread_not_drift \
     'a nan readback is unread not drift'
-run_case case_doctor_warns_when_it_cannot_read_the_limits \
-    'doctor warns when it cannot read the limits'
+run_case case_unprivileged_doctor_prints_no_limits_row_when_it_cannot_read_them \
+    'unprivileged doctor prints no Limits row when it cannot read them'
 run_case case_a_partial_or_nan_capture_stores_nothing \
     'a partial or nan capture stores nothing'
 run_case case_a_symlinked_stock_limits_file_is_never_read \

@@ -30,6 +30,14 @@ class RunStateTest(unittest.TestCase):
         for value in (state.stapm_w, state.slow_w, state.fast_w, state.temp_c):
             self.assertIsInstance(value, int)
 
+    def test_only_plain_ascii_digits_count_as_a_limit(self):
+        for raw in ("6_0", "\uff16\uff10", " 60", "-60", "60.0"):
+            with self.subTest(raw=raw):
+                state = runstate.run_state(status_with({"profile": "quiet", "stapm_w": raw}))
+                self.assertIsNone(state.stapm_w)
+        state = runstate.run_state(status_with({"profile": "quiet", "stapm_w": 60}))
+        self.assertEqual(state.stapm_w, 60)
+
     def test_nothing_applied_since_boot_says_so(self):
         state = runstate.run_state(status_with(None))
         self.assertFalse(state.applied)

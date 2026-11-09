@@ -93,6 +93,9 @@ running as root ignores all of them except LEGION_POWERCTL_DRY_RUN.
 RyzenAdj is never looked up on PATH: only /usr/local/bin/ryzenadj and
 /usr/bin/ryzenadj are used, and only when owned by root and not writable by
 group or others.
+.SH EXIT STATUS
+0 on success and non-zero on failure. The command never exits 126 or 127 itself: a child that does is reported as 1, because pkexec
+uses those two codes for a dismissed or refused authorization.
 .SH FILES
 .TP
 .I /etc/legion-powerctl/config.conf

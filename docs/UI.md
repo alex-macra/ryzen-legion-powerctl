@@ -268,6 +268,8 @@ that name then outlives the message - which is why it is the fallback. Only erro
 are assertive; everything else waits its turn. A message is announced once per
 change, which matters most for the message a broken profile shows, because the
 fifteen-second poll re-selects the same row and would otherwise repeat it forever.
+A failing status poll goes to the status bar and never opens a dialog, and the same
+failure is reported once until a poll succeeds.
 
 **Keyboard.** Every control carrying a mnemonic claims a different letter; the form
 labels deliberately have none, because a label that names a stop has no focus to hand

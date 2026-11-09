@@ -11,6 +11,7 @@ fi
 
 command="${1:-}"
 if [[ -n "${FAKE_CLI_EXIT:-}" && "${FAKE_CLI_EXIT%%:*}" == "$command" ]]; then
+    [[ -z "${FAKE_CLI_EXIT_STDOUT:-}" ]] || printf '%s\n' "$FAKE_CLI_EXIT_STDOUT"
     exit "${FAKE_CLI_EXIT#*:}"
 fi
 case "$command" in
@@ -51,6 +52,7 @@ case "$command" in
         ;;
     configure|select|delete|enable|disable)
         printf 'ok: %s\n' "$command"
+        [[ -z "${FAKE_CLI_WARNING:-}" ]] || printf '%s\n' "$FAKE_CLI_WARNING" >&2
         ;;
     *)
         printf 'fake CLI: unexpected command %s\n' "$*" >&2

@@ -33,8 +33,8 @@ EPP_VALUES = (
 
 CONTROL_CHARACTERS = frozenset(chr(code) for code in range(0x20)) | {chr(0x7F)}
 
-PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-FREQ_RE = re.compile(r"^(stock|unchanged|0|[1-9][0-9]*)$")
+PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+FREQ_RE = re.compile(r"stock|unchanged|0|[1-9][0-9]*")
 
 DOCTOR_LINE_RE = re.compile(r"^(OK|WARN|FAIL)\s+(\S+)\s+(.*)$")
 DOCTOR_RESULT_RE = re.compile(r"^Doctor result: (\d+) failure\(s\), (\d+) warning\(s\)\.$")
@@ -109,8 +109,11 @@ def parse_status(payload: str) -> Status:
             f"schema {SCHEMA_VERSION}. Update legion-powerctl and the GUI together."
         )
 
+    entries = data.get("profiles", [])
+    if not isinstance(entries, list):
+        raise StatusParseError("status --json gave profiles that are not a list.")
     profiles: list[Profile] = []
-    for entry in data.get("profiles", []):
+    for entry in entries:
         if not isinstance(entry, dict) or "name" not in entry:
             continue
         if not entry.get("valid", False):
@@ -144,7 +147,7 @@ def parse_status(payload: str) -> Status:
     service = data.get("service") or {}
     return Status(
         version=str(data.get("version", "")),
-        active_profile=str(data.get("active_profile", "")),
+        active_profile=str(data.get("active_profile") or ""),
         power_profile=data.get("power_profile"),
         cpu_driver=data.get("cpu_driver"),
         cpu_epp=data.get("cpu_epp"),
@@ -206,11 +209,11 @@ def enforce_power_order(
 
 
 def valid_profile_name(name: str) -> bool:
-    return bool(PROFILE_NAME_RE.match(name))
+    return bool(PROFILE_NAME_RE.fullmatch(name))
 
 
 def valid_frequency(value: str) -> bool:
-    if not FREQ_RE.match(value):
+    if not FREQ_RE.fullmatch(value):
         return False
     if value.isdigit():
         return 100 <= int(value) <= 10000

@@ -1408,6 +1408,7 @@ class MainWindowTest(OffscreenGuiTest):
             seen.append(box.standardButton(box.defaultButton()))
             QTest.keyClick(box, Qt.Key.Key_Return)
 
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
         self.window.dialogs = True
         try:
             QTimer.singleShot(0, press_enter)
@@ -1449,6 +1450,102 @@ class MainWindowTest(OffscreenGuiTest):
         self.settle()
         self.assertFalse(self.window.errors, "a dismissed /usr/bin/pkexec raised a critical modal")
         self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
+
+    def test_an_exit_127_from_a_cli_that_already_ran_is_an_error_not_a_cancel(self):
+        shim = Path(tempfile.mkdtemp()) / "pkexec"
+        shim.write_text('#!/bin/sh\nexec "$@"\n')
+        shim.chmod(0o755)
+        self.window._refresh_timer.stop()
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        with unittest.mock.patch.dict(os.environ, {
+            "LEGION_POWERCTL_GUI_ELEVATE": str(shim),
+            "FAKE_CLI_EXIT": "configure:127",
+            "FAKE_CLI_EXIT_STDOUT": "Saved profile 'quiet'.",
+        }):
+            self.window.profile_actions.save()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+        self.assertNotIn("cancelled", self.window.statusBar().currentMessage().lower())
+
+    def test_a_warning_after_an_apply_still_offers_to_go_back(self):
+        offer = self.window.reports.go_back_button
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        with unittest.mock.patch.dict(
+            os.environ, {"FAKE_CLI_WARNING": "WARNING: this apply is unverified."}
+        ):
+            self.window.profile_actions.apply()
+            self.assertTrue(
+                wait_until(self.app, lambda: not self.window.reports.details_button.isHidden())
+            )
+        self.assertFalse(offer.isHidden(), "a warning hid the way back")
+        self.assertIn("balanced-plus", offer.text())
+
+    def poll_storm(self, env: dict) -> None:
+        from legion_powerctl_gui import app as app_module
+        from PySide6.QtWidgets import QMessageBox
+
+        self.window.dialogs = self.window.reports._dialogs = True
+        self.addCleanup(setattr, self.window, "dialogs", False)
+        self.addCleanup(setattr, self.window.reports, "_dialogs", False)
+        self.window.errors.clear()
+        runs = unittest.mock.patch.object(
+            self.window.runner, "run", wraps=self.window.runner.run
+        )
+        with unittest.mock.patch.dict(os.environ, env), runs as spy, \
+                unittest.mock.patch.object(QMessageBox, "critical") as critical:
+            self.window._refresh_timer.setInterval(30)
+            self.assertTrue(wait_until(self.app, lambda: spy.call_count >= 6, timeout=10.0))
+            self.settle()
+            self.window._refresh_timer.setInterval(app_module.REFRESH_INTERVAL_MS)
+        self.assertEqual(critical.call_count, 0, "the status poll opened a modal")
+        self.assertEqual(len(self.window.errors), 1, list(self.window.errors))
+        self.assertIn(self.window.errors[0], self.window.statusBar().currentMessage())
+
+    def test_a_failing_status_poll_reports_once_and_never_opens_a_modal(self):
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+
+    def test_an_unparseable_status_poll_reports_once_and_never_opens_a_modal(self):
+        broken = Path(tempfile.mkdtemp()) / "status.json"
+        broken.write_text('{"schema_version": 1, "profiles": null}')
+        self.poll_storm({"FAKE_CLI_STATUS_FIXTURE": str(broken)})
+
+    def test_a_missing_cli_reports_once_and_never_opens_a_modal(self):
+        self.poll_storm({"LEGION_POWERCTL_GUI_CLI": str(HERE / "there-is-no-such-binary")})
+
+    def test_deleting_the_boot_profile_is_refused_before_any_prompt(self):
+        from legion_powerctl_gui import dialogs
+
+        self.assertEqual(self.editor.current_name, "balanced-plus")
+        self.window.dialogs = True
+        try:
+            with unittest.mock.patch.object(dialogs, "confirm_delete") as confirm:
+                self.window.profile_actions.delete()
+        finally:
+            self.window.dialogs = False
+        confirm.assert_not_called()
+        self.assertTrue(any("boot profile" in error for error in self.window.errors))
+        self.settle(5)
+        self.assertNotIn("delete", "\n".join(self.read_log()))
+
+    def test_while_busy_go_back_is_disabled_and_a_save_says_why_it_did_nothing(self):
+        from legion_powerctl_gui.actions import BUSY
+
+        actions = self.window.profile_actions
+        actions.previous_profile = "quiet"
+        self.window.reports.success("Applied.", "quiet")
+        actions._set_busy(True)
+        try:
+            self.assertFalse(self.window.reports.go_back_button.isEnabled())
+            self.window._on_go_back()
+            actions.save()
+            self.settle(5)
+            self.assertEqual(self.window.statusBar().currentMessage(), BUSY)
+        finally:
+            actions._set_busy(False)
+        self.assertTrue(self.window.reports.go_back_button.isEnabled())
+        self.assertFalse(self.window.reports.go_back_button.isHidden())
+        self.assertFalse(
+            [line for line in self.read_log() if not line.startswith(("status", "doctor"))]
+        )
 
     def test_confirmations_cannot_be_switched_off_without_the_dev_gate(self):
         from legion_powerctl_gui.app import MainWindow
@@ -1567,7 +1664,7 @@ class MainWindowTest(OffscreenGuiTest):
         polls, privileged = [], []
 
         def record(target):
-            def run(argv, on_done, timeout_ms=None, on_start_failed=None):
+            def run(argv, on_done, timeout_ms=None, on_start_failed=None, on_error=None):
                 target.append((argv, timeout_ms))
                 if timeout_ms is None:
                     on_done(0, "", "")
@@ -2806,7 +2903,7 @@ class DismissedEnableVariantTest(VariantFixtureTest):
         switch = self.window.header.service_check
         self.assertFalse(switch.isChecked())
         before = self.window.refresh_count
-        dismissed = staticmethod(lambda code: code == 126)
+        dismissed = staticmethod(lambda code, stdout: code == 126)
         with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "enable:126"}), \
                 unittest.mock.patch.object(ProfileActions, "_is_cancelled_elevation", dismissed):
             switch.setChecked(True)

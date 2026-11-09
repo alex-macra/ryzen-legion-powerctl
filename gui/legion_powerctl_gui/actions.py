@@ -18,6 +18,7 @@ PKEXEC_DISMISSED = 126
 PKEXEC_NOT_RUN = 127
 
 SERVICE_ON = "Boot service on; the boot profile was applied."
+BUSY = "Still working on the previous action; nothing else was started."
 
 
 class ProfileActions(QObject):
@@ -26,6 +27,7 @@ class ProfileActions(QObject):
     warned = Signal(str, str)
     cancelled = Signal(str)
     busy_changed = Signal(bool)
+    refused = Signal(str)
     repaired = Signal()
     repair_backup = Signal(str)
 
@@ -44,6 +46,10 @@ class ProfileActions(QObject):
         self._busy = False
         self.previous_profile = ""
         self.previous_boot = ""
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
 
     def save(self) -> None:
         profile = self._guard_editor()
@@ -103,10 +109,20 @@ class ProfileActions(QObject):
         dirty = self._editor.current_name if self._editor.dirty else ""
         if self._window.dialogs and not dialogs.confirm_repair(self._window.checks.dialog, dirty):
             return
+        found: list[str] = []
+
+        def find_backup(code: int, stdout: str, stderr: str) -> str:
+            found[:] = [line for line in stdout.splitlines() if line.startswith("Recovery backup: ")]
+            if found and code != 0:
+                return f"{stderr.strip() or 'Repair failed.'}\n{found[0]}"
+            return stderr
+
         self._run(
             ["repair", "balanced-plus"],
             "Repaired and applied 'balanced-plus'. The previous settings were backed up.",
             on_success=self.repaired.emit,
+            on_output=find_backup,
+            after=lambda: found and self.repair_backup.emit(found[0]),
         )
 
     def pin_boot(self, name: str) -> None:
@@ -146,6 +162,13 @@ class ProfileActions(QObject):
         if name in self._sidebar.drafts:
             self._editor.clear()
             self._sidebar.discard_draft(name)
+            return
+        boot = self._window.status.active_profile if self._window.status else ""
+        if name == boot:
+            self.failed.emit(
+                f"'{name}' is the boot profile. Set another profile as the boot profile "
+                "before deleting it."
+            )
             return
         if self._window.dialogs and not dialogs.confirm_delete(self._window, name):
             return
@@ -202,8 +225,11 @@ class ProfileActions(QObject):
         go_back_boot: str = "",
         then=None,
         carried: str = "",
+        on_output=None,
+        after=None,
     ) -> None:
         if self._busy:
+            self.refused.emit(BUSY)
             return
         self.previous_profile = go_back
         self.previous_boot = go_back_boot if go_back else ""
@@ -215,19 +241,15 @@ class ProfileActions(QObject):
             if code == 0 and then is not None:
                 then(stderr)
                 return
-            backup = ""
-            if args == ["repair", "balanced-plus"]:
-                backup = next((line for line in stdout.splitlines()
-                               if line.startswith("Recovery backup: ")), "")
-                if backup and code != 0:
-                    stderr = f"{stderr.strip() or 'Repair failed.'}\n{backup}"
+            if on_output is not None:
+                stderr = on_output(code, stdout, stderr)
             if code == 0 and on_success is not None:
                 on_success()
             self.handle_result(
                 code, stdout, stderr, saved=saved, message=message, on_fail=on_fail
             )
-            if backup:
-                self.repair_backup.emit(backup)
+            if after is not None:
+                after()
 
         self._runner.run(
             model.privileged_command(args), done,
@@ -249,7 +271,7 @@ class ProfileActions(QObject):
         on_fail=None,
     ) -> None:
         if code != 0:
-            if self._is_cancelled_elevation(code):
+            if self._is_cancelled_elevation(code, stdout):
                 self.cancelled.emit(
                     stderr.strip() or "Authorisation was cancelled; nothing changed."
                 )
@@ -266,8 +288,9 @@ class ProfileActions(QObject):
         self.succeeded.emit(message)
 
     @staticmethod
-    def _is_cancelled_elevation(code: int) -> bool:
+    def _is_cancelled_elevation(code: int, stdout: str) -> bool:
         return (
             code in (PKEXEC_DISMISSED, PKEXEC_NOT_RUN)
+            and not stdout.strip()
             and model.elevation_is_pkexec()
         )

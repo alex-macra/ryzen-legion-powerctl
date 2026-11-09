@@ -191,6 +191,10 @@ for arg in "$@"; do
         exit 1
     fi
 done
+if [[ -n "${LEGION_FAKE_RYZENADJ_SET_RC:-}" ]]; then
+    printf 'ryzenadj: error while loading shared libraries\n' >&2
+    exit "$LEGION_FAKE_RYZENADJ_SET_RC"
+fi
 if [[ -n "${LEGION_FAKE_RYZENADJ_STATE:-}" ]]; then
     : > "$LEGION_FAKE_RYZENADJ_STATE"
     for arg in "$@"; do

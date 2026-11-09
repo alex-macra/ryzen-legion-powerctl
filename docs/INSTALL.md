@@ -71,7 +71,7 @@ The post-apply confirmation and doctor's `Limits` line read limits back with
 that matches; a missing row or `nan` counts as not read, not as drift. Only when
 all four match does the apply say confirmed and record `VERIFIED=yes`; when some
 were not read it names them and records `VERIFIED=partial`. A successful apply
-can still report `this apply is unverified` when none of its metrics can be read. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
+can still report `this apply is unverified` when none of its metrics can be read. When `ryzenadj -i` fails, `doctor` run as root warns; an unprivileged `doctor` prints no `Limits` line, because reading the SMU needs root. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
 
 `./install.sh --install-ryzen-smu` installs it for you: it works out which headers
 package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so

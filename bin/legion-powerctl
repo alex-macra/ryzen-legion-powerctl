@@ -498,7 +498,19 @@ remove_tmp_write() {
         TMP_WRITE=""
     fi
 }
-trap remove_tmp_write EXIT
+
+exit_code() {
+    local rc="$1"
+    (( rc != 126 && rc != 127 )) || rc=1
+    printf '%s' "$rc"
+}
+
+on_exit() {
+    local rc=$?
+    remove_tmp_write || true
+    exit "$(exit_code "$rc")"
+}
+trap on_exit EXIT
 
 atomic_write() {
     local mode="$1" dest="$2" content="$3"
@@ -1145,7 +1157,7 @@ record_failed_apply() {
     write_state "$APPLY_IN_PROGRESS_PROFILE" 0 partial || true
     remove_tmp_write || true
     warn "Apply failed; power settings may be partially applied. Run doctor before retrying."
-    exit "$rc"
+    exit "$(exit_code "$rc")"
 }
 
 apply_loaded_profile() {
@@ -1189,7 +1201,7 @@ apply_loaded_profile() {
             die "Recovery is incomplete: ${incomplete[*]} could not be applied. Original profile and module boot configuration were preserved."
     fi
     trap - INT TERM
-    trap remove_tmp_write EXIT
+    trap on_exit EXIT
     if [[ "$dry_run" == "1" ]]; then
         write_state "$profile" "$dry_run" ok
         success "Dry run complete; profile '$profile' was not applied."
@@ -2002,10 +2014,8 @@ cmd_doctor() {
             3)
                 if (( EUID == 0 )); then
                     doctor_line WARN Limits "'$ryzenadj -i' failed, so the limits in force are unknown"
-                else
-                    doctor_line WARN Limits "'$ryzenadj -i' failed, so the limits in force are unknown; reading them needs root: sudo legion-powerctl doctor"
+                    ((warnings += 1))
                 fi
-                ((warnings += 1))
                 ;;
             4)
                 doctor_line WARN Limits "only partly confirmed: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C where readable; '$ryzenadj -i' did not read back $drift_detail"

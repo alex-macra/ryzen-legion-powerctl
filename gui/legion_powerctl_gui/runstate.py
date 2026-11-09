@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
 from . import model
+
+ASCII_DIGITS = re.compile(r"[0-9]+")
 
 LIMITS = (
     ("Sustained", "stapm_w", "W"),
@@ -94,11 +97,8 @@ def run_state(status: model.Status) -> RunState:
         applied_at=str(record.get("applied_at", "")),
     )
     for _label, key, _unit in LIMITS:
-        raw = record.get(key)
-        try:
-            setattr(state, key, int(str(raw)))
-        except (TypeError, ValueError):
-            setattr(state, key, None)
+        raw = str(record.get(key))
+        setattr(state, key, int(raw) if ASCII_DIGITS.fullmatch(raw) else None)
     return state
 
 

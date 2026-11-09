@@ -49,6 +49,15 @@ class ParseStatusTest(unittest.TestCase):
         with self.assertRaises(model.StatusParseError):
             model.parse_status("[1, 2]")
 
+    def test_profiles_that_are_not_a_list_are_a_parse_error(self):
+        for value in ("null", "5", '"quiet"', "{}"):
+            with self.subTest(profiles=value), self.assertRaises(model.StatusParseError):
+                model.parse_status(f'{{"schema_version": 1, "profiles": {value}}}')
+
+    def test_a_null_boot_profile_reads_as_none_set(self):
+        status = model.parse_status('{"schema_version": 1, "active_profile": null}')
+        self.assertEqual(status.active_profile, "")
+
     def test_profile_with_bad_numbers_becomes_invalid(self):
         payload = (
             '{"schema_version":1,"active_profile":"x","profiles":'
@@ -202,6 +211,12 @@ class ValidateProfileTest(unittest.TestCase):
         self.assertFalse(model.valid_frequency("99"))
         self.assertFalse(model.valid_frequency("10001"))
         self.assertFalse(model.valid_frequency("fast"))
+
+    def test_a_trailing_newline_is_not_part_of_a_valid_value(self):
+        self.assertTrue(model.valid_profile_name("quiet"))
+        self.assertFalse(model.valid_profile_name("quiet\n"))
+        self.assertFalse(model.valid_frequency("3000\n"))
+        self.assertFalse(model.valid_frequency("stock\n"))
 
     def test_leading_zero_frequency_is_rejected_like_the_cli_does(self):
         self.assertFalse(model.valid_frequency("0700"))

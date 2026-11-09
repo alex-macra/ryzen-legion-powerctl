@@ -87,6 +87,13 @@ class ReportArea(QObject):
         self._bar.showMessage(message, ERROR_MS)
         a11y.announce(self._bar, message, interrupt=True)
 
+    def poll_error(self, message: str) -> None:
+        self._bar.showMessage(message, ERROR_MS)
+        a11y.announce(self._bar, message, interrupt=True)
+
+    def set_busy(self, busy: bool) -> None:
+        self.go_back_button.setEnabled(not busy)
+
     def note(self, message: str) -> None:
         self._bar.showMessage(message, NOTE_MS)
         a11y.announce(self._bar, message)
@@ -94,20 +101,24 @@ class ReportArea(QObject):
     def success(self, message: str, go_back_to: str = "") -> None:
         self.clear_offers()
         self.note(message)
-        if go_back_to:
-            self.go_back_button.setText(f"Go back to '{go_back_to}'")
-            self.go_back_button.show()
-            self._place_offers()
+        self._offer_go_back(go_back_to)
+        self._place_offers()
 
-    def warning(self, message: str, detail: str) -> None:
+    def warning(self, message: str, detail: str, go_back_to: str = "") -> None:
         self.last_warning = detail
         self.clear_offers()
         first = detail.splitlines()[0] if detail else ""
         text = f"{message} {first}".strip()
         self._bar.showMessage(text, WARNING_MS)
         a11y.announce(self._bar, text, interrupt=True)
+        self._offer_go_back(go_back_to)
         self.details_button.show()
         self._place_offers()
+
+    def _offer_go_back(self, go_back_to: str) -> None:
+        if go_back_to:
+            self.go_back_button.setText(f"Go back to '{go_back_to}'")
+            self.go_back_button.show()
 
     def offer_repair_backup(self, backup: str) -> None:
         if self.details_button.isHidden():

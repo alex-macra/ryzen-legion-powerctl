@@ -36,8 +36,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   names them, warns, and records `VERIFIED=partial`, which `status`, `doctor` and the
   GUI's `partly confirmed` badge report. A missing row or `nan` counts as not read
   rather than as drift, so a `nan` no longer fails the boot unit on every boot.
-- `doctor` prints a `Limits` warning when `ryzenadj -i` fails instead of no row, and
-  warns about partly read back limits instead of reporting them in force.
+- `doctor` run as root prints a `Limits` warning when `ryzenadj -i` fails instead of no
+  row, and warns about partly read back limits instead of reporting them in force. An
+  unprivileged `doctor`, which is what the GUI polls, still prints no `Limits` row when
+  `-i` fails, because reading the SMU needs root.
 - The stock-limits capture stores nothing unless all four limits read back as numbers,
   and a `stock-limits.env` without all four is treated as not captured, so a partial
   capture no longer locks capture out for good. The file is never read through a
@@ -69,6 +71,20 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   not trimmed to a valid name in UTF-8 locales.
 - A `# profile-format: 2` marker below `DESCRIPTION` is honoured; the description was
   shown with its escapes before.
+- The CLI never exits 126 or 127 itself; a child that does is reported as 1. The GUI
+  reads those two codes as a dismissed pkexec prompt only when the CLI printed nothing,
+  so a failure after a partial apply is no longer shown as cancelled.
+- A warning from an apply no longer hides the GUI's **Go back** offer, and **Go back**
+  is disabled while another action runs. **Ctrl+S** during an action says it is busy
+  instead of doing nothing silently.
+- A failing GUI status poll (an invalid `config.conf`, a missing CLI, unreadable
+  `status --json`) is shown in the status bar once instead of opening a new error
+  dialog every 15 seconds.
+- The GUI refuses to delete the boot profile before asking for confirmation or a
+  password, matching the CLI, which refuses it without `--force`.
+- The GUI rejects a profile name or frequency with a trailing newline, a `profiles`
+  value that is not a list, and limits written as `6_0` or with non-ASCII digits, and
+  shows a null boot profile as none rather than `None`.
 - The GUI's **Apply now** now also sets the boot profile, so the profile you apply is
   the one the boot service applies after a restart. Before, it changed only the running
   limits and the next boot went back to the old pointer. **Go back** restores both the
