@@ -61,6 +61,8 @@ class RunState:
             return ("confirmed", "OK")
         if self.verified == "no":
             return ("limits did not take", "FAIL")
+        if self.verified == "partial":
+            return ("partly confirmed", "WARN")
         return ("unverified", "WARN")
 
     def announcement(self, mark: str) -> str:

@@ -414,9 +414,9 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_chip_counts_what_the_doctor_found(self):
         report = self.window.checks.report
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 2)
-        self.assertIn("2", self.header.checks_button.text())
-        self.assertIn("0 failure(s), 2 warning(s)", self.header.checks_button.accessibleName())
+        self.assertEqual(report.warnings, 3)
+        self.assertIn("3", self.header.checks_button.text())
+        self.assertIn("0 failure(s), 3 warning(s)", self.header.checks_button.accessibleName())
 
     def test_the_checks_chip_is_painted_in_the_severity_it_reports(self):
         from legion_powerctl_gui import model, theme
@@ -446,7 +446,7 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_dialog_lists_every_check_on_request(self):
         self.window.checks.show()
         self.assertEqual(len(self.checks.rows), len(self.window.checks.report.lines))
-        self.assertIn("0 failure(s), 2 warning(s)", self.checks.summary.text())
+        self.assertIn("0 failure(s), 3 warning(s)", self.checks.summary.text())
 
     def click_repair(self, accept=True):
         from PySide6.QtCore import QTimer

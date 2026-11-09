@@ -7,7 +7,8 @@
 - `/etc/legion-powerctl/profiles.d/*.conf`: user-editable profiles
 - `/usr/lib/systemd/system/legion-powerctl.service`: one-shot boot application
 - `/run/legion-powerctl/last-apply.env`: volatile record of the most recent successful application
-- `/var/lib/legion-powerctl/stock-limits.env`: the firmware's own SMU limits, captured once before the first apply overwrote them
+- `/run/legion-powerctl/smu-written`: the boot ID, written before an apply's first power write; a baseline capture is refused while it names the current boot
+- `/var/lib/legion-powerctl/stock-limits.env`: the firmware's own SMU limits, captured once before the first apply overwrote them, and only when all four read back as numbers
 - `/usr/bin/legion-powerbench`: the measurement harness. Separate binary, unprivileged, no state of its own
 - `/usr/bin/legion-powerctl-gui`: PySide6 launcher; sets `PYTHONSAFEPATH` and `cd /` before importing anything
 - `/usr/share/legion-powerctl/gui/legion_powerctl_gui/`: the Qt Widgets application, a flat package

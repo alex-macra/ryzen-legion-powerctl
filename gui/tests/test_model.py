@@ -114,7 +114,7 @@ class ParseDoctorTest(unittest.TestCase):
     def test_parses_fixture(self):
         report = model.parse_doctor((FIXTURES / "doctor.txt").read_text(), 0)
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 2)
+        self.assertEqual(report.warnings, 3)
         self.assertEqual(report.exit_code, 0)
         self.assertEqual(len(report.lines), 16)
         smu = next(line for line in report.lines if line.label == "SMU-backend")

@@ -929,17 +929,6 @@ case_doctor_reports_limits_that_drifted_from_the_profile() {
     assert_eq '1' "$rc" 'doctor exited 0 with the limits not in force'
 }
 
-case_doctor_says_nothing_about_limits_it_cannot_read() {
-    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NO_INFO=1)
-    local report
-    report="$(run_cli doctor 2>&1)"
-    if grep -qE '^(OK|WARN|FAIL) +Limits ' <<<"$report"; then
-        printf 'FAIL: doctor reported on limits it could not read:\n%s\n' "$report" >&2
-        exit 1
-    fi
-    assert_contains 'OK    Profile' "$report" 'the rest of the report did not survive'
-}
-
 case_an_unreadable_ryzenadj_table_is_unverified_not_fatal() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_EMPTY_TABLE=1 LEGION_FAKE_RYZENADJ_NO_SMU=1)
     local out rc=0
@@ -952,6 +941,266 @@ case_an_unreadable_ryzenadj_table_is_unverified_not_fatal() {
     assert_contains 'applied successfully' "$out" 'an unverified apply was treated as a failure'
     assert_file_contains 'VERIFIED=unknown' "$STATE/last-apply.env" \
         'the runtime record claims the limits were verified'
+}
+
+fresh_boot() {
+    rm -f "$STATE/last-apply.env" "$STATE/smu-written" "$RYZENADJ_STATE"
+    rm -rf "$LIB"
+}
+
+counting_ryzenadj() {
+    local calls="$FAKE_ROOT_DIR/ryzenadj-calls"
+    : > "$calls"
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'printf "%%s\\n" "$*" >> %q\n' "$calls"
+        printf 'exec %q "$@"\n' "$FAKEBIN/ryzenadj"
+    } > "$FAKE_ROOT_DIR/counting-ryzenadj"
+    chmod +x "$FAKE_ROOT_DIR/counting-ryzenadj"
+    printf '%s' "$FAKE_ROOT_DIR/counting-ryzenadj"
+}
+
+run_wizard() {
+    local name="$1" answers="$2"
+    shift 2
+    {
+        printf '#!/usr/bin/env bash\n'
+        printf 'exec env'
+        printf ' %q' "${FAKE_ENV[@]}" "LEGION_POWERCTL_RYZENADJ_BIN=$FAKEBIN/ryzenadj" "$@"
+        printf ' %q wizard %q\n' "$FAKE_CLI" "$name"
+    } > "$FAKE_ROOT_DIR/wizard-run.sh"
+    chmod +x "$FAKE_ROOT_DIR/wizard-run.sh"
+    printf '%b' "$answers" | timeout 30 script -qec "$FAKE_ROOT_DIR/wizard-run.sh" /dev/null 2>&1 || true
+}
+
+case_a_partial_readback_is_not_reported_as_confirmed() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT='slow-limit fast-limit tctl-temp')
+    local out rc=0
+    out="$(run_cli apply balanced-plus 2>&1)" || rc=$?
+    assert_eq '0' "$rc" 'a partly read back apply exited nonzero'
+    refute_contains 'RyzenAdj limits confirmed' "$out" \
+        'apply said the limits were confirmed when only STAPM was read back'
+    assert_contains 'did not read back Slow PPT, Fast PPT, Tctl' "$out" \
+        'the limits that were not read back were not named'
+    assert_file_contains 'VERIFIED=partial' "$STATE/last-apply.env" \
+        'the runtime record does not say the readback was partial'
+    assert_contains 'Last successful apply (limits only partly read back):' "$(run_cli status)" \
+        'status did not say the readback was partial'
+
+    local report
+    report="$(run_cli doctor 2>&1 || true)"
+    assert_doctor_line WARN Limits 'did not read back Slow PPT, Fast PPT, Tctl' "$report" \
+        'doctor reported partly read back limits as in force'
+}
+
+case_a_nan_readback_is_unread_not_drift() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NAN='tctl-temp')
+    local out rc=0
+    out="$(run_cli apply balanced-plus 2>&1)" || rc=$?
+    assert_eq '0' "$rc" 'a nan readback failed the apply, so the boot unit would fail every boot'
+    refute_contains 'did not take' "$out" 'a nan readback was reported as drift'
+    assert_contains 'did not read back Tctl' "$out" 'the nan limit was not named as unread'
+    assert_file_contains 'RESULT=ok' "$STATE/last-apply.env" 'a nan readback recorded a partial apply'
+    assert_file_contains 'VERIFIED=partial' "$STATE/last-apply.env" \
+        'a nan readback was recorded as verified'
+
+    LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NAN='stapm-limit slow-limit fast-limit tctl-temp')
+    rc=0
+    out="$(run_cli apply balanced-plus 2>&1)" || rc=$?
+    assert_eq '0' "$rc" 'an all-nan readback failed the apply'
+    assert_file_contains 'VERIFIED=unknown' "$STATE/last-apply.env" \
+        'an all-nan readback was recorded as anything but unknown'
+}
+
+case_doctor_warns_when_it_cannot_read_the_limits() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NO_INFO=1)
+    local report
+    report="$(run_cli doctor 2>&1)"
+    assert_doctor_line WARN Limits 'failed, so the limits in force are unknown' "$report" \
+        'doctor printed no Limits row when ryzenadj -i failed'
+    assert_contains 'OK    Profile' "$report" 'the rest of the report did not survive'
+}
+
+case_a_partial_or_nan_capture_stores_nothing() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT='tctl-temp')
+    local out
+    fresh_boot
+    out="$(run_cli baseline --capture 2>&1 || true)"
+    assert_contains 'did not return a number for TEMP_C' "$out" 'the missing limit was not named'
+    [[ ! -e "$LIB/stock-limits.env" ]] || assert_eq 'absent' 'written' 'a partial baseline was stored'
+
+    LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NAN='slow-limit')
+    out="$(run_cli baseline --capture 2>&1 || true)"
+    assert_contains 'did not return a number for SLOW_W' "$out" 'the nan limit was not named'
+    [[ ! -e "$LIB/stock-limits.env" ]] || assert_eq 'absent' 'written' 'a nan baseline was stored'
+
+    LEGION_TEST_ENV=()
+    mkdir -p "$LIB"
+    printf '# Firmware SMU limits, captured before the first apply. Do not edit.\n' > "$LIB/stock-limits.env"
+    assert_exit 1 'a header-only baseline was shown as recorded' run_cli baseline --show
+    assert_contains 'does not hold all four numeric limits' "$(run_cli baseline 2>&1 || true)" \
+        'baseline did not say the recorded file is incomplete'
+    printf 'STAPM_W=70.000\nSLOW_W=nan\nFAST_W=85.000\nTEMP_C=72.000\n' > "$LIB/stock-limits.env"
+    run_cli baseline --capture >/dev/null
+    assert_file_contains 'SLOW_W=75.000' "$LIB/stock-limits.env" \
+        'an incomplete baseline locked capture out instead of being replaced'
+}
+
+case_a_symlinked_stock_limits_file_is_never_read() {
+    local target="$FAKE_ROOT_DIR/planted-limits"
+    fresh_boot
+    mkdir -p "$LIB"
+    printf 'STAPM_W=1\nSLOW_W=1\nFAST_W=1\nTEMP_C=1\n' > "$target"
+    ln -s "$target" "$LIB/stock-limits.env"
+    local out
+    out="$(run_cli baseline --show 2>&1 || true)"
+    refute_contains 'STAPM_W=1' "$out" 'baseline --show read through a symlink'
+    out="$(run_cli baseline --capture 2>&1 || true)"
+    assert_contains 'symlink' "$out" 'capture did not refuse the symlinked baseline'
+    assert_eq "$(printf 'STAPM_W=1\nSLOW_W=1\nFAST_W=1\nTEMP_C=1')" "$(<"$target")" \
+        'capture wrote through the symlink'
+}
+
+case_apply_reports_a_failed_capture_once() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT='tctl-temp')
+    local out
+    fresh_boot
+    out="$(run_cli apply balanced-plus 2>&1 || true)"
+    assert_eq '1' "$(grep -c 'Stock limits not captured' <<<"$out")" \
+        'the apply-time capture failure was not reported exactly once'
+
+    LEGION_TEST_ENV=()
+    out="$(run_cli apply balanced-plus 2>&1)"
+    refute_contains 'Stock limits' "$out" 'a second apply in the same boot warned about the baseline again'
+}
+
+case_baseline_rejects_capture_together_with_show() {
+    fresh_boot
+    local order out
+    for order in '--capture --show' '--show --capture'; do
+        local -a argv
+        read -r -a argv <<<"$order"
+        out="$(run_cli baseline "${argv[@]}" 2>&1 || true)"
+        assert_contains 'not both' "$out" "baseline $order did not reject the conflicting flags"
+        [[ ! -e "$LIB/stock-limits.env" ]] || assert_eq 'absent' 'written' "baseline $order captured anyway"
+    done
+}
+
+case_a_killed_apply_still_blocks_the_baseline() {
+    fresh_boot
+    run_cli configure dev --stapm 55 --slow 60 --fast 70 --temp 80 >/dev/null
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NO_INFO=1 LEGION_FAKE_RYZENADJ_KILL_PARENT=1)
+    local rc=0
+    run_cli apply dev >/dev/null 2>&1 || rc=$?
+    assert_eq '137' "$rc" 'the fake ryzenadj did not SIGKILL the apply'
+    [[ ! -e "$STATE/last-apply.env" ]] || assert_eq 'absent' 'present' 'a SIGKILLed apply left a record'
+    assert_file_contains 'stapm=55000' "$RYZENADJ_STATE" 'the SMU was not written before the kill'
+
+    LEGION_TEST_ENV=()
+    local out
+    out="$(run_cli baseline --capture 2>&1 || true)"
+    assert_contains 'already applied this boot' "$out" \
+        'a capture after a SIGKILLed apply was not refused'
+    [[ ! -e "$LIB/stock-limits.env" ]] || {
+        printf 'FAIL: the profile limits were stored as the firmware baseline:\n%s\n' \
+            "$(<"$LIB/stock-limits.env")" >&2
+        exit 1
+    }
+}
+
+case_the_boot_apply_captures_once_and_cheaply() {
+    local calls
+    calls="$(counting_ryzenadj)"
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_NO_INFO=1)
+    fresh_boot
+    LEGION_TEST_RYZENADJ_BIN="$calls" run_cli apply --boot >/dev/null 2>&1 || true
+    : > "$FAKE_ROOT_DIR/ryzenadj-calls"
+    LEGION_TEST_RYZENADJ_BIN="$calls" run_cli apply --boot >/dev/null 2>&1 || true
+    assert_eq '1' "$(grep -c '^-i$' "$FAKE_ROOT_DIR/ryzenadj-calls")" \
+        'a later apply in the same boot read the SMU again to try a capture it must refuse'
+
+    printf 'another-boot\n' > "$FAKE_ROOT_DIR/boot_id"
+    LEGION_TEST_ENV=()
+    rm -f "$RYZENADJ_STATE"
+    run_cli apply --boot >/dev/null
+    assert_file_contains 'STAPM_W=70.000' "$LIB/stock-limits.env" \
+        'a marker and record left from an earlier boot in a persistent /run blocked the capture'
+}
+
+case_status_labels_the_last_apply_from_its_result() {
+    sed -i 's/^RESULT=.*/RESULT=partial/' "$STATE/last-apply.env"
+    local out
+    out="$(run_cli status)"
+    refute_contains 'Last successful apply' "$out" 'status called a partial apply successful'
+    assert_contains 'Last apply, INCOMPLETE (RESULT=partial):' "$out" 'status did not label the partial apply'
+}
+
+case_restore_frequency_updates_the_runtime_record() {
+    sed -i -e 's/^MAX_FREQ_MHZ=.*/MAX_FREQ_MHZ=3000/' -e 's/^BOOST=.*/BOOST=off/' "$STATE/last-apply.env"
+    run_cli restore-frequency --boost on >/dev/null 2>&1
+    assert_file_contains 'MAX_FREQ_MHZ=stock' "$STATE/last-apply.env" \
+        'restore-frequency left the old ceiling in the runtime record'
+    assert_file_contains 'BOOST=on' "$STATE/last-apply.env" \
+        'restore-frequency left the old boost setting in the runtime record'
+    assert_file_contains 'PROFILE=balanced-plus' "$STATE/last-apply.env" \
+        'restore-frequency lost the rest of the runtime record'
+}
+
+case_duplicate_keys_are_rejected_with_a_line_number() {
+    printf 'STAPM_W=50\nSLOW_W=55\nSTAPM_W=60\nFAST_W=70\nTEMP_C=80\n' > "$PROFILES/dup.conf"
+    local out
+    out="$(run_cli show dup 2>&1 || true)"
+    assert_contains "dup.conf:3: duplicate key 'STAPM_W' (first set on line 1)" "$out" \
+        'a duplicate profile key was not rejected with its line'
+    printf 'ACTIVE_PROFILE=quiet\nACTIVE_PROFILE=balanced-plus\n' > "$ETC/config.conf"
+    out="$(run_cli list 2>&1 || true)"
+    assert_contains "config.conf:2: duplicate key 'ACTIVE_PROFILE'" "$out" \
+        'a duplicate config key was not rejected with its line'
+}
+
+case_a_tab_in_a_description_is_named_correctly() {
+    local out
+    out="$(run_cli configure tabbed --stapm 50 --slow 55 --fast 60 --temp 80 \
+        --description $'one\ttwo' 2>&1 || true)"
+    assert_contains 'no control characters (tab, newline, carriage return)' "$out" \
+        'a tab in DESCRIPTION was blamed on carriage returns'
+}
+
+case_an_empty_config_boots_balanced_and_fails_loudly() {
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    : > "$ETC/config.conf"
+    local out rc=0
+    out="$(run_cli apply --boot 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'an empty config.conf booted silently'
+    assert_contains 'sets no ACTIVE_PROFILE' "$out" 'the boot did not say why it fell back'
+    assert_file_contains 'PROFILE=balanced' "$STATE/last-apply.env" \
+        'an empty config.conf left the machine without limits'
+    local report
+    report="$(run_cli doctor 2>&1 || true)"
+    assert_doctor_line WARN Profile 'sets no ACTIVE_PROFILE' "$report" \
+        'doctor did not flag the empty config.conf'
+}
+
+case_the_wizard_rejects_each_bad_answer_where_it_is_given() {
+    local out
+    out="$(run_wizard wiz '60\n50\n65\n70\n79\n\n\n\n\n\nn\nn\n')"
+    assert_contains 'slow cannot be below STAPM' "$out" 'a slow PPT below STAPM was not rejected at its prompt'
+    assert_file_contains 'SLOW_W=65' "$PROFILES/wiz.conf" 'the corrected slow PPT was not saved'
+
+    out="$(run_wizard balanced-plus '\n\n\n85\n80\n\n\n\n\n\nn\nn\n')"
+    assert_contains 'Use 50-82 C.' "$out" 'balanced-plus took a ceiling above 82 C at its prompt'
+    assert_file_contains 'TEMP_C=80' "$PROFILES/balanced-plus.conf" 'the corrected ceiling was not saved'
+}
+
+case_the_wizard_selects_only_after_a_successful_apply() {
+    local out
+    out="$(run_wizard wiz '52\n58\n64\n79\n\n\n\n\n\ny\ny\n' LEGION_FAKE_RYZENADJ_TCTL=95)"
+    assert_contains 'did not take' "$out" 'the drifting apply did not fail'
+    assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" \
+        'the wizard moved boot to a profile whose apply failed'
+    out="$(run_wizard wiz2 '52\n58\n64\n79\n\n\n\n\n\ny\ny\n')"
+    assert_file_contains 'ACTIVE_PROFILE=wiz2' "$ETC/config.conf" \
+        'the wizard did not select a profile that applied cleanly'
 }
 
 case_doctor_reports_the_boost_control_it_found() {
@@ -1474,8 +1723,38 @@ run_case case_apply_fails_when_the_limits_do_not_read_back \
     'apply fails when the limits do not read back'
 run_case case_doctor_reports_limits_that_drifted_from_the_profile \
     'doctor reports limits that drifted from the profile'
-run_case case_doctor_says_nothing_about_limits_it_cannot_read \
-    'doctor says nothing about limits it cannot read'
+run_case case_a_partial_readback_is_not_reported_as_confirmed \
+    'a partial readback is not reported as confirmed'
+run_case case_a_nan_readback_is_unread_not_drift \
+    'a nan readback is unread not drift'
+run_case case_doctor_warns_when_it_cannot_read_the_limits \
+    'doctor warns when it cannot read the limits'
+run_case case_a_partial_or_nan_capture_stores_nothing \
+    'a partial or nan capture stores nothing'
+run_case case_a_symlinked_stock_limits_file_is_never_read \
+    'a symlinked stock limits file is never read'
+run_case case_apply_reports_a_failed_capture_once \
+    'apply reports a failed capture once'
+run_case case_baseline_rejects_capture_together_with_show \
+    'baseline rejects capture together with show'
+run_case case_a_killed_apply_still_blocks_the_baseline \
+    'a killed apply still blocks the baseline'
+run_case case_the_boot_apply_captures_once_and_cheaply \
+    'the boot apply captures once and cheaply'
+run_case case_status_labels_the_last_apply_from_its_result \
+    'status labels the last apply from its result'
+run_case case_restore_frequency_updates_the_runtime_record \
+    'restore frequency updates the runtime record'
+run_case case_duplicate_keys_are_rejected_with_a_line_number \
+    'duplicate keys are rejected with a line number'
+run_case case_a_tab_in_a_description_is_named_correctly \
+    'a tab in a description is named correctly'
+run_case case_an_empty_config_boots_balanced_and_fails_loudly \
+    'an empty config boots balanced and fails loudly'
+run_case case_the_wizard_rejects_each_bad_answer_where_it_is_given \
+    'the wizard rejects each bad answer where it is given'
+run_case case_the_wizard_selects_only_after_a_successful_apply \
+    'the wizard selects only after a successful apply'
 run_case case_an_unreadable_ryzenadj_table_is_unverified_not_fatal \
     'an unreadable ryzenadj table is unverified, not fatal'
 run_case case_doctor_reports_the_boost_control_it_found \

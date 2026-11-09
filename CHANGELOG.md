@@ -31,6 +31,38 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The readback after an apply says the limits are confirmed, and records `VERIFIED=yes`,
+  only when `ryzenadj -i` read back all four and they match. When some were not read it
+  names them, warns, and records `VERIFIED=partial`, which `status`, `doctor` and the
+  GUI's `partly confirmed` badge report. A missing row or `nan` counts as not read
+  rather than as drift, so a `nan` no longer fails the boot unit on every boot.
+- `doctor` prints a `Limits` warning when `ryzenadj -i` fails instead of no row, and
+  warns about partly read back limits instead of reporting them in force.
+- The stock-limits capture stores nothing unless all four limits read back as numbers,
+  and a `stock-limits.env` without all four is treated as not captured, so a partial
+  capture no longer locks capture out for good. The file is never read through a
+  symlink. The capture an apply attempts warns once when it fails instead of failing
+  silently, and `baseline --capture --show` is rejected instead of skipping the capture.
+- Every apply and repair writes a boot-scoped marker in `/run/legion-powerctl` before
+  its first power write, and a capture is refused while it names the current boot. A
+  SIGKILLed apply can no longer leave the profile's limits to be stored as the firmware
+  baseline, a marker from an earlier boot on a persistent `/run` no longer blocks the
+  capture, and later applies in the same boot skip the capture without reading the SMU.
+- `doctor`'s `RyzenAdj-shadow` row names every candidate with its version and warns when
+  a stale one sits beside the chosen one, including when another has no readable
+  version.
+- `status` labels the last-apply record from its result instead of always calling it
+  successful, and `restore-frequency` updates the frequency and boost fields of the
+  record.
+- A profile or `config.conf` key set twice is rejected with its line numbers instead of
+  the last one winning, and a tab in `DESCRIPTION` is reported as a control character.
+- A `config.conf` that exists but sets no `ACTIVE_PROFILE` still boots `balanced`, but
+  the boot unit fails with the reason and `doctor` warns about it.
+- The wizard rejects an answer at its own prompt (slow below STAPM, fast below slow, a
+  `balanced-plus` ceiling above 82 C, a maximum frequency below the minimum) instead of
+  discarding every answer at the end, and selects the boot profile only after the apply
+  it was asked for succeeds.
+
 - `delete --force` of the boot profile moves boot to `balanced` and says so, and
   refuses when `balanced` is missing or invalid, instead of leaving every boot to fail.
 - A profile or config value padded with Unicode whitespace is refused in every locale,

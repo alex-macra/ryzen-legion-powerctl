@@ -218,15 +218,16 @@ binary that fails that check is skipped silently, as if it were not installed.
 typically an old `make install` source build in `/usr/local/bin` next to the
 packaged `/usr/bin/ryzenadj`.
 
-This is normally an `OK` row, not a warning. legion-powerctl picks the
-**newest** of the candidates rather than the first, so the shadow does not
-affect the tool; the row names the one it chose and the ones it passed over,
-because typing `ryzenadj` by hand still runs whichever comes first on `PATH`.
+legion-powerctl picks the **newest** of the candidates rather than the first,
+so the shadow does not affect the tool. The row names every candidate with its
+version, because typing `ryzenadj` by hand still runs whichever comes first on
+`PATH`.
 
-It turns into a `WARN` only when one of the candidates does not print a version
-its `--help` banner can be parsed from. Then "newest" cannot be proven and the
-choice falls back to `/usr/local/bin` first, so the line names the binary it
-could not read. Fix that one, or remove it.
+It is a `WARN` when an older candidate sits beside the chosen one (`Stale:`), or
+when a candidate does not print a version its `--help` banner can be parsed
+from. In the second case "newest" cannot be proven and the choice falls back to
+`/usr/local/bin` first; the line names the binary it could not read and still
+names any stale one. Two candidates at the same version are an `OK` row.
 
 Candidates at the *same* version are reported as `Same version:` rather than
 `Stale:`, and the line does not offer to delete them. That tie goes to

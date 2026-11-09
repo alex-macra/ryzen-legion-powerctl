@@ -344,9 +344,10 @@ chmod +x "$TMP/pathB/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$TMP/pathB:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor did not report a second ryzenadj on PATH'
 assert_contains "$TMP/pathB/ryzenadj" "$doctor_out" 'doctor did not name the shadowed binary'
-assert_contains 'OK    RyzenAdj-shadow' "$doctor_out" \
-    'a shadow the tool already resolved correctly is not a warning'
-refute_contains 'WARN  RyzenAdj-shadow' "$doctor_out" 'the shadow warning came back'
+assert_contains 'WARN  RyzenAdj-shadow' "$doctor_out" \
+    'an older ryzenadj beside the selected one was reported as OK'
+assert_contains "Stale: $TMP/pathB/ryzenadj 0.18.0" "$doctor_out" \
+    'the shadow line did not name the older binary and its version'
 assert_contains '(newest)' "$doctor_out" 'the shadow line no longer says which binary was chosen'
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$PATH" run_cli doctor 2>&1 || true)"
 refute_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor reported a shadow with only one ryzenadj on PATH'
@@ -389,6 +390,14 @@ cp "$TMP/noversion/ryzenadj" "$TMP/noversion2/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/noversion:$TMP/noversion2:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains "using $TMP/noversion/ryzenadj, but no version from" "$doctor_out" \
     'with no version anywhere the shadow line left a gap where the version would go'
+
+printf 'Test 28e: with an unreadable candidate too, the stale one is still named\n'
+doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/fresh:$TMP/stale:$TMP/noversion:$PATH" run_cli doctor 2>&1 || true)"
+assert_contains 'WARN  RyzenAdj-shadow' "$doctor_out" 'three candidates with one unreadable were not a warning'
+assert_contains "Stale: $TMP/stale/ryzenadj 0.14.0" "$doctor_out" \
+    'an unreadable candidate hid the stale binary from the shadow line'
+assert_contains "no version from $TMP/noversion/ryzenadj" "$doctor_out" \
+    'the shadow line did not name the candidate without a version'
 
 printf 'Test 28d: two ryzenadj at the same version are not ranked against each other\n'
 mkdir -p "$TMP/tieA" "$TMP/tieB"
@@ -664,7 +673,7 @@ assert_exit 1 'baseline --show succeeded with nothing captured' run_cli baseline
 
 printf 'Test 50: baseline captures the firmware limits once and never overwrites them\n'
 rm -rf "$LIB"
-rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env" "$STATE/smu-written"
 run_cli baseline --capture >/dev/null
 assert_file_contains 'STAPM_W=70.000' "$LIB/stock-limits.env" 'the firmware STAPM was not captured'
 assert_file_contains 'TEMP_C=72.000' "$LIB/stock-limits.env" 'the firmware Tctl ceiling was not captured'
@@ -675,7 +684,7 @@ assert_eq "$first_capture" "$(<"$LIB/stock-limits.env")" 'a second capture overw
 
 printf 'Test 51: an apply captures the firmware limits before it overwrites them\n'
 rm -rf "$LIB"
-rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env" "$STATE/smu-written"
 run_cli apply dev >/dev/null
 assert_file_contains 'STAPM_W=70.000' "$LIB/stock-limits.env" \
     'apply recorded its own limits instead of the firmware ones'

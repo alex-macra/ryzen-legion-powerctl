@@ -54,6 +54,12 @@ class RunStateTest(unittest.TestCase):
         )
         self.assertEqual(confirmed.mark(), ("confirmed", "OK"))
 
+    def test_a_partly_read_back_apply_says_so_and_is_not_confirmed(self):
+        state = runstate.run_state(
+            status_with({"profile": "quiet", "result": "ok", "verified": "partial"})
+        )
+        self.assertEqual(state.mark(), ("partly confirmed", "WARN"))
+
     def test_a_record_written_by_an_older_cli_still_parses(self):
         state = runstate.run_state(status_with({"profile": "quiet", "result": "ok"}))
         self.assertTrue(state.applied)

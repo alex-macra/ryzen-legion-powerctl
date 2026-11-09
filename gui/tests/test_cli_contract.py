@@ -282,7 +282,7 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(self.run_cli("apply", "quiet").returncode, 0)
         status = model.parse_status(self.run_cli("status", "--json").stdout)
         self.assertIn("verified", status.last_apply)
-        self.assertIn(status.last_apply["verified"], ("yes", "no", "unknown"))
+        self.assertIn(status.last_apply["verified"], ("yes", "no", "partial", "unknown"))
 
 
 class DesktopEntryContractTest(unittest.TestCase):

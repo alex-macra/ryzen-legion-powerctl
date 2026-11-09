@@ -23,12 +23,18 @@ sudo legion-powerctl baseline --capture
 legion-powerctl baseline --show
 ```
 
-The capture is written to `/var/lib/legion-powerctl/stock-limits.env` and is never
-overwritten once it exists. It is your denominator: "65 W" means nothing until you know
-whether the firmware was asking for 55 W or 120 W.
+The capture is written to `/var/lib/legion-powerctl/stock-limits.env` only when
+`ryzenadj -i` returns a number for all four limits, and it is never overwritten once it
+holds them. A partial or `nan` reading stores nothing and says which limit was missing;
+a file without all four numeric limits is not a baseline, and the next capture replaces
+it. It is your denominator: "65 W" means nothing until you know whether the firmware was
+asking for 55 W or 120 W.
 
-If the boot service has already run, the capture is tainted. Disable it, reboot, and
-capture before anything applies:
+Every apply and repair writes `/run/legion-powerctl/smu-written`, holding the kernel's
+boot ID, before its first power write. A capture is refused while that marker names the
+current boot, even if the apply was killed before it could leave a record, so the
+profile's own limits can never be stored as stock. If the boot service has already run,
+disable it, reboot, and capture before anything applies:
 
 ```
 sudo legion-powerctl disable

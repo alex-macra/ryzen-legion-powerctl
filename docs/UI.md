@@ -55,7 +55,7 @@ The two are distinct and nothing keeps them in step. The running cell comes from
 GUI, because it does not say which of the two it means.
 
 The running cell is the window's readout, and the one loud thing in it. Its top line is
-the apply record - the `confirmed`, `unverified` or `limits did not take` badge and when it
+the apply record - the `confirmed`, `partly confirmed`, `unverified` or `limits did not take` badge and when it
 happened - and under it the running profile's name, at the size of the editor's title,
 sits beside the four limits it is running: sustained, slow PPT, fast PPT and the ceiling,
 each a large tabular figure over a small caps caption. When the readback disagreed the
@@ -162,8 +162,8 @@ Three panels are painted rather than laid out, and all three were forced:
   missing `ryzen_smu` module - none of which a user acts on, and a window that always
   shows warnings teaches its user to stop reading them on the first day. One badge at the
   top of the window carries the count and its severity; the list is one click behind it, worst
-  first. Those two examples are no longer warnings at all: the doctor now reports a
-  resolved `ryzenadj` shadow as `OK`, and reports the module state as one
+  first. The doctor reports a second `ryzenadj` at the same version as `OK` and
+  warns only about a stale or unreadable one, and it reports the module state as one
   `SMU-backend` line rather than two rows for one cause.
 - **The power envelope** (`envelope.py`). Three sliders drew three independent
   numbers, and these three are nested: the CLI refuses them out of order and the

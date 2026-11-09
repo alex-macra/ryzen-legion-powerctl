@@ -67,8 +67,11 @@ missing, RyzenAdj does not fall back to `/dev/mem`. Check the apply output rathe
 than assuming the command interface means limits were set.
 
 The post-apply confirmation and doctor's `Limits` line read limits back with
-`ryzenadj -i`. A successful apply can still report `this apply is unverified`
-when its metrics cannot be read. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
+`ryzenadj -i`. A limit counts as confirmed only when `-i` prints a number for it
+that matches; a missing row or `nan` counts as not read, not as drift. Only when
+all four match does the apply say confirmed and record `VERIFIED=yes`; when some
+were not read it names them and records `VERIFIED=partial`. A successful apply
+can still report `this apply is unverified` when none of its metrics can be read. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
 
 `./install.sh --install-ryzen-smu` installs it for you: it works out which headers
 package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so
