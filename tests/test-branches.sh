@@ -50,7 +50,7 @@ assert_doctor_line() {
 }
 
 hold_power_lock_file() {
-    (umask 077 && : >> "$STATE/power.lock")
+    (umask 077 && : >> "$STATE/power-v2.lock")
 }
 
 case_config_rejects_malformed_and_unknown_and_traversing_values() {
@@ -656,7 +656,7 @@ case_restore_frequency_dry_run_preserves_controls() {
 case_power_mutations_refuse_a_concurrent_operation() {
     local lock_fd out rc=0
     hold_power_lock_file
-    exec {lock_fd}> "$STATE/power.lock"
+    exec {lock_fd}> "$STATE/power-v2.lock"
     flock -n "$lock_fd"
     : > "$LOG"
 
@@ -689,7 +689,7 @@ case_a_blocked_apply_does_not_move_the_boot_profile() {
     local lock_fd out rc before
     before="$(<"$ETC/config.conf")"
     hold_power_lock_file
-    exec {lock_fd}>> "$STATE/power.lock"
+    exec {lock_fd}>> "$STATE/power-v2.lock"
     flock -n "$lock_fd"
 
     rc=0
@@ -803,7 +803,7 @@ case_delete_waits_for_the_power_lock() {
     local lock_fd rc=0 out
     cp "$PROFILES/quiet.conf" "$PROFILES/victim.conf"
     hold_power_lock_file
-    exec {lock_fd}>> "$STATE/power.lock"
+    exec {lock_fd}>> "$STATE/power-v2.lock"
     flock -n "$lock_fd"
     out="$(exec {lock_fd}>&-; run_cli delete victim 2>&1)" || rc=$?
     assert_eq '1' "$rc" 'delete ran while another power operation held the lock'
@@ -855,17 +855,17 @@ case_per_cpu_boost_through_the_real_symlink_layout_is_written_once() {
 case_the_power_lock_is_private_and_never_follows_a_symlink() {
     local target="$FAKE_ROOT/victim" fds="$FAKE_ROOT/child-fds"
     run_cli apply quiet >/dev/null
-    assert_eq '600' "$(stat -c %a "$STATE/power.lock")" 'the power lock is readable by other users'
+    assert_eq '600' "$(stat -c %a "$STATE/power-v2.lock")" 'the power lock is readable by other users'
 
     printf 'keep\n' > "$target"
-    rm -f "$STATE/power.lock"
-    ln -s "$target" "$STATE/power.lock"
+    rm -f "$STATE/power-v2.lock"
+    ln -s "$target" "$STATE/power-v2.lock"
     assert_fails 'apply followed a symlinked lock' run_cli apply quiet
     assert_contains 'symlink' "$(run_cli apply quiet 2>&1 || true)" 'the symlinked lock was not named'
     assert_eq 'keep' "$(<"$target")" 'the symlinked lock target was changed'
     assert_eq '644' "$(stat -c %a "$target")" 'the symlinked lock target was chmodded'
 
-    rm -f "$STATE/power.lock"
+    rm -f "$STATE/power-v2.lock"
     cat > "$FAKEBIN/ryzenadj-fds" <<EOF_FAKE
 #!/usr/bin/env bash
 for fd in /proc/\$\$/fd/*; do readlink "\$fd"; done >> "$fds" 2>/dev/null
@@ -875,7 +875,7 @@ EOF_FAKE
     chmod +x "$FAKEBIN/ryzenadj-fds"
     LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-fds" run_cli apply quiet >/dev/null
     assert_file_contains "$FAKE_ROOT" "$fds" 'the fd probe recorded nothing'
-    refute_contains 'power.lock' "$(<"$fds")" 'ryzenadj inherited the power lock'
+    refute_contains 'power-v2.lock' "$(<"$fds")" 'ryzenadj inherited the power lock'
 
     local dir
     : > "$fds"
@@ -886,7 +886,7 @@ EOF_FAKE
     PATH="$FAKE_ROOT/cand-a:$FAKE_ROOT/cand-b:$PATH" LEGION_TEST_RYZENADJ_BIN='' run_cli apply quiet >/dev/null
     [[ "$(grep -c '^--help' "$FAKE_ROOT/help-calls" 2>/dev/null || true)" -ge 2 ]] || \
         assert_eq 'two or more' 'fewer' 'the two candidates were not both asked for their version'
-    refute_contains 'power.lock' "$(<"$fds")" 'ryzenadj --help inherited the power lock'
+    refute_contains 'power-v2.lock' "$(<"$fds")" 'ryzenadj --help inherited the power lock'
 }
 
 case_configure_names_the_flag_it_could_not_parse() {
@@ -1081,7 +1081,8 @@ run_wizard() {
         printf ' %q wizard %q\n' "$FAKE_CLI" "$name"
     } > "$FAKE_ROOT_DIR/wizard-run.sh"
     chmod +x "$FAKE_ROOT_DIR/wizard-run.sh"
-    printf '%b' "$answers" | timeout 30 script -qec "$FAKE_ROOT_DIR/wizard-run.sh" /dev/null 2>&1 || true
+    printf '%b' "$answers" | timeout 30 script -qec "$FAKE_ROOT_DIR/wizard-run.sh" /dev/null 2>&1 || \
+        printf 'WIZARD_EXIT=%s\n' "$?"
 }
 
 case_a_partial_readback_is_not_reported_as_confirmed() {
@@ -2001,26 +2002,134 @@ case_select_without_apply_works_when_the_state_dir_cannot_be_created() {
 run_case case_select_without_apply_works_when_the_state_dir_cannot_be_created \
     'select without --apply still works when the state directory cannot be created'
 
-case_a_stale_shared_lock_from_an_older_version_no_longer_blocks() {
+case_a_legacy_shared_lock_is_ignored() {
     local lock_fd out rc=0
-    rm -f "$STATE/power.lock"
     (umask 022 && : > "$STATE/power.lock")
     exec {lock_fd}< "$STATE/power.lock"
     flock -n "$lock_fd"
     out="$(exec {lock_fd}<&-; run_cli apply quiet 2>&1)" || rc=$?
     flock -u "$lock_fd"
     exec {lock_fd}<&-
-    assert_eq '0' "$rc" "a reader of an old 0644 lock still blocked every apply: $out"
-    assert_eq '600' "$(stat -c %a "$STATE/power.lock")" 'the stale lock was not replaced by a private one'
+    assert_eq '0' "$rc" "a reader of an old 0644 power.lock still blocked an apply: $out"
     assert_file_contains 'PROFILE=quiet' "$STATE/last-apply.env" 'the apply did not run'
+    assert_eq '644' "$(stat -c %a "$STATE/power.lock")" 'the legacy lock was touched'
+    assert_eq '600' "$(stat -c %a "$STATE/power-v2.lock")" 'the power lock is not private'
 }
-run_case case_a_stale_shared_lock_from_an_older_version_no_longer_blocks \
-    'a stale 0644 lock held open by another process no longer blocks power operations'
+run_case case_a_legacy_shared_lock_is_ignored \
+    'a legacy 0644 power.lock held open by another process does not block an apply'
+
+case_a_held_lock_is_never_unlinked_even_with_a_wrong_mode() {
+    local lock_fd out rc=0 inode
+    (umask 022 && : > "$STATE/power-v2.lock")
+    inode="$(stat -c %i "$STATE/power-v2.lock")"
+    exec {lock_fd}< "$STATE/power-v2.lock"
+    flock -n "$lock_fd"
+    out="$(exec {lock_fd}<&-; run_cli apply quiet 2>&1)" || rc=$?
+    flock -u "$lock_fd"
+    exec {lock_fd}<&-
+    assert_eq '1' "$rc" 'apply replaced a held lock and ran beside its holder'
+    assert_contains 'Another power operation is already running' "$out" 'apply did not explain the held lock'
+    assert_eq "$inode" "$(stat -c %i "$STATE/power-v2.lock")" 'the held lock was unlinked'
+    run_cli apply quiet >/dev/null
+    assert_eq "$inode" "$(stat -c %i "$STATE/power-v2.lock")" 'a free lock was replaced instead of reused'
+    assert_eq '600' "$(stat -c %a "$STATE/power-v2.lock")" 'the lock was not made private'
+}
+run_case case_a_held_lock_is_never_unlinked_even_with_a_wrong_mode \
+    'a held power lock is never unlinked, whatever its mode'
+
+case_two_concurrent_applies_exclude_each_other() {
+    local gate="$FAKE_ROOT_DIR/slow-gate" first_rc=0 second_rc=0 out pid i
+    cat > "$FAKEBIN/ryzenadj-slow" <<EOF_FAKE
+#!/usr/bin/env bash
+[[ "\${1:-}" == --help ]] || : > "$gate.started"
+[[ "\${1:-}" == --help ]] || for _ in \$(seq 300); do [[ -e "$gate.go" ]] && break; sleep 0.1; done
+exec "$FAKEBIN/ryzenadj" "\$@"
+EOF_FAKE
+    chmod +x "$FAKEBIN/ryzenadj-slow"
+    rm -f "$gate.started" "$gate.go"
+    LEGION_TEST_RYZENADJ_BIN="$FAKEBIN/ryzenadj-slow" run_cli apply quiet >/dev/null 2>&1 &
+    pid=$!
+    for i in $(seq 300); do [[ -e "$gate.started" ]] && break; sleep 0.1; done
+    [[ -e "$gate.started" ]] || assert_eq 'started' 'never' 'the first apply never reached ryzenadj'
+    out="$(run_cli apply balanced-plus 2>&1)" || second_rc=$?
+    : > "$gate.go"
+    wait "$pid" || first_rc=$?
+    assert_eq '1' "$second_rc" "a second apply ran beside the first: $out"
+    assert_contains 'Another power operation is already running' "$out" 'the second apply did not explain the lock'
+    assert_eq '0' "$first_rc" 'the first apply failed'
+    assert_file_contains 'PROFILE=quiet' "$STATE/last-apply.env" 'the second apply overwrote the first'
+}
+run_case case_two_concurrent_applies_exclude_each_other \
+    'two concurrent applies exclude each other'
+
+case_power_operations_work_without_proc() {
+    if ! unshare -rm true 2>/dev/null; then
+        printf '  (skipped: unprivileged user and mount namespaces are unavailable)\n'
+        return 0
+    fi
+    local cand="$FAKE_ROOT_DIR/cand" hide="$FAKE_ROOT_DIR/without-proc" out rc=0
+    mkdir -p "$cand"
+    cp "$FAKEBIN/ryzenadj" "$cand/ryzenadj"
+    cat > "$hide" <<'EOF_HIDE'
+#!/usr/bin/env bash
+gate="$1"
+shift
+rm -f "$gate.ready" "$gate.go"
+unshare --user --map-user="$OUTER_UID" --map-group="$OUTER_GID" bash -c '
+    gate="$1"
+    shift
+    : > "$gate.ready"
+    for _ in $(seq 300); do [[ -e "$gate.go" ]] && break; sleep 0.1; done
+    [[ ! -e /dev/fd/0 ]] || { echo "/proc is still visible" >&2; exit 99; }
+    exec "$@"' _ "$gate" "$@" &
+pid=$!
+for _ in $(seq 300); do [[ -e "$gate.ready" ]] && break; sleep 0.1; done
+mount -t tmpfs none /proc
+: > "$gate.go"
+wait "$pid"
+EOF_HIDE
+    chmod +x "$hide"
+    without_proc() {
+        OUTER_UID="$(id -u)" OUTER_GID="$(id -g)" timeout 60 unshare -rm "$hide" "$FAKE_ROOT_DIR/gate" \
+            env "${FAKE_ENV[@]}" PATH="$cand:$PATH" "$FAKE_CLI" "$@"
+    }
+    out="$(without_proc apply balanced-plus 2>&1)" || rc=$?
+    assert_eq '0' "$rc" "apply failed with /proc unavailable: $out"
+    refute_contains '/dev/fd' "$out" 'apply used process substitution'
+    assert_file_contains 'PROFILE=balanced-plus' "$STATE/last-apply.env" 'the apply did not run'
+    assert_eq '1' "$(<"$SYSFS/cpufreq/boost")" 'boost was not written without /proc'
+    out="$(without_proc doctor 2>&1 || true)"
+    refute_contains '/dev/fd' "$out" 'doctor used process substitution'
+    assert_doctor_line OK Boost-control 'boost' "$out" 'doctor lost the boost control without /proc'
+}
+run_case case_power_operations_work_without_proc \
+    'power operations do not depend on /proc or /dev/fd'
+
+case_the_wizard_writes_nothing_on_eof_at_the_last_prompts() {
+    local out config answers
+    config="$(<"$ETC/config.conf")"
+    rm -f "$STATE/last-apply.env"
+    : > "$LOG"
+    for answers in '52\n58\n64\n79\n\n\n\n\n\n' '52\n58\n64\n79\n\n\n\n\n\ny\n'; do
+        out="$(run_wizard eofwiz "$answers")"
+        assert_contains 'Cancelled.' "$out" "the wizard did not cancel on end of input after: $answers"
+        assert_match "$out" '*WIZARD_EXIT=[1-9]*' "the wizard exited zero on end of input after: $answers"
+        refute_contains 'WIZARD_EXIT=124' "$out" "the wizard hung on end of input after: $answers"
+        [[ ! -e "$PROFILES/eofwiz.conf" ]] || assert_eq 'absent' 'written' \
+            "the wizard wrote its profile on end of input after: $answers"
+        assert_eq "$config" "$(<"$ETC/config.conf")" "the wizard changed config.conf on end of input after: $answers"
+        [[ ! -e "$STATE/last-apply.env" ]] || assert_eq 'absent' 'written' \
+            "the wizard applied on end of input after: $answers"
+        assert_eq '' "$(<"$LOG")" "the wizard ran a hardware helper on end of input after: $answers"
+    done
+}
+run_case case_the_wizard_writes_nothing_on_eof_at_the_last_prompts \
+    'the wizard writes, selects and applies nothing on end of input at the Select or Apply prompt'
 
 case_the_wizard_takes_the_lock_before_it_writes_the_profile() {
     local lock_fd out
     hold_power_lock_file
-    exec {lock_fd}>> "$STATE/power.lock"
+    exec {lock_fd}>> "$STATE/power-v2.lock"
     flock -n "$lock_fd"
     out="$(exec {lock_fd}>&-; run_wizard locked '52\n58\n64\n79\n\n\n\n\n\ny\ny\n')"
     assert_contains 'Another power operation is already running' "$out" 'the wizard did not refuse a held lock'

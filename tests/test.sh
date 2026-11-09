@@ -1060,6 +1060,7 @@ pacman_upgrade() {
         . "$pacman_scriptlet"
         pre_upgrade
         [[ "$rewrites" != shipped ]] || cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+        [[ "$rewrites" != user-selects-quiet ]] || printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
         post_upgrade
     )
 }
@@ -1079,6 +1080,21 @@ printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
 upgrade_out="$(pacman_upgrade kept)"
 assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'an upgrade that kept config.conf rewrote it'
 refute_contains 'selected' "$upgrade_out" 'an unchanged boot profile was selected again'
+cp "$ROOT_DIR/profiles/quiet.conf" "$PROFILES/quiet.conf"
+printf 'ACTIVE_PROFILE=balanced\n' > "$ETC/config.conf"
+: > "$LOG"
+upgrade_out="$(pacman_upgrade user-selects-quiet)"
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'the upgrade undid a select made during the transaction'
+refute_contains 'replaced' "$upgrade_out" 'the upgrade blamed itself for a select made during the transaction'
+assert_eq '' "$(<"$LOG")" 'the upgrade applied something'
+cp "$ROOT_DIR/profiles/quiet.conf" "$PROFILES/powerbench-old.conf"
+printf 'ACTIVE_PROFILE=powerbench-old\n' > "$ETC/config.conf"
+upgrade_out="$(pacman_upgrade shipped)"
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" 'the upgrade selected a benchmark scratch profile for boot'
+assert_contains 'temporary benchmark profile, so it was not selected again' "$upgrade_out" \
+    'the upgrade did not explain why the benchmark profile stayed unselected'
+refute_contains 'select powerbench-old' "$upgrade_out" 'the upgrade advised a select that the CLI refuses'
+rm -f "$PROFILES/powerbench-old.conf"
 printf 'ACTIVE_PROFILE=gone\n' > "$ETC/config.conf"
 pacman_upgrade shipped >/dev/null
 assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" \
@@ -1119,5 +1135,31 @@ else
     done
     chmod 0755 "$unsafe_dir"
 fi
+
+printf 'Test 66: a system command found through a symlink runs the target the trust walk checked\n'
+plant_dir="$TMP/user-bin"
+mkdir -p "$plant_dir"
+system_bash="$(readlink -f -- "$(command -v bash)")"
+ln -sfn "$system_bash" "$plant_dir/tool"
+awk '/^(root_controlled_path|trusted_executable|resolve_system_command)\(\) \{$/,/^}$/' \
+    "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-resolve.sh"
+grep -q 'for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do' "$TMP/cli-resolve.sh" || {
+    printf 'FAIL: resolve_system_command no longer has the directory list this test replaces\n' >&2
+    exit 1
+}
+# shellcheck disable=SC2016
+sed -i -e 's#^\( *\)if (( EUID != 0 )); then$#\1if false; then#' \
+    -e 's#for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do#for dir in "$PLANT_DIR"; do#' \
+    "$TMP/cli-resolve.sh"
+grep -q 'if false; then' "$TMP/cli-resolve.sh" || { printf 'FAIL: the root branch was not isolated\n' >&2; exit 1; }
+awk '/^(root_controlled_path|trusted_executable|system_binary)\(\) \{$/,/^}$/' \
+    "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-resolve.sh"
+# shellcheck disable=SC2016
+cli_resolved="$(PLANT_DIR="$plant_dir" bash -c 'TESTING=0; . "$1"; resolve_system_command tool' _ "$TMP/cli-resolve.sh")"
+# shellcheck disable=SC2016
+bench_resolved="$(bash -c 'TESTING=0; TRUSTED_DIRS=("$2"); . "$1"; system_binary tool ""' _ \
+    "$TMP/bench-resolve.sh" "$plant_dir")"
+assert_eq "$system_bash" "$cli_resolved" 'the CLI returned a symlink in a user-owned directory instead of its checked target'
+assert_eq "$system_bash" "$bench_resolved" 'legion-powerbench returned a symlink in a user-owned directory instead of its checked target'
 
 printf 'All tests passed.\n'

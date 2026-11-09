@@ -28,9 +28,10 @@ fi
 readonly -a TRUSTED_DIRS=(/usr/local/bin /usr/bin)
 
 root_controlled_path() {
-    local path="$1" owner mode
+    local path="$1" owner mode stat_out
     while true; do
-        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        stat_out="$(stat -c '%u %a' -- "$path" 2>/dev/null)" || return 1
+        read -r owner mode <<<"$stat_out"
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
@@ -47,14 +48,16 @@ trusted_executable() {
 }
 
 system_binary() {
-    local name="$1" override="$2" dir
+    local name="$1" override="$2" dir resolved
     if [[ -n "$override" ]]; then
         printf '%s' "$override"
         return 0
     fi
     for dir in "${TRUSTED_DIRS[@]}"; do
-        if trusted_executable "$dir/$name"; then
-            printf '%s' "$dir/$name"
+        [[ -f "$dir/$name" ]] || continue
+        resolved="$(readlink -f -- "$dir/$name" 2>/dev/null || true)"
+        if [[ -n "$resolved" ]] && trusted_executable "$resolved"; then
+            printf '%s' "$resolved"
             return 0
         fi
     done
@@ -605,10 +608,11 @@ doctor_line() {
 }
 
 refuse_cli_environment() {
-    local exported="" name
+    local exported="" name names
+    names="$(compgen -e LEGION_POWERCTL_ || true)"
     while IFS= read -r name; do
-        [[ "$name" == LEGION_POWERCTL_GUI_* ]] || exported+="$name "
-    done < <(compgen -e LEGION_POWERCTL_ || true)
+        [[ -z "$name" || "$name" == LEGION_POWERCTL_GUI_* ]] || exported+="$name "
+    done <<<"$names"
     [[ -z "$exported" ]] || die "Unset ${exported% }: sudo drops them for the writes, so the reads and the writes would see different machines."
 }
 

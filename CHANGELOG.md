@@ -49,9 +49,14 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   overrides and `LEGION_POWERBENCH_PROFILE_NAME` only with `LEGION_POWERBENCH_TESTING=1`,
   and its scratch profile is always named `powerbench-*`, so no name can skip the
   scratch-profile guards in the CLI and the GUI.
-- A power lock left by an older version that is not mode 0600, or not owned by root
-  when root runs the CLI, is replaced before locking, so an unprivileged process that
-  kept the old world-readable lock open can no longer block every power operation.
+- Power operations lock `/run/legion-powerctl/power-v2.lock`, created mode 0600 and never
+  unlinked, and ignore the `power.lock` older versions left behind. An unprivileged
+  process that kept the old world-readable lock open can no longer block every power
+  operation, and two root processes can no longer each replace the other's lock and run
+  together. The lock no longer depends on `/proc` or `/dev/fd`.
+- `powerprofilesctl` and `systemctl` in the CLI as root, and `ryzenadj` and
+  `legion-powerctl` in `legion-powerbench`, run from the resolved path the ownership
+  check approved, so a symlink cannot be swapped between the check and the run.
 - Every GitHub Action is pinned to a full commit SHA, and CI and the e2e container
   install exact PySide6 and ruff versions from `requirements-dev.txt`, which Dependabot
   updates after a seven-day cooldown.
@@ -62,7 +67,11 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   pacman replaces an unedited `config.conf` with the shipped one, `post_upgrade` selects
   the recorded profile again, without applying it, if that profile still exists and is
   valid. An install that kept the `balanced` a fresh install selected no longer boots
-  `balanced-plus` after an upgrade.
+  `balanced-plus` after an upgrade. It restores only when the boot profile is the shipped
+  `balanced-plus`, so a profile selected during the transaction is kept, and it never
+  selects a `powerbench-*` scratch profile for boot.
+- The CLI no longer uses process substitution, so `apply`, `doctor` and the ownership
+  check work where `/proc` is not mounted.
 - When `./install.sh` cannot remove the script install while moving to the package
   flow, for example after a wrong `sudo` password, it stops before `pacman -U` and keeps
   the built package, whose path the recovery message names.

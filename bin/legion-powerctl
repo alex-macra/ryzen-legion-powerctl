@@ -176,25 +176,16 @@ acquire_mutation_lock() {
         LOCK_SKIPPED=1
         return 0
     fi
-    local lock="$STATE_DIR/power.lock" old_umask owner mode
+    local lock="$STATE_DIR/power-v2.lock" old_umask
     [[ ! -L "$lock" ]] || die "Refusing the power-operation lock: $lock is a symlink."
     [[ ! -e "$lock" ]] || regular_file "$lock" || \
         die "Refusing the power-operation lock: $lock is not a regular file."
-    if [[ -e "$lock" ]]; then
-        read -r owner mode < <(stat -c '%u %a' -- "$lock" 2>/dev/null) || \
-            die "Could not inspect the power-operation lock."
-        if [[ "$mode" != 600 ]] || (( EUID == 0 && owner != 0 )); then
-            rm -f -- "$lock" || die "Could not replace the stale power-operation lock."
-        fi
-    fi
     old_umask="$(umask)"
     umask 077
     exec {MUTATION_LOCK_FD}>> "$lock" || die "Could not open the power-operation lock."
     umask "$old_umask"
     chmod 0600 -- "$lock" || die "Could not restrict the power-operation lock."
     /usr/bin/flock -n "$MUTATION_LOCK_FD" || die "Another power operation is already running. Try again when it finishes."
-    [[ "$lock" -ef "/dev/fd/$MUTATION_LOCK_FD" ]] || \
-        die "Another power operation is already running. Try again when it finishes."
 }
 
 in_list() {
@@ -248,9 +239,10 @@ refuse_unsafe_file() {
 readonly -a RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
 
 root_controlled_path() {
-    local path="$1" owner mode
+    local path="$1" owner mode stat_out
     while true; do
-        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        stat_out="$(stat -c '%u %a' -- "$path" 2>/dev/null)" || return 1
+        read -r owner mode <<<"$stat_out"
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
@@ -288,7 +280,9 @@ resolve_ryzenadj() {
     fi
 
     local -a candidates=()
-    mapfile -t candidates < <(ryzenadj_candidates)
+    local list
+    list="$(ryzenadj_candidates || true)"
+    [[ -z "$list" ]] || mapfile -t candidates <<<"$list"
     case "${#candidates[@]}" in
         0) return ;;
         1) printf '%s' "${candidates[0]}"; return ;;
@@ -372,14 +366,16 @@ ryzenadj_missing_detail() {
 }
 
 resolve_system_command() {
-    local name="$1" dir
+    local name="$1" dir resolved
     if (( EUID != 0 )); then
         command -v "$name" 2>/dev/null || true
         return
     fi
     for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
-        if trusted_executable "$dir/$name"; then
-            printf '%s' "$dir/$name"
+        [[ -f "$dir/$name" ]] || continue
+        resolved="$(readlink -f -- "$dir/$name" 2>/dev/null || true)"
+        if [[ -n "$resolved" ]] && trusted_executable "$resolved"; then
+            printf '%s' "$resolved"
             return
         fi
     done
@@ -848,7 +844,9 @@ apply_boost() {
     [[ "$BOOST" == "off" ]] && value=0
 
     local -a files=()
-    mapfile -t files < <(boost_control_files || true)
+    local list
+    list="$(boost_control_files || true)"
+    [[ -z "$list" ]] || mapfile -t files <<<"$list"
     if (( ${#files[@]} == 0 )); then
         BOOST_APPLIED=skipped
         warn "No CPU boost control was exposed by the kernel; BOOST=$BOOST was skipped."
@@ -1944,9 +1942,11 @@ cmd_doctor() {
             doctor_line OK RyzenAdj-version "$ryzenadj_ver"
         fi
         local -a other_ryzenadj=()
+        local other_list=""
         if [[ -z "${LEGION_POWERCTL_RYZENADJ_BIN:-}" ]]; then
-            mapfile -t other_ryzenadj < <(ryzenadj_candidates | grep -Fxv -- "$ryzenadj" || true)
+            other_list="$(ryzenadj_candidates | grep -Fxv -- "$ryzenadj" || true)"
         fi
+        [[ -z "$other_list" ]] || mapfile -t other_ryzenadj <<<"$other_list"
         if (( ${#other_ryzenadj[@]} > 0 )); then
             local shadow_detail
             if shadow_detail="$(ryzenadj_shadow_detail "$ryzenadj" "$ryzenadj_ver" "${other_ryzenadj[@]}")"; then
@@ -2034,7 +2034,9 @@ cmd_doctor() {
         ((warnings += 1))
     fi
     local -a boost_files=()
-    mapfile -t boost_files < <(boost_control_files || true)
+    local boost_list
+    boost_list="$(boost_control_files || true)"
+    [[ -z "$boost_list" ]] || mapfile -t boost_files <<<"$boost_list"
     if (( ${#boost_files[@]} > 0 )); then
         local boost_value
         boost_value="$(read_uint_file "${boost_files[0]}" || true)"

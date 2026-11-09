@@ -121,6 +121,10 @@ limits read back: VERIFIED=yes, partial, no or unknown.
 .I /run/legion-powerctl/smu-written
 The boot ID of a boot in which an apply or repair started to write SMU limits.
 .TP
+.I /run/legion-powerctl/power-v2.lock
+The power-operation lock, mode 0600 and never removed. A power.lock left by an
+older version is ignored.
+.TP
 .I /var/lib/legion-powerctl/backups/repair-*
 Original profile and module configuration preserved by repair.
 .TP
