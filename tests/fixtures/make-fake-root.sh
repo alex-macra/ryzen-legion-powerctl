@@ -5,6 +5,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -Eeuo pipefail
 fi
 
+if (( EUID == 0 )); then
+    printf 'make-fake-root.sh: refusing to run as root. The CLI ignores every test override as root, so it would act on this machine instead of the fake one.\n' >&2
+    exit 1
+fi
+
 FAKE_ROOT="${1:?usage: make-fake-root.sh ROOTDIR}"
 FIXTURE_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -288,6 +293,11 @@ chmod +x "$FAKEBIN"/*
 FAKE_ENV=(
     LEGION_POWERCTL_TESTING=1
     LEGION_POWERCTL_ETC_DIR="$ETC"
+    LEGION_POWERCTL_CONFIG_FILE="$ETC/config.conf"
+    LEGION_POWERCTL_PROFILES_DIR="$PROFILES"
+    LEGION_POWERCTL_MODULES_LOAD_CONF="$FAKE_ROOT/etc/modules-load.d/legion-powerctl.conf"
+    LEGION_POWERCTL_SMU_BLACKLIST_FILE="$FAKE_ROOT/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf"
+    LEGION_POWERCTL_SERVICE_NAME=legion-powerctl.service
     LEGION_POWERCTL_STATE_DIR="$STATE"
     LEGION_POWERCTL_LIB_DIR="$LIB"
     LEGION_POWERCTL_STOCK_LIMITS_FILE="$LIB/stock-limits.env"

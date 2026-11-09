@@ -9,6 +9,17 @@ umask 022
 readonly VERSION="0.3.0"
 readonly PROGRAM="${0##*/}"
 
+if (( EUID == 0 )); then
+    for override in $(compgen -e LEGION_POWERCTL_ || true); do
+        [[ "$override" == LEGION_POWERCTL_DRY_RUN ]] || unset "$override"
+    done
+    unset override
+fi
+if [[ "${LEGION_POWERCTL_TESTING:-0}" != 1 ]]; then
+    unset LEGION_POWERCTL_RYZENADJ_BIN LEGION_POWERCTL_POWERPROFILESCTL_BIN \
+        LEGION_POWERCTL_SYSTEMCTL_BIN LEGION_POWERCTL_PYTHON_BIN
+fi
+
 readonly ETC_DIR="${LEGION_POWERCTL_ETC_DIR:-/etc/legion-powerctl}"
 readonly CONFIG_FILE="${LEGION_POWERCTL_CONFIG_FILE:-${ETC_DIR}/config.conf}"
 readonly PROFILES_DIR="${LEGION_POWERCTL_PROFILES_DIR:-${ETC_DIR}/profiles.d}"
@@ -41,6 +52,10 @@ readonly BALANCED_PLUS_MAX_TEMP_C=82
 readonly -a PROFILE_KEYS=(
     STAPM_W SLOW_W FAST_W TEMP_C
     POWER_PROFILE MIN_FREQ_MHZ MAX_FREQ_MHZ BOOST EPP
+)
+
+readonly -a LAST_APPLY_KEYS=(
+    PROFILE RESULT VERIFIED BOOST_APPLIED "${PROFILE_KEYS[@]}" APPLIED_AT
 )
 
 declare -rA PROFILE_KEY_UNSET=(
@@ -140,6 +155,11 @@ require_root() {
     fi
 }
 
+refuse_without_dry_run() {
+    [[ "$DRY_RUN_DEFAULT" != 1 ]] || \
+        die "LEGION_POWERCTL_DRY_RUN=1 is set, but '$1' has no dry run. Nothing was changed."
+}
+
 MUTATION_LOCK_FD=""
 acquire_mutation_lock() {
     [[ -z "$MUTATION_LOCK_FD" ]] || return 0
@@ -166,7 +186,7 @@ in_list() {
 }
 
 trim() {
-    local value="$1"
+    local LC_ALL=C value="$1"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     printf '%s' "$value"
@@ -182,6 +202,7 @@ valid_description() {
 }
 
 valid_profile_name() {
+    local LC_ALL=C
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 }
 
@@ -190,12 +211,30 @@ profile_path() {
     printf '%s/%s.conf' "$PROFILES_DIR" "$1"
 }
 
+refuse_unsafe_file() {
+    [[ ! -L "$1" ]] || die "Refusing $1: it is a symlink."
+    [[ ! -e "$1" || -f "$1" ]] || die "Refusing $1: it is not a regular file."
+}
+
+readonly -a RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
+
+trusted_executable() {
+    local file="$1" owner mode
+    [[ -f "$file" && -x "$file" ]] || return 1
+    [[ "$TESTING" == 1 ]] && return 0
+    read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || return 1
+    [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 ))
+}
+
 ryzenadj_candidates() {
     local IFS=: dir resolved
     local -A seen=()
-    for dir in $PATH; do
+    local -a dirs=("${RYZENADJ_DIRS[@]}")
+    [[ "$TESTING" != 1 ]] || read -r -a dirs <<<"$PATH"
+    for dir in "${dirs[@]}"; do
         [[ -n "$dir" && -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
         resolved="$(readlink -f "$dir/ryzenadj" 2>/dev/null || printf '%s' "$dir/ryzenadj")"
+        trusted_executable "$resolved" || continue
         [[ -n "${seen[$resolved]:-}" ]] && continue
         seen[$resolved]=1
         printf '%s\n' "$resolved"
@@ -260,18 +299,18 @@ ryzenadj_shadow_detail() {
     done
 
     if [[ -n "$unknown" || -z "$selected_ver" ]]; then
-        printf '%s on PATH; using %s%s, but no version from %s, so the newest cannot be confirmed' \
+        printf '%s installed; using %s%s, but no version from %s, so the newest cannot be confirmed' \
             "$count" "$selected" "${selected_ver:+ $selected_ver}" "${unknown:-the others}"
         return 1
     fi
 
-    # A tie is broken by PATH order, not recency, so it is neither "newest" nor
-    # something to delete: on a default Arch PATH the loser is the packaged binary.
+    # A tie goes to the first candidate, not the most recent build, so it is neither
+    # "newest" nor something to delete: the loser is usually the packaged binary.
     if [[ -n "$same" ]]; then
-        printf '%s on PATH; using %s %s, the first of %s at that version. Same version: %s' \
+        printf '%s installed; using %s %s, the first of %s at that version. Same version: %s' \
             "$count" "$selected" "$selected_ver" "$tied" "$same"
     else
-        printf '%s on PATH; using %s %s (newest)' "$count" "$selected" "$selected_ver"
+        printf '%s installed; using %s %s (newest)' "$count" "$selected" "$selected_ver"
     fi
     if [[ -n "$stale" ]]; then
         printf '. Stale: %s - safe to delete if no package owns it' "$stale"
@@ -303,6 +342,7 @@ ACTIVE_PROFILE="balanced"
 RYZENADJ_DRIFT=""
 load_global_config() {
     ACTIVE_PROFILE="balanced"
+    refuse_unsafe_file "$CONFIG_FILE"
     [[ -r "$CONFIG_FILE" ]] || return 0
 
     local raw line key value lineno=0
@@ -340,6 +380,7 @@ load_profile() {
     local name="$1"
     local path
     path="$(profile_path "$name")"
+    refuse_unsafe_file "$path"
     [[ -r "$path" ]] || die "Profile '$name' not found at $path"
 
     local key
@@ -348,7 +389,7 @@ load_profile() {
     done
     PROFILE_DESCRIPTION=""
 
-    local format=1
+    local format=1 escaped_description=0
 
     local raw line value lineno=0
     while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -361,10 +402,9 @@ load_profile() {
         value="$(trim "${line#*=}")"
         if [[ "$value" == \"*\" && "$value" == *\" ]]; then
             value="${value:1:${#value}-2}"
-            if (( format == 2 )); then
-                value="${value//\\\"/\"}"
-                value="${value//\\\\/\\}"
-            fi
+            [[ "$key" != DESCRIPTION ]] || escaped_description=1
+        elif [[ "$key" == DESCRIPTION ]]; then
+            escaped_description=0
         fi
         if [[ "$key" == DESCRIPTION ]]; then
             PROFILE_DESCRIPTION="$value"
@@ -374,6 +414,10 @@ load_profile() {
             die "$path:$lineno: unknown key '$key'"
         fi
     done < "$path"
+    if (( format == 2 && escaped_description == 1 )); then
+        PROFILE_DESCRIPTION="${PROFILE_DESCRIPTION//\\\"/\"}"
+        PROFILE_DESCRIPTION="${PROFILE_DESCRIPTION//\\\\/\\}"
+    fi
 }
 
 try_load_profile() {
@@ -440,25 +484,38 @@ remove_tmp_write() {
 }
 trap remove_tmp_write EXIT
 
+atomic_write() {
+    local mode="$1" dest="$2" content="$3"
+    if [[ -L "$dest" || ( -e "$dest" && ! -f "$dest" ) ]]; then
+        warn "Refusing to write $dest: it is a symlink or not a regular file."
+        return 1
+    fi
+    TMP_WRITE="$(mktemp "${dest%/*}/.${dest##*/}.XXXXXX")" || return 1
+    if ! { printf '%s' "$content" > "$TMP_WRITE" && chmod "$mode" -- "$TMP_WRITE" && \
+            mv -f -T -- "$TMP_WRITE" "$dest"; }; then
+        remove_tmp_write
+        return 1
+    fi
+    TMP_WRITE=""
+}
+
 write_global_config() {
     local name="$1"
     ensure_config_dirs
     valid_profile_name "$name" || die "Invalid profile name '$name'."
-    TMP_WRITE="$(mktemp)"
-    printf '# Active profile selected by legion-powerctl\nACTIVE_PROFILE=%s\n' "$name" > "$TMP_WRITE"
-    install -m 0644 "$TMP_WRITE" "$CONFIG_FILE"
-    remove_tmp_write
+    atomic_write 0644 "$CONFIG_FILE" \
+        "$(printf '# Active profile selected by legion-powerctl\nACTIVE_PROFILE=%s\n' "$name")"$'\n' || \
+        die "Could not write $CONFIG_FILE."
 }
 
 write_profile() {
-    local name="$1" path description key
+    local name="$1" path description key content
     ensure_config_dirs
     validate_profile "$name"
     path="$(profile_path "$name")"
-    TMP_WRITE="$(mktemp)"
     description="${PROFILE_DESCRIPTION//\\/\\\\}"
     description="${description//\"/\\\"}"
-    {
+    content="$(
         printf '# legion-powerctl profile: %s\n' "$name"
         printf '# profile-format: 2\n'
         printf '# Power values are watts; RyzenAdj receives them as milliwatts.\n'
@@ -466,9 +523,8 @@ write_profile() {
         for key in "${PROFILE_KEYS[@]}"; do
             printf '%s=%s\n' "$key" "${!key}"
         done
-    } > "$TMP_WRITE"
-    install -m 0644 "$TMP_WRITE" "$path"
-    remove_tmp_write
+    )"$'\n'
+    atomic_write 0644 "$path" "$content" || die "Could not write $path."
     success "Saved profile '$name' to $path"
 }
 
@@ -563,6 +619,10 @@ try_write_sysfs() {
         printf 'DRY RUN: write %q to %q\n' "$value" "$file"
         return 0
     fi
+    if [[ -L "$file" || ! -f "$file" ]]; then
+        warn "Refusing to write $file: it is a symlink or not a regular sysfs attribute."
+        return 1
+    fi
     printf '%s\n' "$value" > "$file"
 }
 
@@ -654,7 +714,7 @@ apply_frequency_limits() {
 
     local policy
     for policy in "${policies[@]}"; do
-        [[ -d "$policy" ]] || continue
+        [[ -d "$policy" && ! -L "$policy" ]] || continue
         apply_frequency_policy "$dry_run" "$policy"
         FREQUENCY_APPLIED=yes
     done
@@ -722,7 +782,7 @@ apply_epp() {
     local applied=0 skipped=0 policy file available
     for policy in "${policies[@]}"; do
         file="$policy/energy_performance_preference"
-        if [[ ! -e "$file" ]]; then
+        if [[ -L "$policy" || ! -e "$file" ]]; then
             ((skipped += 1))
             continue
         fi
@@ -824,12 +884,11 @@ capture_stock_limits() {
     fi
 
     mkdir -p "$LIB_DIR" 2>/dev/null || return 1
-    {
+    atomic_write 0644 "$STOCK_LIMITS_FILE" "$(
         printf '# Firmware SMU limits, captured before the first apply. Do not edit.\n'
         printf '%s\n' "${captured[@]}"
-        printf 'CAPTURED_AT=%s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
-    } > "$STOCK_LIMITS_FILE"
-    chmod 0644 "$STOCK_LIMITS_FILE" 2>/dev/null || true
+        printf 'CAPTURED_AT=%s' "$(date --iso-8601=seconds 2>/dev/null || date)"
+    )"$'\n' || return 1
     return 0
 }
 
@@ -846,6 +905,7 @@ cmd_baseline() {
     done
 
     if [[ "$action" == capture ]]; then
+        refuse_without_dry_run "baseline --capture"
         require_root
         acquire_mutation_lock
         if stock_limits_captured; then
@@ -941,7 +1001,7 @@ write_state() {
     local profile="$1" dry_run="$2" result="${3:-ok}" key
     [[ "$dry_run" == "1" ]] && return 0
     mkdir -p "$STATE_DIR" 2>/dev/null || return 0
-    {
+    atomic_write 0644 "$STATE_DIR/last-apply.env" "$(
         printf 'PROFILE=%s\n' "$profile"
         printf 'RESULT=%s\n' "$result"
         printf 'VERIFIED=%s\n' "${RYZENADJ_VERIFIED:-unknown}"
@@ -949,8 +1009,8 @@ write_state() {
         for key in "${PROFILE_KEYS[@]}"; do
             printf '%s=%s\n' "$key" "${!key}"
         done
-        printf 'APPLIED_AT=%s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
-    } > "$STATE_DIR/last-apply.env"
+        printf 'APPLIED_AT=%s' "$(date --iso-8601=seconds 2>/dev/null || date)"
+    )"$'\n'
 }
 
 cmd_apply() {
@@ -1127,11 +1187,7 @@ cmd_repair() {
     info "Recovery backup: $backup"
     if (( unload == 1 )); then
         mkdir -p "$STATE_DIR"
-        TMP_WRITE="$(mktemp "${pending}.XXXXXX")"
-        printf '%s\n' "$pending_marker" > "$TMP_WRITE"
-        chmod 0600 "$TMP_WRITE"
-        mv -f -- "$TMP_WRITE" "$pending"
-        TMP_WRITE=""
+        atomic_write 0600 "$pending" "$pending_marker"$'\n' || die "Could not record the pending SMU recovery. Backup: $backup"
         run_unlocked modprobe -r ryzen_smu || die "Could not unload ryzen_smu; it may be in use. No profile or boot configuration was changed. Backup: $backup"
         [[ ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" ]] || \
             die "ryzen_smu still exposes an interface after unload; stopping before power or profile changes. Backup: $backup"
@@ -1146,11 +1202,9 @@ cmd_repair() {
     write_profile "$profile"
     if (( recover_smu == 1 )); then
         mkdir -p -- "${SMU_BLACKLIST_FILE%/*}"
-        TMP_WRITE="$(mktemp "${SMU_BLACKLIST_FILE}.XXXXXX")"
-        printf '# Written by legion-powerctl repair balanced-plus.\nblacklist ryzen_smu\n' > "$TMP_WRITE"
-        chmod 0644 "$TMP_WRITE"
-        mv -f -- "$TMP_WRITE" "$SMU_BLACKLIST_FILE"
-        TMP_WRITE=""
+        atomic_write 0644 "$SMU_BLACKLIST_FILE" \
+            $'# Written by legion-powerctl repair balanced-plus.\nblacklist ryzen_smu\n' || \
+            die "Could not write $SMU_BLACKLIST_FILE."
         if owned_smu_boot_entry; then
             rm -- "$MODULES_LOAD_CONF"
         elif [[ -e "$MODULES_LOAD_CONF" ]]; then
@@ -1167,6 +1221,7 @@ cmd_repair() {
 }
 
 cmd_configure() {
+    refuse_without_dry_run configure
     require_root
     (( $# >= 1 )) || die "configure requires a profile name."
     local name="$1"
@@ -1231,6 +1286,7 @@ validate_boost_prompt() { in_list "$1" "${BOOST_VALUES[@]}"; }
 validate_epp_prompt() { in_list "$1" "${EPP_VALUES[@]}"; }
 
 cmd_wizard() {
+    refuse_without_dry_run wizard
     require_root
     [[ -t 0 ]] || die "wizard needs an interactive terminal. Use 'configure' for scripting."
     local name="${1:-custom}" path answer
@@ -1270,6 +1326,7 @@ cmd_wizard() {
 }
 
 cmd_select() {
+    refuse_without_dry_run select
     require_root
     (( $# >= 1 )) || die "select requires a profile name."
     local name="$1" apply_now=0
@@ -1325,6 +1382,7 @@ cmd_show() {
 }
 
 cmd_delete() {
+    refuse_without_dry_run delete
     require_root
     (( $# >= 1 )) || die "delete requires a profile name."
     local name="$1" force=0 path
@@ -1337,10 +1395,15 @@ cmd_delete() {
         shift
     done
     path="$(profile_path "$name")"
-    [[ -e "$path" ]] || die "Profile '$name' does not exist."
+    [[ -e "$path" || -L "$path" ]] || die "Profile '$name' does not exist."
     load_global_config
-    if [[ "$name" == "$ACTIVE_PROFILE" && $force -ne 1 ]]; then
-        die "'$name' is the active boot profile. Select another profile first or use --force."
+    if [[ "$name" == "$ACTIVE_PROFILE" ]]; then
+        (( force == 1 )) || die "'$name' is the active boot profile. Select another profile first or use --force."
+        if [[ "$name" == balanced ]] || ! (load_profile balanced && validate_profile balanced) >/dev/null 2>&1; then
+            die "'$name' is the active boot profile and 'balanced' is missing or invalid, so boot would have nothing to apply. Select another profile first."
+        fi
+        write_global_config balanced
+        info "'$name' was the boot profile; boot now uses 'balanced'."
     fi
     rm -f "$path"
     success "Deleted profile '$name'."
@@ -1429,25 +1492,36 @@ profile_json() {
         "$(json_escape "$MAX_FREQ_MHZ")" "$(json_escape "$BOOST")" "$(json_escape "$EPP")"
 }
 
-last_apply_json() {
+last_apply_records() {
     local LC_ALL=C
     local state_file="$STATE_DIR/last-apply.env"
-    if [[ ! -r "$state_file" ]]; then
-        printf 'null'
-        return 0
-    fi
-    local raw line key value first=1
-    printf '{'
+    [[ -f "$state_file" && ! -L "$state_file" && -r "$state_file" ]] || return 1
+    local raw line key value
     while IFS= read -r raw || [[ -n "$raw" ]]; do
         line="$(trim "$raw")"
         [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
         key="$(trim "${line%%=*}")"
         value="$(trim "${line#*=}")"
-        [[ "$key" =~ ^[A-Z_]+$ ]] || continue
+        in_list "$key" "${LAST_APPLY_KEYS[@]}" || continue
+        printf '%s=%s\n' "$key" "${value//[[:cntrl:]]/}"
+    done < "$state_file"
+}
+
+last_apply_json() {
+    local LC_ALL=C
+    local records record key first=1
+    if ! records="$(last_apply_records)"; then
+        printf 'null'
+        return 0
+    fi
+    printf '{'
+    while IFS= read -r record; do
+        [[ -n "$record" ]] || continue
+        key="${record%%=*}"
         (( first == 0 )) && printf ','
         first=0
-        printf '"%s":"%s"' "$(json_escape "${key,,}")" "$(json_escape "$value")"
-    done < "$state_file"
+        printf '"%s":"%s"' "${key,,}" "$(json_escape "${record#*=}")"
+    done <<<"$records"
     printf '}'
 }
 
@@ -1530,9 +1604,10 @@ cmd_status() {
         printf 'Boot service:    systemctl unavailable\n'
     fi
 
-    if [[ -r "$STATE_DIR/last-apply.env" ]]; then
+    local last_apply
+    if last_apply="$(last_apply_records)"; then
         printf '\nLast successful apply:\n'
-        sed 's/^/  /' "$STATE_DIR/last-apply.env"
+        [[ -z "$last_apply" ]] || printf '  %s\n' "${last_apply//$'\n'/$'\n'  }"
     else
         printf '\nLast successful apply: no runtime record (normal immediately after reboot if the service has not run).\n'
     fi
@@ -1808,6 +1883,7 @@ cmd_enable() {
         shift
     done
 
+    refuse_without_dry_run enable
     require_root
     if (( force == 0 )); then
         cmd_doctor || die "doctor reported failures. Fix them first, or rerun with 'legion-powerctl enable --force'."
@@ -1823,6 +1899,7 @@ cmd_enable() {
 }
 
 cmd_disable() {
+    refuse_without_dry_run disable
     require_root
     local systemctl_bin
     systemctl_bin="$(resolve_systemctl)"

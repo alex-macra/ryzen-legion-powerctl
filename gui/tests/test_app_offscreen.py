@@ -61,6 +61,7 @@ class OffscreenGuiTest(unittest.TestCase):
             os.environ,
             {
                 "LEGION_POWERCTL_GUI_CLI": str(FAKE_CLI),
+                "LEGION_POWERCTL_GUI_DEV": "1",
                 "LEGION_POWERCTL_GUI_ELEVATE": "none",
                 "LEGION_POWERCTL_GUI_NO_DIALOGS": "1",
             },
@@ -1438,6 +1439,33 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertFalse(self.window.errors, "Cancel raised a critical modal")
         self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
         self.assertTrue(self.editor.dirty, "Cancel must not discard the edits")
+
+    def test_an_absolute_pkexec_path_still_detects_a_dismissed_prompt(self):
+        self.window._refresh_timer.stop()
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "/usr/bin/pkexec"}
+        ):
+            self.window.profile_actions.handle_result(127, "", "")
+        self.settle()
+        self.assertFalse(self.window.errors, "a dismissed /usr/bin/pkexec raised a critical modal")
+        self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
+
+    def test_confirmations_cannot_be_switched_off_without_the_dev_gate(self):
+        from legion_powerctl_gui.app import MainWindow
+
+        self.assertFalse(self.window.dialogs, "the test gate no longer silences dialogs")
+        with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_DEV": "0"}):
+            other = MainWindow()
+        try:
+            self.assertTrue(wait_until(self.app, lambda: other.refresh_count >= 1))
+            self.assertTrue(
+                other.dialogs, "LEGION_POWERCTL_GUI_NO_DIALOGS removed every confirmation"
+            )
+        finally:
+            other._refresh_timer.stop()
+            other.close()
+            other.deleteLater()
+            self.app.processEvents()
 
     def test_the_same_code_from_the_cli_itself_is_still_an_error(self):
         with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "none"}):

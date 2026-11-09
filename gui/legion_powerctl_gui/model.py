@@ -265,11 +265,19 @@ def unprivileged_command(args: list[str]) -> list[str]:
     return [cli_path(), *args]
 
 
+def dev_mode() -> bool:
+    return os.environ.get("LEGION_POWERCTL_GUI_DEV") == "1"
+
+
 def elevation_command() -> str | None:
-    elevate = os.environ.get("LEGION_POWERCTL_GUI_ELEVATE")
-    if elevate == "none" or (elevate is None and os.geteuid() == 0):
+    elevate = os.environ.get("LEGION_POWERCTL_GUI_ELEVATE") if dev_mode() else None
+    if elevate == "none" or (not elevate and os.geteuid() == 0):
         return None
     return elevate or "pkexec"
+
+
+def elevation_is_pkexec() -> bool:
+    return os.path.basename(elevation_command() or "") == "pkexec"
 
 
 def privileged_command(args: list[str]) -> list[str]:

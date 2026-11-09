@@ -36,6 +36,8 @@ Show a profile, defaulting to the active profile.
 .TP
 .B delete PROFILE [--force]
 Delete a profile. The active profile is protected unless --force is used.
+Forcing the delete of the boot profile moves boot to balanced, and is refused
+when balanced is missing or invalid.
 .TP
 .B status [--json|--waybar]
 Show configuration, service state, CPU driver, frequency range, and the most
@@ -75,6 +77,19 @@ Record the firmware's own SMU limits, or print the recorded ones. The capture ha
 once and is never overwritten, and it is refused after a profile has already been
 applied this boot, because the SMU no longer holds the firmware values by then. The
 first apply after installation captures them automatically.
+.SH ENVIRONMENT
+.TP
+.B LEGION_POWERCTL_DRY_RUN=1
+Make apply, repair and restore-frequency preview without changing anything.
+Every other mutating subcommand refuses to run while it is set.
+.TP
+.B LEGION_POWERCTL_TESTING
+and the other LEGION_POWERCTL_* variables exist for the test suite. A process
+running as root ignores all of them except LEGION_POWERCTL_DRY_RUN.
+.PP
+RyzenAdj is never looked up on PATH: only /usr/local/bin/ryzenadj and
+/usr/bin/ryzenadj are used, and only when owned by root and not writable by
+group or others.
 .SH FILES
 .TP
 .I /etc/legion-powerctl/config.conf

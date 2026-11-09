@@ -39,7 +39,7 @@ the CLI being one copyable file. Instead of directories, the file is divided by
 | Output helpers | `info`/`success`/`warn`/`die` |
 | Usage | the help text |
 | Value predicates | `require_root`, `in_list`, `trim`, `is_uint`, name and description rules |
-| External binaries | resolving `ryzenadj` (newest on PATH wins), `powerprofilesctl`, `systemctl` |
+| External binaries | resolving `ryzenadj` (newest root-owned binary in `/usr/local/bin` or `/usr/bin` wins), `powerprofilesctl`, `systemctl` |
 | Configuration and profile loading | `load_global_config`, `load_profile`, `try_load_profile` |
 | Validation | `validate_profile` and the frequency rules |
 | Writing configuration and profiles | `write_global_config`, `write_profile`, `print_profile` |
@@ -51,9 +51,12 @@ the CLI being one copyable file. Instead of directories, the file is divided by
 | Dispatch | `main` |
 
 Every change to the machine passes through `run_or_print` or `write_sysfs`, so a
-dry run has exactly two places to intercept. The profile schema is a table rather
-than four parallel lists, because the reset, the key dispatch, the file that gets
-written and the runtime record all have to agree about what a profile contains.
+dry run has exactly two places to intercept; a command with no dry run of its own
+refuses `LEGION_POWERCTL_DRY_RUN=1` instead. Every file the CLI keeps goes through
+`atomic_write`, which renames a temporary file over the target and refuses a symlink.
+The profile schema is a table rather than four parallel lists, because the reset, the
+key dispatch, the file that gets written and the runtime record all have to agree about
+what a profile contains.
 
 ## Inside the GUI package
 

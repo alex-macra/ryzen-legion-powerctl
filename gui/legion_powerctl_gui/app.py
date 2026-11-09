@@ -42,7 +42,9 @@ class MainWindow(QMainWindow):
         self.resize(960, 620)
         self.setMinimumSize(720, 480)
 
-        self.dialogs = os.environ.get("LEGION_POWERCTL_GUI_NO_DIALOGS") != "1"
+        self.dialogs = not (
+            model.dev_mode() and os.environ.get("LEGION_POWERCTL_GUI_NO_DIALOGS") == "1"
+        )
         self._status_inflight = False
         self._pending_open = ""
         self._focus_before_busy = None

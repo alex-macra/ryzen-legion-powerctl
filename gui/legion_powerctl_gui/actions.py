@@ -269,5 +269,5 @@ class ProfileActions(QObject):
     def _is_cancelled_elevation(code: int) -> bool:
         return (
             code in (PKEXEC_DISMISSED, PKEXEC_NOT_RUN)
-            and model.elevation_command() == "pkexec"
+            and model.elevation_is_pkexec()
         )

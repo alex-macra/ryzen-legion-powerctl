@@ -28,5 +28,10 @@ RUN apt-get update \
 # driver. They share a bus and nothing else.
 RUN pip install --no-cache-dir "$PYSIDE6" ruff
 
+# Not root: the CLI ignores LEGION_POWERCTL_TESTING and every test override as root,
+# so the fake laptop only exists for an unprivileged user.
+RUN useradd --create-home --uid 1000 tester
+USER tester
+
 ENV LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /src

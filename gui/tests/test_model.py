@@ -279,11 +279,14 @@ class CommandBuildingTest(unittest.TestCase):
         self.assertEqual(args[args.index("--description") + 1], "")
 
 
+DEV = {"LEGION_POWERCTL_GUI_DEV": "1"}
+
+
 class ElevationTest(unittest.TestCase):
     def test_elevation_command_names_what_wraps_the_cli(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "none"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "none"}):
             self.assertIsNone(model.elevation_command())
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "sudo"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}):
             self.assertEqual(model.elevation_command(), "sudo")
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
@@ -292,12 +295,41 @@ class ElevationTest(unittest.TestCase):
             with mock.patch("os.geteuid", return_value=0):
                 self.assertIsNone(model.elevation_command())
 
+    def test_the_elevation_override_needs_the_dev_gate(self):
+        for elevate in ("none", "/tmp/evil/pkexec", "sudo"):
+            with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": elevate}), \
+                    mock.patch("os.geteuid", return_value=1000):
+                os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+                self.assertEqual(model.elevation_command(), "pkexec", elevate)
+                self.assertEqual(
+                    model.privileged_command(["delete", "x"])[0], "pkexec",
+                    f"{elevate} replaced pkexec without the dev gate",
+                )
+        for gate in ("0", "yes", ""):
+            env = {"LEGION_POWERCTL_GUI_DEV": gate, "LEGION_POWERCTL_GUI_ELEVATE": "none"}
+            with mock.patch.dict(os.environ, env), mock.patch("os.geteuid", return_value=1000):
+                self.assertEqual(model.elevation_command(), "pkexec", gate)
+
+    def test_root_still_runs_directly_without_the_gate(self):
+        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "sudo"}), \
+                mock.patch("os.geteuid", return_value=0):
+            os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+            self.assertIsNone(model.elevation_command())
+
+    def test_pkexec_is_recognised_by_its_basename(self):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "/usr/bin/pkexec"}):
+            self.assertTrue(model.elevation_is_pkexec())
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "/tmp/notpkexec"}):
+            self.assertFalse(model.elevation_is_pkexec())
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "none"}):
+            self.assertFalse(model.elevation_is_pkexec())
+
     def test_cli_override_is_used(self):
         with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
             self.assertEqual(model.unprivileged_command(["status"]), ["/tmp/fake", "status"])
 
     def test_elevate_none_runs_directly(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "none"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "none"}
         with mock.patch.dict(os.environ, env):
             self.assertEqual(model.privileged_command(["enable"]), ["/tmp/fake", "enable"])
 
@@ -312,7 +344,7 @@ class ElevationTest(unittest.TestCase):
                 )
 
     def test_custom_elevator_is_respected(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}
         with mock.patch.dict(os.environ, env):
             self.assertEqual(
                 model.privileged_command(["disable"]), ["sudo", "/tmp/fake", "disable"]

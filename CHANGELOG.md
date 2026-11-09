@@ -5,8 +5,38 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Security
+
+- `ryzenadj` is no longer looked up on `PATH`. Only `/usr/local/bin/ryzenadj` and
+  `/usr/bin/ryzenadj` are considered, and only when root owns them and neither group nor
+  others can write them, so an unprivileged `doctor` or the GUI's status poll can no
+  longer run a binary planted earlier on `PATH`. `LEGION_POWERCTL_RYZENADJ_BIN` and the
+  other `*_BIN` overrides now work only in the test harness.
+- A process running as root ignores `LEGION_POWERCTL_TESTING` and every other
+  `LEGION_POWERCTL_*` override except `LEGION_POWERCTL_DRY_RUN`. The test fixture and
+  the e2e container no longer run as root.
+- `LEGION_POWERCTL_DRY_RUN=1` is honoured by every mutating command: `configure`,
+  `select`, `delete`, `enable`, `disable`, `wizard` and `baseline --capture` refuse
+  instead of changing anything.
+- The GUI honours `LEGION_POWERCTL_GUI_ELEVATE` and `LEGION_POWERCTL_GUI_NO_DIALOGS` only
+  when `LEGION_POWERCTL_GUI_DEV=1` is set; otherwise it always elevates with `pkexec` and
+  always confirms. A dismissed prompt is recognised for an absolute `/usr/bin/pkexec`.
+- `config.conf`, profiles, `last-apply.env`, `stock-limits.env` and the repair files are
+  written to a temporary file and renamed into place, so a crash cannot leave one
+  truncated, and a target that is a symlink is refused. CPUFreq, EPP and boost controls
+  that are symlinks or not regular files are refused too.
+- A symlinked profile or `config.conf` is refused by every command, not only `repair`.
+- `status` and `status --json` show only the keys the CLI writes to `last-apply.env`,
+  with control characters removed.
+
 ### Fixed
 
+- `delete --force` of the boot profile moves boot to `balanced` and says so, and
+  refuses when `balanced` is missing or invalid, instead of leaving every boot to fail.
+- A profile or config value padded with Unicode whitespace is refused in every locale,
+  not trimmed to a valid name in UTF-8 locales.
+- A `# profile-format: 2` marker below `DESCRIPTION` is honoured; the description was
+  shown with its escapes before.
 - The GUI's **Apply now** now also sets the boot profile, so the profile you apply is
   the one the boot service applies after a restart. Before, it changed only the running
   limits and the next boot went back to the old pointer. **Go back** restores both the

