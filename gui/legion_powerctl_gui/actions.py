@@ -70,8 +70,6 @@ class ProfileActions(QObject):
         status = self._window.status
         running = runstate.run_state(status) if status else None
         offer = NO_OFFER
-        if profile.name == self.previous_profile:
-            self.previous_profile = self.previous_boot = self.previous_applied = ""
         if running is not None:
             deltas = runstate.raising_deltas(running, profile)
             service_on = status.service_enabled == "enabled"
@@ -82,12 +80,12 @@ class ProfileActions(QObject):
             if running.profile not in ("", profile.name) and not running.profile.startswith(
                 SCRATCH_PREFIX
             ):
-                offer = (running.profile, status.active_profile, profile.name)
+                boot = status.active_profile
+                offer = (running.profile, "" if boot.startswith(SCRATCH_PREFIX) else boot, profile.name)
         self._run(
             model.build_configure_args(profile, apply_now=True, select=True),
             f"Applied '{profile.name}'. It will also be applied at boot.",
-            saved=profile,
-            go_back=offer,
+            saved=profile, go_back=offer, withdraw=profile.name == self.previous_profile,
         )
 
     def go_back(self, name: str, boot: str, applied: str = "") -> None:
@@ -233,7 +231,7 @@ class ProfileActions(QObject):
     def _run(
         self, args: list[str], message: str, saved: model.Profile | None = None, on_fail=None,
         go_back: tuple[str, str, str] = NO_OFFER, on_success=None, then=None, carried: str = "",
-        on_output=None, after=None, on_error=None,
+        on_output=None, after=None, on_error=None, withdraw: bool = False,
     ) -> None:
         if self._busy:
             self.refused.emit(BUSY)
@@ -244,7 +242,9 @@ class ProfileActions(QObject):
             self._set_busy(False)
             if code == 0:
                 self.previous_profile, self.previous_boot, self.previous_applied = go_back
-            elif on_error is not None:
+            elif withdraw and not self._is_cancelled_elevation(code, stdout):
+                self.previous_profile, self.previous_boot, self.previous_applied = NO_OFFER
+            if code != 0 and on_error is not None:
                 reason = "authorisation was cancelled." if self._is_cancelled_elevation(
                     code, stdout
                 ) else (stderr.strip() or stdout.strip() or "the command failed.")

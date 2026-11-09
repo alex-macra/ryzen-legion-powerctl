@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -340,8 +342,40 @@ class ElevationTest(unittest.TestCase):
             self.assertFalse(model.elevation_is_pkexec())
 
     def test_cli_override_is_used(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
             self.assertEqual(model.unprivileged_command(["status"]), ["/tmp/fake", "status"])
+
+    def test_the_cli_override_needs_the_dev_gate(self):
+        for gate in (None, "0", "yes", ""):
+            env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/evil/legion-powerctl"}
+            if gate is not None:
+                env["LEGION_POWERCTL_GUI_DEV"] = gate
+            with mock.patch.dict(os.environ, env), mock.patch("os.geteuid", return_value=1000):
+                if gate is None:
+                    os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+                argv = model.privileged_command(["apply", "quiet"])
+                self.assertEqual(argv[0], "pkexec", gate)
+                self.assertNotEqual(argv[1], "/tmp/evil/legion-powerctl", f"gate {gate!r}")
+                self.assertNotIn("/tmp/evil/legion-powerctl", model.unprivileged_command(["status"]))
+
+    def test_an_install_runs_the_cli_beside_it_even_through_a_symlink(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        package = root / "opt" / "share" / "legion-powerctl" / "gui" / "legion_powerctl_gui"
+        package.mkdir(parents=True)
+        (package / "model.py").write_text("")
+        (root / "opt" / "bin").mkdir()
+        cli = root / "opt" / "bin" / "legion-powerctl"
+        cli.write_text("#!/bin/sh\n")
+        self.assertEqual(model.installed_cli(str(package / "model.py")), str(cli))
+        decoy = root / "decoy" / "share" / "legion-powerctl"
+        decoy.mkdir(parents=True)
+        (decoy / "gui").symlink_to(package.parent)
+        (root / "decoy" / "bin").mkdir()
+        (root / "decoy" / "bin" / "legion-powerctl").write_text("#!/bin/sh\n")
+        linked = decoy / "gui" / "legion_powerctl_gui" / "model.py"
+        self.assertEqual(model.installed_cli(str(linked)), str(cli))
+        self.assertIsNone(model.installed_cli(str(root / "elsewhere" / "pkg" / "model.py")))
 
     def test_elevate_none_runs_directly(self):
         env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "none"}
@@ -349,7 +383,7 @@ class ElevationTest(unittest.TestCase):
             self.assertEqual(model.privileged_command(["enable"]), ["/tmp/fake", "enable"])
 
     def test_default_wraps_with_pkexec(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}
         with mock.patch.dict(os.environ, env, clear=False):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
             with mock.patch("os.geteuid", return_value=1000):
@@ -366,7 +400,7 @@ class ElevationTest(unittest.TestCase):
             )
 
     def test_root_runs_directly(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
             with mock.patch("os.geteuid", return_value=0):
                 self.assertEqual(model.privileged_command(["enable"]), ["/tmp/fake", "enable"])

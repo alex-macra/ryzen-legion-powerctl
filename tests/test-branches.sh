@@ -49,6 +49,10 @@ assert_doctor_line() {
     assert_contains "$needle" "$row" "$message"
 }
 
+hold_power_lock_file() {
+    (umask 077 && : >> "$STATE/power.lock")
+}
+
 case_config_rejects_malformed_and_unknown_and_traversing_values() {
     printf 'ACTIVE_PROFILE\n' > "$ETC/config.conf"
     assert_fails 'a config.conf line with no = was accepted' run_cli list
@@ -651,6 +655,7 @@ case_restore_frequency_dry_run_preserves_controls() {
 
 case_power_mutations_refuse_a_concurrent_operation() {
     local lock_fd out rc=0
+    hold_power_lock_file
     exec {lock_fd}> "$STATE/power.lock"
     flock -n "$lock_fd"
     : > "$LOG"
@@ -683,6 +688,7 @@ case_power_mutations_refuse_a_concurrent_operation() {
 case_a_blocked_apply_does_not_move_the_boot_profile() {
     local lock_fd out rc before
     before="$(<"$ETC/config.conf")"
+    hold_power_lock_file
     exec {lock_fd}>> "$STATE/power.lock"
     flock -n "$lock_fd"
 
@@ -796,6 +802,7 @@ case_deleting_balanced_while_it_boots_says_why() {
 case_delete_waits_for_the_power_lock() {
     local lock_fd rc=0 out
     cp "$PROFILES/quiet.conf" "$PROFILES/victim.conf"
+    hold_power_lock_file
     exec {lock_fd}>> "$STATE/power.lock"
     flock -n "$lock_fd"
     out="$(exec {lock_fd}>&-; run_cli delete victim 2>&1)" || rc=$?
@@ -1974,6 +1981,58 @@ run_case case_the_format_marker_counts_wherever_it_appears \
     'the profile-format marker counts wherever it appears'
 run_case case_a_legacy_profile_round_trips_through_a_save \
     'a legacy profile round-trips through a save'
+
+case_select_without_apply_works_when_the_state_dir_cannot_be_created() {
+    local ro="$FAKE_ROOT/ro-run" out rc=0
+    mkdir -p "$ro"
+    chmod 0555 "$ro"
+    local -a LEGION_TEST_ENV=(LEGION_POWERCTL_STATE_DIR="$ro/legion-powerctl")
+    out="$(run_cli select quiet 2>&1)" || rc=$?
+    assert_eq '0' "$rc" "select without --apply refused an unusable state directory: $out"
+    assert_contains 'without the power-operation lock' "$out" 'the lockless select did not say so'
+    assert_file_contains 'ACTIVE_PROFILE=quiet' "$ETC/config.conf" 'the lockless select did not move boot'
+    rc=0
+    out="$(run_cli select balanced-plus --apply 2>&1)" || rc=$?
+    chmod 0755 "$ro"
+    assert_eq '1' "$rc" 'select --apply ran without the power-operation lock'
+    assert_contains 'Could not create state directory' "$out" 'select --apply did not name the missing lock'
+    assert_file_contains 'ACTIVE_PROFILE=quiet' "$ETC/config.conf" 'a refused select --apply moved boot'
+}
+run_case case_select_without_apply_works_when_the_state_dir_cannot_be_created \
+    'select without --apply still works when the state directory cannot be created'
+
+case_a_stale_shared_lock_from_an_older_version_no_longer_blocks() {
+    local lock_fd out rc=0
+    rm -f "$STATE/power.lock"
+    (umask 022 && : > "$STATE/power.lock")
+    exec {lock_fd}< "$STATE/power.lock"
+    flock -n "$lock_fd"
+    out="$(exec {lock_fd}<&-; run_cli apply quiet 2>&1)" || rc=$?
+    flock -u "$lock_fd"
+    exec {lock_fd}<&-
+    assert_eq '0' "$rc" "a reader of an old 0644 lock still blocked every apply: $out"
+    assert_eq '600' "$(stat -c %a "$STATE/power.lock")" 'the stale lock was not replaced by a private one'
+    assert_file_contains 'PROFILE=quiet' "$STATE/last-apply.env" 'the apply did not run'
+}
+run_case case_a_stale_shared_lock_from_an_older_version_no_longer_blocks \
+    'a stale 0644 lock held open by another process no longer blocks power operations'
+
+case_the_wizard_takes_the_lock_before_it_writes_the_profile() {
+    local lock_fd out
+    hold_power_lock_file
+    exec {lock_fd}>> "$STATE/power.lock"
+    flock -n "$lock_fd"
+    out="$(exec {lock_fd}>&-; run_wizard locked '52\n58\n64\n79\n\n\n\n\n\ny\ny\n')"
+    assert_contains 'Another power operation is already running' "$out" 'the wizard did not refuse a held lock'
+    [[ ! -e "$PROFILES/locked.conf" ]] || assert_eq 'absent' 'written' \
+        'the wizard wrote its profile before taking the power-operation lock'
+    out="$(exec {lock_fd}>&-; run_wizard saved-only '52\n58\n64\n79\n\n\n\n\n\nn\nn\n')"
+    assert_file_contains 'STAPM_W=52' "$PROFILES/saved-only.conf" 'a save-only wizard needed the power lock'
+    flock -u "$lock_fd"
+    exec {lock_fd}>&-
+}
+run_case case_the_wizard_takes_the_lock_before_it_writes_the_profile \
+    'the wizard takes the power lock before it writes a profile it will select or apply'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"

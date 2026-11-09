@@ -34,14 +34,48 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   uses, and runs only a root-owned `/usr/local/bin/legion-powerctl` or
   `/usr/bin/legion-powerctl`, the same binary for its unprivileged reads and its `sudo`
   writes. It refuses to start while a `LEGION_POWERCTL_*` variable is exported, since
-  `sudo` would drop it for the writes only. Its binary overrides need
+  `sudo` would drop it for the writes only. Its overrides need
   `LEGION_POWERBENCH_TESTING=1`, which root ignores.
+- The ownership check for `ryzenadj`, `powerprofilesctl`, `systemctl` and, in
+  `legion-powerbench`, `legion-powerctl` also requires every directory above the
+  resolved binary, up to `/`, to be root-owned and not writable by group or others, in
+  the CLI, `install.sh` and `legion-powerbench` alike.
+- The GUI ignores `LEGION_POWERCTL_GUI_CLI` unless `LEGION_POWERCTL_GUI_DEV=1` is set,
+  so no environment variable can choose what `pkexec` runs. It runs the CLI installed
+  beside its own package, so a `/usr/local` install still finds its own CLI, or
+  `/usr/bin/legion-powerctl`, and never searches `PATH`. The launcher no longer exports
+  the variable; `make dev-gui` sets the gate.
+- `legion-powerbench` honours its `sudo`, `turbostat`, `nvidia-smi` and workload
+  overrides and `LEGION_POWERBENCH_PROFILE_NAME` only with `LEGION_POWERBENCH_TESTING=1`,
+  and its scratch profile is always named `powerbench-*`, so no name can skip the
+  scratch-profile guards in the CLI and the GUI.
+- A power lock left by an older version that is not mode 0600, or not owned by root
+  when root runs the CLI, is replaced before locking, so an unprivileged process that
+  kept the old world-readable lock open can no longer block every power operation.
 - Every GitHub Action is pinned to a full commit SHA, and CI and the e2e container
   install exact PySide6 and ruff versions from `requirements-dev.txt`, which Dependabot
   updates after a seven-day cooldown.
 
 ### Fixed
 
+- A pacman upgrade never moves the boot profile. `pre_upgrade` records it and, when
+  pacman replaces an unedited `config.conf` with the shipped one, `post_upgrade` selects
+  the recorded profile again, without applying it, if that profile still exists and is
+  valid. An install that kept the `balanced` a fresh install selected no longer boots
+  `balanced-plus` after an upgrade.
+- When `./install.sh` cannot remove the script install while moving to the package
+  flow, for example after a wrong `sudo` password, it stops before `pacman -U` and keeps
+  the built package, whose path the recovery message names.
+- The wizard asks whether to select and apply before it saves, and takes the power lock
+  before it writes the profile when it will do either, so a concurrent power operation
+  no longer sees a profile change under it.
+- `select` without `--apply` warns and proceeds without the power lock when the state
+  directory cannot be created, since no apply can be running then. The package's
+  `post_install` relies on this in a `pacstrap` or chroot without a writable `/run`.
+- Dismissing the prompt while applying the profile that the GUI's Go back names keeps
+  the Go back offer, since nothing changed. Go back never points boot back at a
+  `powerbench-*` scratch profile; it selects the profile it restores instead.
+- `legion-powerbench` can restore a running profile whose name contains a dot.
 - Moving from a script install to the package flow builds the package first with
   `makepkg -sf`, then removes the script install and installs the built package with
   `pacman -U --noconfirm`, so a missing `ryzenadj` package, a busy pacman, a failed

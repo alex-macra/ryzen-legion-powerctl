@@ -45,6 +45,18 @@ pre_remove() {
     fi
 }
 
+boot_profile() {
+    sed -n 's/^[[:space:]]*ACTIVE_PROFILE[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
+        /etc/legion-powerctl/config.conf 2>/dev/null | tail -n 1
+}
+
+pre_upgrade() {
+    rm -f /var/lib/legion-powerctl/pre-upgrade-boot
+    active="$(boot_profile)"
+    [ -n "$active" ] || return 0
+    mkdir -p /var/lib/legion-powerctl && printf '%s\n' "$active" > /var/lib/legion-powerctl/pre-upgrade-boot || true
+}
+
 post_upgrade() {
     cat <<'EOF'
 If you edited the bundled profiles, check for .pacnew files under
@@ -52,8 +64,21 @@ If you edited the bundled profiles, check for .pacnew files under
 
     sudo legion-powerctl apply
 EOF
-    active="$(sed -n 's/^[[:space:]]*ACTIVE_PROFILE[[:space:]]*=[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' \
-        /etc/legion-powerctl/config.conf 2>/dev/null | tail -n 1)"
+    saved=""
+    [ ! -f /var/lib/legion-powerctl/pre-upgrade-boot ] || saved="$(head -n 1 /var/lib/legion-powerctl/pre-upgrade-boot)"
+    rm -f /var/lib/legion-powerctl/pre-upgrade-boot
+    active="$(boot_profile)"
+    if [ -n "$saved" ] && [ "$saved" != "$active" ] && [ -f "/etc/legion-powerctl/profiles.d/$saved.conf" ] &&
+        legion-powerctl show "$saved" >/dev/null 2>&1; then
+        if legion-powerctl select "$saved" >/dev/null 2>&1; then
+            printf '\nThe upgrade replaced the boot profile %s with %s; selected %s again. Nothing was applied.\n' \
+                "$saved" "${active:-nothing}" "$saved"
+            active="$saved"
+        else
+            printf '\nThe upgrade replaced the boot profile %s with %s. Restore it with: sudo legion-powerctl select %s\n' \
+                "$saved" "${active:-nothing}" "$saved"
+        fi
+    fi
     if [ -n "$active" ] && [ ! -e "/etc/legion-powerctl/profiles.d/$active.conf" ]; then
         printf '\nThe boot profile %s no longer exists. Select another one:\n\n    sudo legion-powerctl select balanced --apply\n' "$active"
     fi

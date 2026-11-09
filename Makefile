@@ -34,6 +34,7 @@ all:
 
 dev-gui:
 	LEGION_POWERCTL_GUI_ROOT="$(CURDIR)/gui" \
+	LEGION_POWERCTL_GUI_DEV=1 \
 	LEGION_POWERCTL_GUI_CLI="$(CURDIR)/bin/legion-powerctl" \
 	./bin/legion-powerctl-gui
 

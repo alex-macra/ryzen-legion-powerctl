@@ -74,11 +74,15 @@ grant does not authorize it. The GUI confirms the reset and any discarded edits.
 - **The GUI trusts `legion-powerctl status --json`**, which is the CLI reading
   those same root-owned files. It is schema-versioned and refuses a version it
   does not understand.
-- **`LEGION_POWERCTL_GUI_CLI`** names the CLI the GUI runs. The launcher sets
-  it to the `legion-powerctl` installed next to itself, so a `/usr/local`
-  install finds its own CLI. Under `pkexec` the policy pins `exec.path`, so
-  pointing it anywhere else gets the generic every-time prompt, not the
-  retained grant.
+- **The GUI runs the CLI installed beside it.** An installed GUI resolves its
+  own package directory, symlinks included, and runs the `legion-powerctl` in
+  the `bin` directory of that prefix, so a `/usr/local` install finds its own
+  CLI; otherwise it runs `/usr/bin/legion-powerctl`. It never searches `PATH`.
+  **`LEGION_POWERCTL_GUI_CLI`** overrides this for development only and is
+  ignored unless `LEGION_POWERCTL_GUI_DEV=1` is also set, so no environment
+  variable can choose what `pkexec` runs. Under `pkexec` the policy pins
+  `exec.path`, so a CLI anywhere but `/usr/bin` gets the generic every-time
+  prompt, not the retained grant.
 - **`LEGION_POWERCTL_GUI_ELEVATE`** (the elevation command, or `none`) and
   **`LEGION_POWERCTL_GUI_NO_DIALOGS=1`** (skip every confirmation) exist for
   development and tests only. The GUI ignores both unless
@@ -95,7 +99,8 @@ grant does not authorize it. The GUI confirms the reset and any discarded edits.
   fixture refuses to run as root for the same reason.
 - **`ryzenadj` is never looked up on `PATH`.** The CLI considers only
   `/usr/local/bin/ryzenadj` and `/usr/bin/ryzenadj`, and uses one only if it is
-  a regular file owned by root and not writable by group or others. Unprivileged
+  a regular file owned by root and not writable by group or others, and every
+  directory above it, after symlinks are resolved, is too. Unprivileged
   `doctor` and `status` run it too, so the same check protects them.
 - **As root, `powerprofilesctl` and `systemctl` are not looked up on `PATH`
   either.** They come from `/usr/local/sbin`, `/usr/local/bin`, `/usr/sbin`,
@@ -105,8 +110,12 @@ grant does not authorize it. The GUI confirms the reset and any discarded edits.
   from the two root-owned paths above, runs only a root-owned
   `/usr/local/bin/legion-powerctl` or `/usr/bin/legion-powerctl` for both its
   unprivileged reads and its `sudo` writes, and refuses to start while any
-  `LEGION_POWERCTL_*` variable other than the GUI's `LEGION_POWERCTL_GUI_*` is exported. Its own binary overrides need
-  `LEGION_POWERBENCH_TESTING=1`, which root ignores.
+  `LEGION_POWERCTL_*` variable other than the GUI's `LEGION_POWERCTL_GUI_*` is exported. Every
+  `LEGION_POWERBENCH_*_BIN` override, including `sudo`, `turbostat` and
+  `nvidia-smi`, and `LEGION_POWERBENCH_PROFILE_NAME` need
+  `LEGION_POWERBENCH_TESTING=1`, which root ignores. The scratch profile it
+  creates is always named `powerbench-*`, so every guard against scratch
+  profiles applies to it.
 - **`LEGION_POWERCTL_DRY_RUN=1`** is honoured by every mutating subcommand:
   `apply`, `repair` and `restore-frequency` preview, and the rest (`configure`,
   `select`, `delete`, `enable`, `disable`, `wizard`, `baseline --capture`)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from dataclasses import dataclass, field
 
 SCHEMA_VERSION = 1
@@ -254,14 +253,21 @@ def validate_profile(profile: Profile) -> list[str]:
     return problems
 
 
+def installed_cli(module_file: str = __file__) -> str | None:
+    package = os.path.dirname(os.path.realpath(module_file))
+    gui = os.path.dirname(package)
+    data = os.path.dirname(gui)
+    share = os.path.dirname(data)
+    layout = (os.path.basename(gui), os.path.basename(data), os.path.basename(share))
+    cli = os.path.join(os.path.dirname(share), "bin", "legion-powerctl")
+    if layout == ("gui", "legion-powerctl", "share") and os.path.isfile(cli):
+        return cli
+    return None
+
+
 def cli_path() -> str:
-    override = os.environ.get("LEGION_POWERCTL_GUI_CLI")
-    if override:
-        return override
-    if os.path.exists("/usr/bin/legion-powerctl"):
-        return "/usr/bin/legion-powerctl"
-    found = shutil.which("legion-powerctl")
-    return found or "/usr/bin/legion-powerctl"
+    override = os.environ.get("LEGION_POWERCTL_GUI_CLI") if dev_mode() else None
+    return override or installed_cli() or "/usr/bin/legion-powerctl"
 
 
 def unprivileged_command(args: list[str]) -> list[str]:

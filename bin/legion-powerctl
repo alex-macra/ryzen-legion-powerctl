@@ -165,19 +165,35 @@ refuse_without_dry_run() {
 
 MUTATION_LOCK_FD=""
 APPLY_SCRATCH_OK=0
+LOCKLESS_SELECT=0
+LOCK_SKIPPED=0
 acquire_mutation_lock() {
-    [[ -z "$MUTATION_LOCK_FD" ]] || return 0
+    [[ -z "$MUTATION_LOCK_FD" ]] && (( LOCK_SKIPPED == 0 )) || return 0
     [[ -x /usr/bin/flock ]] || die "flock from util-linux is required for power operations."
-    mkdir -p -- "$STATE_DIR" || die "Could not create state directory: $STATE_DIR"
-    local lock="$STATE_DIR/power.lock" old_umask
+    if ! mkdir -p -- "$STATE_DIR" 2>/dev/null; then
+        (( LOCKLESS_SELECT == 1 )) || die "Could not create state directory: $STATE_DIR"
+        warn "Could not create $STATE_DIR, so no apply can be running; selecting without the power-operation lock."
+        LOCK_SKIPPED=1
+        return 0
+    fi
+    local lock="$STATE_DIR/power.lock" old_umask owner mode
     [[ ! -L "$lock" ]] || die "Refusing the power-operation lock: $lock is a symlink."
     [[ ! -e "$lock" || -f "$lock" ]] || die "Refusing the power-operation lock: $lock is not a regular file."
+    if [[ -e "$lock" ]]; then
+        read -r owner mode < <(stat -c '%u %a' -- "$lock" 2>/dev/null) || \
+            die "Could not inspect the power-operation lock."
+        if [[ "$mode" != 600 ]] || (( EUID == 0 && owner != 0 )); then
+            rm -f -- "$lock" || die "Could not replace the stale power-operation lock."
+        fi
+    fi
     old_umask="$(umask)"
     umask 077
     exec {MUTATION_LOCK_FD}>> "$lock" || die "Could not open the power-operation lock."
     umask "$old_umask"
     chmod 0600 -- "$lock" || die "Could not restrict the power-operation lock."
     /usr/bin/flock -n "$MUTATION_LOCK_FD" || die "Another power operation is already running. Try again when it finishes."
+    [[ "$lock" -ef "/dev/fd/$MUTATION_LOCK_FD" ]] || \
+        die "Another power operation is already running. Try again when it finishes."
 }
 
 in_list() {
@@ -226,12 +242,23 @@ refuse_unsafe_file() {
 
 readonly -a RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
 
+root_controlled_path() {
+    local path="$1" owner mode
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
+        [[ "$path" != / ]] || return 0
+        path="${path%/*}"
+        path="${path:-/}"
+    done
+}
+
 trusted_executable() {
-    local file="$1" owner mode
+    local file="$1" resolved
     [[ -f "$file" && -x "$file" ]] || return 1
     [[ "$TESTING" == 1 ]] && return 0
-    read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || return 1
-    [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 ))
+    resolved="$(readlink -f -- "$file" 2>/dev/null)" || return 1
+    [[ "$resolved" == /* ]] && root_controlled_path "$resolved"
 }
 
 ryzenadj_candidates() {
@@ -1416,11 +1443,7 @@ cmd_configure() {
     (( apply_now == 0 && select_profile == 0 )) || acquire_mutation_lock
     write_profile "$name"
     (( apply_now == 0 )) || APPLY_SCRATCH_OK=1 cmd_apply "$name"
-    if (( select_profile == 1 )); then
-        require_profile_still_exists "$name"
-        write_global_config "$name"
-        success "Selected '$name' as the active boot profile."
-    fi
+    (( select_profile == 0 )) || commit_boot_profile "$name" "Selected '$name' as the active boot profile."
 }
 
 prompt_value() {
@@ -1470,7 +1493,7 @@ cmd_wizard() {
         set_profile_defaults "$name"
     fi
 
-    local temp_max="$MAX_TEMP_C" select_now=0
+    local temp_max="$MAX_TEMP_C" select_now=0 apply_now=0
     WIZARD_PROFILE="$name"
     [[ "$name" != balanced-plus ]] || temp_max="$BALANCED_PLUS_MAX_TEMP_C"
     printf '%s\n' "${C_BOLD}Configure profile: $name${C_RESET}"
@@ -1495,21 +1518,17 @@ cmd_wizard() {
         "Use ${EPP_VALUES[*]}.")"
 
     validate_profile "$name"
-    write_profile "$name"
 
     read -r -p "Select '$name' for boot? [Y/n]: " answer || die "Cancelled."
     [[ "$answer" =~ ^[Nn]$ ]] || select_now=1
 
     read -r -p "Apply it now? [Y/n]: " answer || die "Cancelled."
-    if [[ ! "$answer" =~ ^[Nn]$ ]]; then
-        cmd_apply "$name"
-    fi
-    if (( select_now == 1 )); then
-        acquire_mutation_lock
-        require_profile_still_exists "$name"
-        write_global_config "$name"
-        success "Selected '$name'."
-    fi
+    [[ "$answer" =~ ^[Nn]$ ]] || apply_now=1
+
+    (( select_now == 0 && apply_now == 0 )) || acquire_mutation_lock
+    write_profile "$name"
+    (( apply_now == 0 )) || cmd_apply "$name"
+    (( select_now == 0 )) || commit_boot_profile "$name" "Selected '$name'."
 }
 
 cmd_select() {
@@ -1527,13 +1546,21 @@ cmd_select() {
         shift
     done
     refuse_scratch_boot_profile "$name"
+    (( apply_now == 1 )) || LOCKLESS_SELECT=1
     acquire_mutation_lock
     load_profile "$name"
     validate_profile "$name"
     (( apply_now == 0 )) || cmd_apply "$name"
+    commit_boot_profile "$name" "Selected '$name' as the active boot profile."
+}
+
+commit_boot_profile() {
+    local name="$1" message="$2"
+    refuse_scratch_boot_profile "$name"
+    acquire_mutation_lock
     require_profile_still_exists "$name"
     write_global_config "$name"
-    success "Selected '$name' as the active boot profile."
+    success "$message"
 }
 
 require_profile_still_exists() {
@@ -1596,8 +1623,7 @@ cmd_delete() {
         if ! (load_profile balanced && validate_profile balanced) >/dev/null 2>&1; then
             die "'$name' is the active boot profile and 'balanced' is missing or invalid, so boot would have nothing to apply. Select another profile first."
         fi
-        write_global_config balanced
-        info "'$name' was the boot profile; boot now uses 'balanced'."
+        commit_boot_profile balanced "'$name' was the boot profile; boot now uses 'balanced'."
     fi
     rm -f "$path"
     success "Deleted profile '$name'."

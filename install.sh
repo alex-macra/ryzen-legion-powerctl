@@ -129,14 +129,24 @@ ensure_ryzenadj_package() {
     pacman -T "$RYZENADJ_DEP" >/dev/null 2>&1 || die "The ryzenadj installation still does not satisfy '${RYZENADJ_DEP}'."
 }
 
+root_controlled_path() {
+    local path="$1" owner mode
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
+        [[ "$path" != / ]] || return 0
+        path="${path%/*}"
+        path="${path:-/}"
+    done
+}
+
 trusted_ryzenadj() {
-    local dir file owner mode
+    local dir file
     for dir in "${RYZENADJ_DIRS[@]}"; do
         [[ -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
         file="$(readlink -f -- "$dir/ryzenadj" 2>/dev/null || true)"
-        [[ -n "$file" && -f "$file" ]] || continue
-        read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || continue
-        if [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )); then
+        [[ "$file" == /* && -f "$file" ]] || continue
+        if root_controlled_path "$file"; then
             printf '%s' "$file"
             return 0
         fi
@@ -481,11 +491,14 @@ package_install() {
         local had_modules_load=0
         [[ ! -e "$MODULES_LOAD_CONF" ]] || had_modules_load=1
         info "Removing the previous script install..."
-        "$ROOT_DIR/uninstall.sh"
+        trap - EXIT
+        recovery="The built package was kept at $package. Finish removing the script install with: ./uninstall.sh, then install the package with: sudo pacman -U $package"
+        "$ROOT_DIR/uninstall.sh" || die "Removing the script install failed. $recovery"
         if (( had_modules_load == 1 )) && [[ ! -e "$SMU_BLACKLIST_FILE" ]] && ryzen_smu_usable; then
             persist_ryzen_smu
         fi
         recovery="The script install was already removed and its boot service disabled. Recover with: sudo pacman -U $package, then: sudo legion-powerctl enable"
+        trap 'rm -rf "${BUILD_DIR:-}"' EXIT
     fi
     if ! "${SUDO[@]}" pacman -U --noconfirm "$package"; then
         trap - EXIT

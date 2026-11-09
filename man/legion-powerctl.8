@@ -97,7 +97,7 @@ running as root ignores all of them except LEGION_POWERCTL_DRY_RUN.
 .PP
 RyzenAdj is never looked up on PATH: only /usr/local/bin/ryzenadj and
 /usr/bin/ryzenadj are used, and only when owned by root and not writable by
-group or others. As root, powerprofilesctl and systemctl are not looked up on
+group or others, like every directory above them. As root, powerprofilesctl and systemctl are not looked up on
 PATH either: they come from /usr/local/sbin, /usr/local/bin, /usr/sbin, /usr/bin,
 /sbin or /bin, under the same ownership check.
 .SH EXIT STATUS

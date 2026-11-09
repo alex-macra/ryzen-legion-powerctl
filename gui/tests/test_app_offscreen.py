@@ -1582,10 +1582,12 @@ class MainWindowTest(OffscreenGuiTest):
         )
 
     def test_confirmations_cannot_be_switched_off_without_the_dev_gate(self):
+        from legion_powerctl_gui import model
         from legion_powerctl_gui.app import MainWindow
 
         self.assertFalse(self.window.dialogs, "the test gate no longer silences dialogs")
-        with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_DEV": "0"}):
+        with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_DEV": "0"}), \
+                unittest.mock.patch.object(model, "installed_cli", return_value=str(FAKE_CLI)):
             other = MainWindow()
         try:
             self.assertTrue(wait_until(self.app, lambda: other.refresh_count >= 1))
@@ -2953,10 +2955,7 @@ class DismissedEnableVariantTest(VariantFixtureTest):
         self.assertFalse(self.window.errors)
 
 
-class GoBackToAnotherBootVariantTest(VariantFixtureTest):
-    def mutate(self, document):
-        document["last_apply"]["profile"] = "quiet"
-
+class GoBackVariantTest(VariantFixtureTest):
     def setUp(self):
         super().setUp()
         self.log = tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False)
@@ -2995,6 +2994,21 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
         shim.write_text(f'#!/bin/sh\ncase "$2" in {refuse}) exit 126 ;; esac\nexec "$@"\n')
         shim.chmod(0o755)
         return str(shim)
+
+    def select_row(self, name):
+        from PySide6.QtCore import Qt
+
+        sidebar = self.window.sidebar
+        sidebar.list.setCurrentRow(next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == name
+        ))
+
+
+class GoBackToAnotherBootVariantTest(GoBackVariantTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
 
     def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
         self.apply_profile("performance-capped")
@@ -3113,6 +3127,42 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
             self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
         self.assertEqual(self.actions.previous_profile, "")
         self.assertTrue(self.offer.isHidden(), f"Go back still names {target!r}, now half applied")
+
+
+    def test_a_dismissed_apply_of_the_go_back_target_keeps_the_offer(self):
+        self.apply_profile("performance-capped")
+        self.select_row("quiet")
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("configure")}
+        ):
+            self.actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertFalse(self.offer.isHidden(), "a dismissed prompt dropped the Go back offer")
+        self.assertIn("quiet", self.offer.text())
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 3))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(
+            self.privileged(),
+            ["configure performance-capped", "apply quiet", "select balanced-plus"],
+        )
+
+
+class ScratchBootVariantTest(GoBackVariantTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+        document["active_profile"] = "powerbench-4242"
+
+    def test_go_back_never_points_boot_back_at_a_scratch_profile(self):
+        self.apply_profile("performance-capped")
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertEqual(
+            self.privileged(), ["configure performance-capped", "select quiet --apply"]
+        )
 
 
 class ScratchRunningVariantTest(VariantFixtureTest):

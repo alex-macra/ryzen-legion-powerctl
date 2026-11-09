@@ -19,15 +19,31 @@ if (( EUID != 0 )) && [[ "${LEGION_POWERBENCH_TESTING:-0}" == 1 ]]; then
     readonly TESTING=1
 else
     readonly TESTING=0
-    unset LEGION_POWERBENCH_RYZENADJ_BIN LEGION_POWERBENCH_CLI_BIN
+    unset LEGION_POWERBENCH_RYZENADJ_BIN LEGION_POWERBENCH_CLI_BIN LEGION_POWERBENCH_SUDO_BIN \
+        LEGION_POWERBENCH_TURBOSTAT_BIN LEGION_POWERBENCH_NVIDIA_SMI_BIN \
+        LEGION_POWERBENCH_STRESS_NG_BIN LEGION_POWERBENCH_OPENSSL_BIN \
+        LEGION_POWERBENCH_VKMARK_BIN LEGION_POWERBENCH_GLMARK2_BIN LEGION_POWERBENCH_PROFILE_NAME
 fi
 
+readonly -a TRUSTED_DIRS=(/usr/local/bin /usr/bin)
+
+root_controlled_path() {
+    local path="$1" owner mode
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
+        [[ "$path" != / ]] || return 0
+        path="${path%/*}"
+        path="${path:-/}"
+    done
+}
+
 trusted_executable() {
-    local file="$1" owner mode
+    local file="$1" resolved
     [[ -f "$file" && -x "$file" ]] || return 1
     (( ! TESTING )) || return 0
-    read -r owner mode < <(stat -L -c '%u %a' -- "$file" 2>/dev/null) || return 1
-    [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 ))
+    resolved="$(readlink -f -- "$file" 2>/dev/null)" || return 1
+    [[ "$resolved" == /* ]] && root_controlled_path "$resolved"
 }
 
 system_binary() {
@@ -36,7 +52,7 @@ system_binary() {
         printf '%s' "$override"
         return 0
     fi
-    for dir in /usr/local/bin /usr/bin; do
+    for dir in "${TRUSTED_DIRS[@]}"; do
         if trusted_executable "$dir/$name"; then
             printf '%s' "$dir/$name"
             return 0
@@ -508,7 +524,7 @@ try:
     if not isinstance(record, dict) or record.get("result") != "ok" or record.get("verified") == "no":
         raise ValueError("no successfully applied restoration profile; apply a profile first")
     name = record.get("profile", "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name.startswith("powerbench-") or name == scratch:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or name.startswith("powerbench-") or name == scratch:
         raise ValueError("the running profile is not a restoration profile")
     profiles = status["profiles"]
     if not saved and any(p.get("name") == scratch for p in profiles):
@@ -649,7 +665,7 @@ cmd_doctor() {
     if [[ -n "$CLI_BIN" ]]; then
         doctor_line OK CLI "$CLI_BIN, active profile '$(active_profile || printf unknown)'"
     else
-        doctor_line FAIL CLI "no root-owned legion-powerctl in /usr/local/bin or /usr/bin; a ladder cannot change limits"
+        doctor_line FAIL CLI "no root-owned legion-powerctl in ${TRUSTED_DIRS[*]}; a ladder cannot change limits"
     fi
 
     return "$DOCTOR_RC"
@@ -732,12 +748,12 @@ cmd_run() {
     (( (to - from) % step == 0 )) ||
         die "--to $to is not on the ladder from $from by $step; use --to $(( to - (to - from) % step )) or $(( to - (to - from) % step + step ))."
     case "$workload" in cpu|crossload|none) ;; *) die "Unknown workload '$workload'." ;; esac
-    [[ "$BENCH_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || die "Invalid scratch profile name."
+    [[ "$BENCH_PROFILE" =~ ^powerbench-[A-Za-z0-9._-]+$ ]] || die "Invalid scratch profile name."
     have_cmd python3 || die "Python 3 is required to validate the restoration profile."
     have_cmd setsid || die "setsid (util-linux) is required for workload cleanup."
     have_cmd timeout || die "timeout (coreutils) is required for workload cleanup."
     refuse_cli_environment
-    [[ -n "$CLI_BIN" ]] || die "No root-owned legion-powerctl in /usr/local/bin or /usr/bin."
+    [[ -n "$CLI_BIN" ]] || die "No root-owned legion-powerctl in ${TRUSTED_DIRS[*]}."
     out="${out:-powerbench-$ladder.csv}"
 
     local state

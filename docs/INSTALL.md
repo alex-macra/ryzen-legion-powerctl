@@ -195,7 +195,9 @@ key on it.
 
 Pull a newer checkout and rerun `./install.sh`. On Arch and CachyOS the rebuilt package
 upgrades the previous one through pacman, and edited profiles in `/etc/legion-powerctl`
-are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
+are preserved as `.pacnew` candidates. The upgrade never moves the boot profile: if
+pacman replaces an unedited `config.conf` with the shipped one, the package selects the
+previous boot profile again, without applying it. Script installs preserve existing profiles unless
 `--force-config` is supplied, which resets every profile and `config.conf` to the shipped
 files and selects `balanced` for boot, exactly as a fresh install does. `sudo make install`
 likewise keeps existing files under `/etc/legion-powerctl` unless `FORCE_CONFIG=1` is set;

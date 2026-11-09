@@ -180,11 +180,14 @@ short_run "$TMP/unknown.csv" --dry-run >/dev/null 2>&1
 reset_machine
 
 printf 'Test 11: a scratch-name collision cannot overwrite a saved profile\n'
-LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=balanced-plus)
+cp "$PROFILES/quiet.conf" "$PROFILES/powerbench-taken.conf"
+cp "$PROFILES/quiet.conf" "$TMP/known-taken.conf"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=powerbench-taken)
 assert_fails 'a colliding scratch name was accepted' short_run "$TMP/collision.csv"
 assert_fails 'a dry-run accepted a colliding scratch name' short_run "$TMP/collision.csv" --dry-run
-cmp "$TMP/known-balanced-plus.conf" "$PROFILES/balanced-plus.conf"
+cmp "$TMP/known-taken.conf" "$PROFILES/powerbench-taken.conf"
 assert_eq '' "$(<"$LOG")" 'a scratch-name collision caused a hardware write'
+rm -f "$PROFILES/powerbench-taken.conf"
 reset_machine
 
 printf 'Test 12: the final two minutes determine sustained power limits\n'
@@ -605,6 +608,8 @@ for planted in ryzenadj legion-powerctl; do
     printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$0" >> %q\nexit 1\n' "$TMP/planted.log" > "$TMP/planted/$planted"
     chmod +x "$TMP/planted/$planted"
 done
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/planted/sudo"
+chmod +x "$TMP/planted/sudo"
 env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_FAKE_NO_TURBOSTAT=1 \
     LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
     LEGION_POWERBENCH_CLI_BIN="$TMP/planted/legion-powerctl" \
@@ -616,6 +621,48 @@ env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_FAKE_NO_TURBOSTAT=1 \
 env "${BENCH_ENV[@]}" LEGION_FAKE_NO_TURBOSTAT=1 LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
     "$BENCH_CLI" doctor >/dev/null 2>&1 || true
 assert_file_contains "$TMP/planted/ryzenadj" "$TMP/planted.log" 'TESTING no longer reaches the ryzenadj override'
+reset_machine
+
+printf 'Test 43: the scratch profile is always powerbench-*, and only TESTING may name it\n'
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=mybench)
+output="$(short_run "$TMP/mybench.csv" --dry-run 2>&1 || true)"
+assert_contains 'Invalid scratch profile name' "$output" 'a scratch name without the powerbench- prefix was accepted'
+assert_eq '' "$(<"$LOG")" 'a refused scratch name still invoked a helper'
+output="$(env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_POWERBENCH_PROFILE_NAME='not a name' \
+    PATH="$TMP/planted:$PATH" "$BENCH_CLI" run --ladder stapm --from 65 --to 65 --workload none \
+    --soak 120 --cool 0 --interval 1 --out "$TMP/untested-name.csv" --dry-run 2>&1 || true)"
+refute_contains 'Invalid scratch profile name' "$output" 'the scratch-name override was honoured without TESTING'
+reset_machine
+
+printf 'Test 44: a running profile with a dot in its name can be restored\n'
+cp "$PROFILES/balanced-plus.conf" "$PROFILES/v1.2.conf"
+sed -i 's/^PROFILE=.*/PROFILE=v1.2/' "$STATE/last-apply.env"
+output="$(short_run "$TMP/dotted.csv" --dry-run 2>&1)" || {
+    printf 'FAIL: a running profile named v1.2 was not restorable\n%s\n' "$output" >&2
+    exit 1
+}
+refute_contains 'Cannot restore' "$output" 'a running profile named v1.2 was not restorable'
+rm -f "$PROFILES/v1.2.conf"
+reset_machine
+
+printf 'Test 45: without TESTING the sudo, turbostat and nvidia-smi overrides are never executed\n'
+mkdir -p "$TMP/override" "$TMP/pathbin"
+for name in sudo turbostat nvidia-smi; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q >> %q\nexit 1\n' "$name" "$TMP/override.log" > "$TMP/override/$name"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/pathbin/$name"
+done
+chmod +x "$TMP/override"/* "$TMP/pathbin"/*
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 \
+    LEGION_POWERBENCH_SUDO_BIN="$TMP/override/sudo" \
+    LEGION_POWERBENCH_TURBOSTAT_BIN="$TMP/override/turbostat" \
+    LEGION_POWERBENCH_NVIDIA_SMI_BIN="$TMP/override/nvidia-smi" \
+    PATH="$TMP/pathbin:$PATH" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+[[ ! -e "$TMP/override.log" ]] || {
+    printf 'FAIL: powerbench ran an override without TESTING:\n%s\n' "$(<"$TMP/override.log")" >&2
+    exit 1
+}
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_SUDO_BIN="$TMP/override/sudo" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+assert_file_contains 'sudo' "$TMP/override.log" 'TESTING no longer reaches the sudo override'
 reset_machine
 
 printf '\nAll legion-powerbench tests passed.\n'

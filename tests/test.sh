@@ -718,6 +718,7 @@ chmod 0555 "$TMP/pacstrap-run"
 sed -e "s|/etc/legion-powerctl|$ETC|g" -e "s|/var/lib/legion-powerctl|$pacman_varlib|g" \
     -e "s|/run/|$TMP/pacstrap-run/|g" \
     -e "s|legion-powerctl select|$FAKEBIN/legion-powerctl select|g" \
+    -e "s|legion-powerctl show|$FAKEBIN/legion-powerctl show|g" \
     "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
 # shellcheck disable=SC2329
 pacman_install() {
@@ -822,8 +823,8 @@ pkg_root="$TMP/pkg-root"
 mkdir -p "$pkg_root/packaging/arch"
 : > "$pkg_root/packaging/arch/PKGBUILD"
 : > "$pkg_root/packaging/arch/legion-powerctl.install"
-printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\nrm -f %q\n' "$TMP/pkg-flow.log" "$TMP/modules-load.conf" \
-    > "$pkg_root/uninstall.sh"
+printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\n[[ ! -e %q ]] || exit 1\nrm -f %q\n' \
+    "$TMP/pkg-flow.log" "$TMP/uninstall-fails" "$TMP/modules-load.conf" > "$pkg_root/uninstall.sh"
 chmod +x "$pkg_root/uninstall.sh"
 : > "$TMP/script-installed-cli"
 package_functions="$TMP/package-install.sh"
@@ -902,6 +903,19 @@ rm -f "$TMP/smu-blacklist.conf"
 for recovery_step in 'sudo pacman -U ' 'legion-powerctl-0.0.0-1-any.pkg.tar.zst' 'then: sudo legion-powerctl enable'; do
     assert_contains "$recovery_step" "$pkg_failure" 'a failed pacman install after the script removal gave an incomplete recovery'
 done
+: > "$TMP/uninstall-fails"
+run_package_install none
+rm -f "$TMP/uninstall-fails"
+uninstall_failure="$(<"$TMP/pkg-flow.log")"
+assert_contains 'died: Removing the script install failed.' "$uninstall_failure" \
+    'a failed script removal did not stop the move to the package'
+refute_contains 'pacman -U --noconfirm' "$uninstall_failure" 'pacman ran after the script removal failed'
+kept_package="$(sed -n 's/.*kept at \([^ ]*\.pkg\.tar\.zst\)\..*/\1/p' <<<"$uninstall_failure")"
+[[ -n "$kept_package" && -f "$kept_package" ]] || {
+    printf 'FAIL: a failed script removal deleted the built package its recovery names\n%s\n' "$uninstall_failure" >&2
+    exit 1
+}
+rm -rf -- "${kept_package%/*}"
 
 printf 'Test 58: make dist inside an enclosing git repository still packs this tree\n'
 nested="$TMP/enclosing/legion-powerctl"
@@ -1015,8 +1029,10 @@ assert_contains 'died: pacman could not install' "$(<"$TMP/pkg-flow.log")" \
 printf 'Test 63: install.sh trusts exactly the ryzenadj locations the CLI runs from\n'
 cli_dirs="$(grep '^readonly -a RYZENADJ_DIRS=' "$ROOT_DIR/bin/legion-powerctl" | sed 's/^readonly -a RYZENADJ_DIRS=//')"
 installer_dirs="$(grep '^readonly RYZENADJ_DIRS=' "$ROOT_DIR/install.sh" | sed 's/^readonly RYZENADJ_DIRS=//')"
+bench_dirs="$(grep '^readonly -a TRUSTED_DIRS=' "$ROOT_DIR/tools/legion-powerbench" | sed 's/^readonly -a TRUSTED_DIRS=//')"
 assert_contains '/usr/bin' "$cli_dirs" 'the CLI ryzenadj directory list was not found'
 assert_eq "$cli_dirs" "$installer_dirs" 'install.sh and the CLI trust different ryzenadj directories'
+assert_eq "$cli_dirs" "$bench_dirs" 'legion-powerbench and the CLI trust different directories'
 ryzenadj_functions="$TMP/ryzenadj-functions.sh"
 awk '/^(trusted_ryzenadj|ensure_ryzenadj_binary)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$ryzenadj_functions"
 assert_contains 'ensure_ryzenadj_binary()' "$(<"$ryzenadj_functions")" 'install.sh no longer has ensure_ryzenadj_binary'
@@ -1036,5 +1052,74 @@ installer_out="$(
 )" || installer_rc=$?
 assert_eq '1' "$installer_rc" 'install.sh accepted a ryzenadj the CLI will never run'
 assert_contains "$TMP/path-only/ryzenadj" "$installer_out" 'install.sh did not name the ryzenadj it cannot use'
+
+printf 'Test 64: a pacman upgrade never moves the boot profile the old package left behind\n'
+# shellcheck disable=SC2329
+pacman_upgrade() {
+    local rewrites="$1"
+    (
+        # shellcheck source=/dev/null
+        . "$pacman_scriptlet"
+        pre_upgrade
+        [[ "$rewrites" != shipped ]] || cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+        post_upgrade
+    )
+}
+cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+printf '# Profile applied by legion-powerctl.service once at boot.\nACTIVE_PROFILE=balanced\n' > "$ETC/config.conf"
+: > "$LOG"
+upgrade_out="$(pacman_upgrade shipped)"
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'the upgrade flipped boot to the shipped profile'
+refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'the upgrade flipped boot to the shipped profile'
+assert_contains 'selected balanced again' "$upgrade_out" 'the upgrade did not say it restored the boot profile'
+assert_eq '' "$(<"$LOG")" 'restoring the boot profile applied something'
+[[ ! -e "$pacman_varlib/pre-upgrade-boot" ]] || {
+    printf 'FAIL: post_upgrade left the saved boot profile behind\n' >&2
+    exit 1
+}
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+upgrade_out="$(pacman_upgrade kept)"
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'an upgrade that kept config.conf rewrote it'
+refute_contains 'selected' "$upgrade_out" 'an unchanged boot profile was selected again'
+printf 'ACTIVE_PROFILE=gone\n' > "$ETC/config.conf"
+pacman_upgrade shipped >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" \
+    'the upgrade pointed boot back at a profile that no longer exists'
+[[ ! -e "$pacman_varlib/pre-upgrade-boot" ]] || {
+    printf 'FAIL: post_upgrade left the saved boot profile behind\n' >&2
+    exit 1
+}
+
+printf 'Test 65: a root-owned binary in a directory others control is never trusted\n'
+if ! unshare --map-root-user true >/dev/null 2>&1; then
+    printf '  (skipped: no unprivileged user namespace to become root in)\n'
+else
+    unsafe_dir="$TMP/unsafe-dir"
+    mkdir -p "$unsafe_dir"
+    cp "$FAKEBIN/ryzenadj" "$unsafe_dir/ryzenadj"
+    chmod 0755 "$unsafe_dir/ryzenadj"
+    chmod 0777 "$unsafe_dir"
+    assert_eq '0 755' "$(unshare --map-root-user stat -c '%u %a' "$unsafe_dir/ryzenadj")" \
+        'the namespace does not show the planted ryzenadj as root-owned'
+    awk '/^(root_controlled_path|trusted_executable)\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-trust.sh"
+    awk '/^(root_controlled_path|trusted_executable)\(\) \{$/,/^}$/' "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-trust.sh"
+    awk '/^(root_controlled_path|trusted_ryzenadj)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$TMP/installer-trust.sh"
+    # shellcheck disable=SC2016
+    trust_check='TESTING=0; . "$1"; if [[ "$1" == *installer* ]]; then RYZENADJ_DIRS=("${2%/*}"); trusted_ryzenadj >/dev/null; else trusted_executable "$2"; fi'
+    for trust in cli bench installer; do
+        if unshare --map-root-user bash -c "$trust_check" _ "$TMP/$trust-trust.sh" "$unsafe_dir/ryzenadj"; then
+            printf 'FAIL: the %s trusted a root-owned binary in a world-writable directory\n' "$trust" >&2
+            exit 1
+        fi
+    done
+    system_bash="$(readlink -f -- "$(command -v bash)")"
+    for trust in cli bench; do
+        bash -c "$trust_check" _ "$TMP/$trust-trust.sh" "$system_bash" || {
+            printf 'FAIL: the %s no longer trusts %s, root-owned all the way up\n' "$trust" "$system_bash" >&2
+            exit 1
+        }
+    done
+    chmod 0755 "$unsafe_dir"
+fi
 
 printf 'All tests passed.\n'

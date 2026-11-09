@@ -211,7 +211,8 @@ ryzenadj --help | grep -i '^Version'
 
 legion-powerctl never looks for `ryzenadj` on `PATH`. It considers exactly two
 locations, `/usr/local/bin/ryzenadj` and `/usr/bin/ryzenadj`, and uses one only
-if it is a regular file owned by root and not writable by group or others. A
+if it is a regular file owned by root and not writable by group or others, in
+directories that are all root-owned and not writable by group or others either. A
 binary that fails that check is skipped silently, as if it were not installed.
 
 `doctor`'s `RyzenAdj-shadow` line reports when both locations hold a binary -
