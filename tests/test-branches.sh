@@ -776,6 +776,10 @@ case_a_scratch_boot_pointer_cannot_be_written_and_boots_balanced_loudly() {
     report="$(run_cli doctor 2>&1 || true)"
     assert_doctor_line WARN Profile "scratch profile 'powerbench-77'" "$report" \
         'doctor did not flag the scratch boot pointer'
+    rm -f "$PROFILES/balanced.conf"
+    report="$(run_cli doctor 2>&1 || true)"
+    assert_doctor_line FAIL Profile "scratch profile 'powerbench-77'" "$report" \
+        'with balanced missing, doctor no longer named the scratch boot pointer'
 }
 
 case_deleting_balanced_while_it_boots_says_why() {

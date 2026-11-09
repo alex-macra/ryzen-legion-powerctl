@@ -47,9 +47,7 @@ class ProfileActions(QObject):
         self._editor = editor
         self._sidebar = sidebar
         self._busy = False
-        self.previous_profile = ""
-        self.previous_boot = ""
-        self.previous_applied = ""
+        self.previous_profile = self.previous_boot = self.previous_applied = ""
 
     @property
     def busy(self) -> bool:
@@ -72,6 +70,8 @@ class ProfileActions(QObject):
         status = self._window.status
         running = runstate.run_state(status) if status else None
         offer = NO_OFFER
+        if profile.name == self.previous_profile:
+            self.previous_profile = self.previous_boot = self.previous_applied = ""
         if running is not None:
             deltas = runstate.raising_deltas(running, profile)
             service_on = status.service_enabled == "enabled"

@@ -482,7 +482,9 @@ package_install() {
         [[ ! -e "$MODULES_LOAD_CONF" ]] || had_modules_load=1
         info "Removing the previous script install..."
         "$ROOT_DIR/uninstall.sh"
-        (( had_modules_load == 0 )) || persist_ryzen_smu
+        if (( had_modules_load == 1 )) && [[ ! -e "$SMU_BLACKLIST_FILE" ]] && ryzen_smu_usable; then
+            persist_ryzen_smu
+        fi
         recovery="The script install was already removed and its boot service disabled. Recover with: sudo pacman -U $package, then: sudo legion-powerctl enable"
     fi
     if ! "${SUDO[@]}" pacman -U --noconfirm "$package"; then

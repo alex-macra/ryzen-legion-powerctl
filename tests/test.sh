@@ -846,6 +846,8 @@ run_package_install() {
         MODULES_LOAD_CONF="$TMP/modules-load.conf"
         confirm() { return 1; }
         persist_ryzen_smu() { printf 'persist_ryzen_smu\n' >> "$TMP/pkg-flow.log"; }
+        SMU_BLACKLIST_FILE="$TMP/smu-blacklist.conf"
+        ryzen_smu_usable() { [[ "${SMU_USABLE:-1}" == 1 ]]; }
         pacman() {
             [[ "$1" == -U ]] || return 1
             printf 'pacman %s %s %s\n' "$1" "$2" "${3##*/}" >> "$TMP/pkg-flow.log"
@@ -887,6 +889,16 @@ run_package_install pacman
 assert_match "$(<"$TMP/pkg-flow.log")" "*$(printf 'uninstall.sh\npersist_ryzen_smu\npacman -U')*" \
     'moving to the package dropped the ryzen_smu boot entry the script install had written'
 pkg_failure="$(<"$TMP/pkg-flow.log")"
+: > "$TMP/modules-load.conf"
+SMU_USABLE=0 run_package_install none
+refute_contains 'persist_ryzen_smu' "$(<"$TMP/pkg-flow.log")" \
+    'moving to the package rewrote a ryzen_smu boot entry for a module that does not work'
+: > "$TMP/smu-blacklist.conf"
+: > "$TMP/modules-load.conf"
+run_package_install none
+refute_contains 'persist_ryzen_smu' "$(<"$TMP/pkg-flow.log")" \
+    'moving to the package rewrote a ryzen_smu boot entry while SMU recovery blacklists the module'
+rm -f "$TMP/smu-blacklist.conf"
 for recovery_step in 'sudo pacman -U ' 'legion-powerctl-0.0.0-1-any.pkg.tar.zst' 'then: sudo legion-powerctl enable'; do
     assert_contains "$recovery_step" "$pkg_failure" 'a failed pacman install after the script removal gave an incomplete recovery'
 done

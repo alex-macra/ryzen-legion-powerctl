@@ -3061,8 +3061,10 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
         with unittest.mock.patch.dict(os.environ, env):
             refreshes = self.window.refresh_count
             self.offer.click()
-            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
-        self.assertFalse(self.actions.busy)
+            self.assertTrue(wait_until(
+                self.app,
+                lambda: not self.actions.busy and self.window.refresh_count > refreshes,
+            ))
         self.assertNotIn("select balanced-plus", self.privileged())
         self.assertFalse(self.offer.isHidden(), "the stopped Go back can no longer be retried")
         self.assertTrue(self.offer.isEnabled())
@@ -3094,6 +3096,23 @@ class GoBackToAnotherBootVariantTest(VariantFixtureTest):
                          ("quiet", "balanced-plus"))
         self.offer.click()
         self.assertTrue(wait_until(self.app, lambda: "apply quiet" in self.privileged()))
+
+    def test_a_failed_apply_of_the_go_back_target_withdraws_the_offer(self):
+        from PySide6.QtCore import Qt
+
+        self.apply_profile("performance-capped")
+        target = self.actions.previous_profile
+        sidebar = self.window.sidebar
+        sidebar.list.setCurrentRow(next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == target
+        ))
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "configure:1"}):
+            self.actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(self.actions.previous_profile, "")
+        self.assertTrue(self.offer.isHidden(), f"Go back still names {target!r}, now half applied")
 
 
 class ScratchRunningVariantTest(VariantFixtureTest):

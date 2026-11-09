@@ -2046,7 +2046,9 @@ cmd_doctor() {
         ACTIVE_PROFILE=balanced
     fi
     if [[ ! -r "$(profile_path "$ACTIVE_PROFILE")" ]]; then
-        doctor_line FAIL Profile "active profile '$ACTIVE_PROFILE' is missing"
+        local missing="active profile '$ACTIVE_PROFILE' is missing"
+        [[ -z "$scratch_pointer" ]] || missing+="; config.conf names the scratch profile '$scratch_pointer'"
+        doctor_line FAIL Profile "$missing"
         ((failures += 1))
     elif profile_error="$( (load_profile "$ACTIVE_PROFILE" && validate_profile "$ACTIVE_PROFILE") 2>&1 >/dev/null )"; then
         if [[ -e "$CONFIG_FILE" && "$CONFIG_NAMES_PROFILE" == 0 ]]; then
