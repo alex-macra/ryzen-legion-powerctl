@@ -98,7 +98,14 @@ class Session:
             lambda: self.find_role("list") is not None,
             "the window to build its profile list",
         )
+        wait_until(self._status_landed, "the first status poll to fill the profile list")
         return self
+
+    def _status_landed(self):
+        return any(
+            node.getRoleName() == "list item" and "running now" in (node.name or "")
+            for node in self.nodes()
+        )
 
     def __exit__(self, *exc):
         if self.process and self.process.poll() is None:
