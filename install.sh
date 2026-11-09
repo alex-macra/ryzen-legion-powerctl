@@ -438,7 +438,7 @@ enable_service() {
         return 0
     }
     info "Enabling the boot service (doctor runs first; use 'legion-powerctl enable --force' to override)..."
-    if ! "${SUDO[@]}" /usr/bin/legion-powerctl enable; then
+    if ! "${SUDO[@]}" "$CLI_BIN" enable; then
         warn "The files are installed, but the service was not enabled."
         warn "Fix the doctor failures above, then run: sudo legion-powerctl enable"
         return 1
@@ -450,11 +450,11 @@ package_install() {
     command -v tar >/dev/null 2>&1 || die "tar is required to build the package tarball."
 
     local remove_script_install=0
-    if [[ -e /usr/bin/legion-powerctl ]] && ! pacman -Qo /usr/bin/legion-powerctl >/dev/null 2>&1; then
-        warn "A previous script install was detected at /usr/bin/legion-powerctl."
+    if [[ -e "$CLI_BIN" ]] && ! pacman -Qo "$CLI_BIN" >/dev/null 2>&1; then
+        warn "A previous script install was detected at $CLI_BIN."
         warn "pacman will not overwrite files it does not own, so it has to be removed first."
         warn "Your profiles and configuration in /etc/legion-powerctl are kept either way."
-        [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove /usr/bin/legion-powerctl by hand."
+        [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove $CLI_BIN by hand."
         if (( REPLACE_SCRIPT_INSTALL == 1 )) || confirm "Remove the previous script install just before the package installs?"; then
             remove_script_install=1
         else
@@ -590,7 +590,7 @@ main() {
 
     printf '\n'
     info "Installation complete."
-    /usr/bin/legion-powerctl doctor || true
+    "$CLI_BIN" doctor || true
     printf '\nUseful commands:\n'
     printf '  legion-powerctl status\n'
     printf '  legion-powerctl-gui\n'

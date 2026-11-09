@@ -73,6 +73,7 @@ length ceiling below.
 | `__main__.py` | the entry point: builds the application and shows the window |
 | `app.py` | the window: assembles the panels, runs the poll, and arbitrates whether a click on the sidebar may change the editor |
 | `actions.py` | every privileged argv the GUI builds - the seven subcommands that reach `pkexec`: `configure`, `select`, `apply` (Go back), `delete`, `enable`, `disable` and `repair` - and what each exit code means |
+| `goback.py` | the Go back offer as data: which profile was displaced, which boot profile to restore, the order of the steps that undo an apply, and the `Steps` hooks a privileged run fires in order. Builds no argv and has no Qt |
 | `editor.py` | the form for one profile - reads and writes the widgets, validates, and shows an unreadable profile without arming anything |
 | `editor_column.py` | the frame around the form: the profile's title above the scrolling cards, and the problems callout and `Apply now` below them, so neither scrolls away |
 | `advanced.py` | the collapsed disclosure holding boost, EPP and the frequency range |

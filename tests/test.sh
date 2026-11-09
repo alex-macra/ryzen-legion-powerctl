@@ -828,16 +828,14 @@ printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\n[[ ! -e %q ]] || ex
 chmod +x "$pkg_root/uninstall.sh"
 : > "$TMP/script-installed-cli"
 package_functions="$TMP/package-install.sh"
-awk '/^package_install\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" |
-    sed -e "s|/usr/bin/legion-powerctl|$TMP/script-installed-cli|g" -e "s|\\\$ROOT_DIR|\$PKG_ROOT|g" \
-    > "$package_functions"
+awk '/^package_install\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$package_functions"
 assert_contains 'package_install()' "$(<"$package_functions")" 'install.sh no longer has package_install'
 # shellcheck disable=SC2034,SC2329
 run_package_install() {
     local failing="$1"
     : > "$TMP/pkg-flow.log"
     (
-        PKG_ROOT="$pkg_root"
+        CLI_BIN="$TMP/script-installed-cli"
         REPLACE_SCRIPT_INSTALL=1
         FORCE_CONFIG=0
         info() { :; }
@@ -874,7 +872,7 @@ run_package_install() {
         enable_service() { :; }
         # shellcheck source=/dev/null
         . "$package_functions"
-        package_install
+        ROOT_DIR="$pkg_root" package_install
     ) >/dev/null 2>&1 || true
 }
 for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy makepkg; do

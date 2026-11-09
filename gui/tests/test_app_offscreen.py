@@ -9,6 +9,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from legion_powerctl_gui.goback import NO_OFFER
+
 HERE = Path(__file__).parent
 FAKE_CLI = HERE / "fake-legion-powerctl"
 STATUS_FIXTURE = HERE / "fixtures" / "status.json"
@@ -821,11 +823,12 @@ class MainWindowTest(OffscreenGuiTest):
 
     def test_invalid_profile_name_never_reaches_a_privileged_command(self):
         from legion_powerctl_gui import model
+        from legion_powerctl_gui.goback import GoBack
 
         self.editor.editing = model.Profile(name="--force")
         self.window.profile_actions.pin_boot("--force")
-        self.window.profile_actions.go_back("--force", "balanced-plus")
-        self.window.profile_actions.go_back("quiet", "--force")
+        self.window.profile_actions.go_back(GoBack("--force", "balanced-plus"))
+        self.window.profile_actions.go_back(GoBack("quiet", "--force"))
         self.window.profile_actions.delete()
         self.settle(5)
         log = "\n".join(self.read_log())
@@ -1356,7 +1359,7 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, lambda: offer.isHidden()),
             "a save offers to go back to a profile it did not stop running",
         )
-        self.assertEqual(self.window.profile_actions.previous_profile, "")
+        self.assertEqual(self.window.profile_actions.offer, NO_OFFER)
 
     def test_go_back_re_applies_the_profile_that_was_displaced(self):
         self.sidebar.list.setCurrentRow(self._row_of("quiet"))
@@ -1562,9 +1565,10 @@ class MainWindowTest(OffscreenGuiTest):
 
     def test_while_busy_go_back_is_disabled_and_a_save_says_why_it_did_nothing(self):
         from legion_powerctl_gui.actions import BUSY
+        from legion_powerctl_gui.goback import GoBack
 
         actions = self.window.profile_actions
-        actions.previous_profile = "quiet"
+        actions.offer = GoBack("quiet")
         self.window.reports.success("Applied.", "quiet")
         actions._set_busy(True)
         try:
@@ -3010,10 +3014,16 @@ class GoBackToAnotherBootVariantTest(GoBackVariantTest):
     def mutate(self, document):
         document["last_apply"]["profile"] = "quiet"
 
+    def assert_retry_restores_both(self):
+        before = len(self.privileged())
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= before + 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(self.privileged()[before:], ["apply quiet", "select balanced-plus"])
+
     def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
         self.apply_profile("performance-capped")
-        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
-                         ("quiet", "balanced-plus"))
+        self.assertIn("quiet", self.offer.text())
         self.offer.click()
         self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 3))
         self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
@@ -3048,8 +3058,7 @@ class GoBackToAnotherBootVariantTest(GoBackVariantTest):
         self.assertIn(message, self.window.statusBar().currentMessage())
         self.assertFalse(self.offer.isHidden(), "the half-done Go back left no way to finish it")
         self.assertIn("quiet", self.offer.text())
-        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
-                         ("quiet", "balanced-plus"))
+        self.assert_retry_restores_both()
 
     def test_a_failed_boot_step_of_go_back_says_what_was_left_half_done(self):
         self.assert_half_done(
@@ -3083,8 +3092,7 @@ class GoBackToAnotherBootVariantTest(GoBackVariantTest):
         self.assertFalse(self.offer.isHidden(), "the stopped Go back can no longer be retried")
         self.assertTrue(self.offer.isEnabled())
         self.assertIn("quiet", self.offer.text())
-        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
-                         ("quiet", "balanced-plus"))
+        self.assert_retry_restores_both()
 
     def test_a_dismissed_prompt_for_the_first_step_of_go_back_keeps_the_offer(self):
         self.assert_first_step_keeps_the_offer(
@@ -3106,16 +3114,14 @@ class GoBackToAnotherBootVariantTest(GoBackVariantTest):
             self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
         self.assertFalse(self.offer.isHidden())
         self.assertIn("quiet", self.offer.text())
-        self.assertEqual((self.actions.previous_profile, self.actions.previous_boot),
-                         ("quiet", "balanced-plus"))
-        self.offer.click()
-        self.assertTrue(wait_until(self.app, lambda: "apply quiet" in self.privileged()))
+        self.assert_retry_restores_both()
 
     def test_a_failed_apply_of_the_go_back_target_withdraws_the_offer(self):
         from PySide6.QtCore import Qt
 
         self.apply_profile("performance-capped")
-        target = self.actions.previous_profile
+        target = "quiet"
+        self.assertIn(target, self.offer.text())
         sidebar = self.window.sidebar
         sidebar.list.setCurrentRow(next(
             index for index in range(sidebar.list.count())
@@ -3125,7 +3131,7 @@ class GoBackToAnotherBootVariantTest(GoBackVariantTest):
         with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "configure:1"}):
             self.actions.apply()
             self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
-        self.assertEqual(self.actions.previous_profile, "")
+        self.assertEqual(self.actions.offer, NO_OFFER)
         self.assertTrue(self.offer.isHidden(), f"Go back still names {target!r}, now half applied")
 
 
@@ -3185,7 +3191,7 @@ class ScratchRunningVariantTest(VariantFixtureTest):
         ))
         self.settle()
         self.assertTrue(self.window.reports.go_back_button.isHidden())
-        self.assertEqual(self.window.profile_actions.previous_profile, "")
+        self.assertEqual(self.window.profile_actions.offer, NO_OFFER)
 
 
 class PartialApplyVariantTest(VariantFixtureTest):

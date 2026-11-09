@@ -125,15 +125,15 @@ class MainWindow(QMainWindow):
         self.profile_actions.cancelled.connect(self._on_action_cancelled)
         self.profile_actions.busy_changed.connect(self._set_busy)
         self.profile_actions.refused.connect(self.reports.note)
-        self.profile_actions.half_done.connect(self._on_go_back_half_done)
+        self.profile_actions.half_done.connect(self._on_action_failed)
 
     def _show_error(self, message: str) -> None:
         self.errors.append(message)
         self.reports.error(message)
-        self.reports.offer_go_back(self.profile_actions.previous_profile)
+        self.reports.offer_go_back(self.profile_actions.offer.profile)
 
     def _on_action_succeeded(self, message: str) -> None:
-        self.reports.success(message, self.profile_actions.previous_profile)
+        self.reports.success(message, self.profile_actions.offer.profile)
         self.refresh()
 
     def _on_repaired(self) -> None:
@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         self.checks.run()
 
     def _on_action_warned(self, message: str, detail: str) -> None:
-        self.reports.warning(message, detail, self.profile_actions.previous_profile)
+        self.reports.warning(message, detail, self.profile_actions.offer.profile)
         self.refresh()
 
     def _on_action_failed(self, message: str) -> None:
@@ -154,22 +154,17 @@ class MainWindow(QMainWindow):
     def _on_action_cancelled(self, message: str) -> None:
         self._pending_open = ""
         self.reports.note(message)
-        self.reports.offer_go_back(self.profile_actions.previous_profile)
-        self.refresh()
-
-    def _on_go_back_half_done(self, message: str) -> None:
-        self._pending_open = ""
-        self._show_error(message)
+        self.reports.offer_go_back(self.profile_actions.offer.profile)
         self.refresh()
 
     def _on_go_back(self) -> None:
         actions = self.profile_actions
-        previous = actions.previous_profile
+        offer = actions.offer
         if actions.busy:
             return
         self.reports.clear_offers()
-        if previous:
-            actions.go_back(previous, actions.previous_boot, actions.previous_applied)
+        if offer.profile:
+            actions.go_back(offer)
 
     def _set_busy(self, busy: bool) -> None:
         if busy:

@@ -178,7 +178,8 @@ acquire_mutation_lock() {
     fi
     local lock="$STATE_DIR/power.lock" old_umask owner mode
     [[ ! -L "$lock" ]] || die "Refusing the power-operation lock: $lock is a symlink."
-    [[ ! -e "$lock" || -f "$lock" ]] || die "Refusing the power-operation lock: $lock is not a regular file."
+    [[ ! -e "$lock" ]] || regular_file "$lock" || \
+        die "Refusing the power-operation lock: $lock is not a regular file."
     if [[ -e "$lock" ]]; then
         read -r owner mode < <(stat -c '%u %a' -- "$lock" 2>/dev/null) || \
             die "Could not inspect the power-operation lock."
@@ -235,9 +236,13 @@ profile_path() {
     printf '%s/%s.conf' "$PROFILES_DIR" "$1"
 }
 
+regular_file() {
+    [[ -f "$1" && ! -L "$1" ]]
+}
+
 refuse_unsafe_file() {
     [[ ! -L "$1" ]] || die "Refusing $1: it is a symlink."
-    [[ ! -e "$1" || -f "$1" ]] || die "Refusing $1: it is not a regular file."
+    [[ ! -e "$1" ]] || regular_file "$1" || die "Refusing $1: it is not a regular file."
 }
 
 readonly -a RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
@@ -573,7 +578,7 @@ trap on_exit EXIT
 
 atomic_write() {
     local mode="$1" dest="$2" content="$3"
-    if [[ -L "$dest" || ( -e "$dest" && ! -f "$dest" ) ]]; then
+    if [[ -e "$dest" || -L "$dest" ]] && ! regular_file "$dest"; then
         warn "Refusing to write $dest: it is a symlink or not a regular file."
         return 1
     fi
@@ -706,7 +711,7 @@ try_write_sysfs() {
         printf 'DRY RUN: write %q to %q\n' "$value" "$file"
         return 0
     fi
-    if [[ -L "$file" || ! -f "$file" ]]; then
+    if ! regular_file "$file"; then
         warn "Refusing to write $file: it is a symlink or not a regular sysfs attribute."
         return 1
     fi
@@ -964,7 +969,7 @@ join_list() {
 stock_limits_captured() {
     local file="$STOCK_LIMITS_FILE" line key
     local -A found=()
-    [[ -f "$file" && ! -L "$file" && -r "$file" ]] || return 1
+    regular_file "$file" && [[ -r "$file" ]] || return 1
     while IFS= read -r line || [[ -n "$line" ]]; do
         key="${line%%=*}"
         if [[ "$line" == *=* ]] && in_list "$key" "${STOCK_LIMIT_KEYS[@]}" && is_number "${line#*=}"; then
@@ -984,7 +989,7 @@ current_boot_id() {
 smu_written_this_boot() {
     local marker="$STATE_DIR/smu-written" id recorded
     [[ -e "$marker" || -L "$marker" ]] || return 1
-    [[ -f "$marker" && ! -L "$marker" ]] || return 0
+    regular_file "$marker" || return 0
     id="$(current_boot_id || true)"
     [[ -n "$id" ]] || return 0
     recorded="$(head -n1 -- "$marker" 2>/dev/null || true)"
@@ -1013,10 +1018,6 @@ capture_stock_limits() {
     if smu_written_this_boot || { [[ -e "$STATE_DIR/last-apply.env" ]] && [[ ! -e "$STATE_DIR/smu-written" ]]; }; then
         (( quiet == 1 )) || warn "A profile was already applied this boot, so the SMU no longer holds the firmware values. Run 'legion-powerctl disable', reboot, then capture."
         return 2
-    fi
-    if [[ -L "$STOCK_LIMITS_FILE" || ( -e "$STOCK_LIMITS_FILE" && ! -f "$STOCK_LIMITS_FILE" ) ]]; then
-        warn "Stock limits not captured: $STOCK_LIMITS_FILE is a symlink or not a regular file."
-        return 1
     fi
     if ! report="$(run_unlocked "$ryzenadj" -i 2>&1)"; then
         capture_note "$quiet" "Stock limits not captured: '$ryzenadj -i' failed. Nothing was recorded."
@@ -1291,7 +1292,7 @@ apply_loaded_profile() {
 }
 
 owned_smu_boot_entry() {
-    [[ -f "$MODULES_LOAD_CONF" && ! -L "$MODULES_LOAD_CONF" ]] || return 1
+    regular_file "$MODULES_LOAD_CONF" || return 1
     grep -Fxq '# Written by legion-powerctl install.sh --install-ryzen-smu.' "$MODULES_LOAD_CONF" || return 1
     awk '!/^[[:space:]]*(#|$)/ && $0 !~ /^[[:space:]]*ryzen_smu[[:space:]]*$/ { bad=1 } END { exit bad }' "$MODULES_LOAD_CONF"
 }
@@ -1330,7 +1331,7 @@ cmd_repair() {
         [[ -d "$MODULES_ROOT/ryzen_smu" ]] || die "The incomplete SMU interface has no loaded ryzen_smu module to remove."
         unload=1
         recover_smu=1
-    elif [[ "$SMU_BACKEND" == devmem && ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" && -f "$pending" && ! -L "$pending" ]] && \
+    elif [[ "$SMU_BACKEND" == devmem && ! -d "$MODULES_ROOT/ryzen_smu" && ! -e "$SMU_SYSFS_DIR" ]] && regular_file "$pending" && \
             [[ "$(cat "$pending")" == "$pending_marker" ]]; then
         recover_smu=1
     else
@@ -1341,7 +1342,7 @@ cmd_repair() {
             die "Repair cannot use $DEV_MEM_PATH unless kernel lockdown is confirmed as none. No settings were changed."
         [[ -e "$DEV_MEM_PATH" ]] || die "Repair needs $DEV_MEM_PATH before unloading the broken module. No settings were changed."
         if [[ -e "$SMU_BLACKLIST_FILE" || -L "$SMU_BLACKLIST_FILE" ]]; then
-            [[ -f "$SMU_BLACKLIST_FILE" && ! -L "$SMU_BLACKLIST_FILE" ]] || \
+            regular_file "$SMU_BLACKLIST_FILE" || \
                 die "Refusing to replace $SMU_BLACKLIST_FILE; it is not a regular file."
             [[ "$(cat "$SMU_BLACKLIST_FILE")" == $'# Written by legion-powerctl repair balanced-plus.\nblacklist ryzen_smu' ]] || \
                 die "Refusing to replace unrelated settings at $SMU_BLACKLIST_FILE."
@@ -1401,7 +1402,7 @@ cmd_repair() {
         info "To undo the module change: remove $SMU_BLACKLIST_FILE and restore the backed-up module-loading file if present, then reboot."
         warn "If ryzen_smu is included in your initramfs or loaded by another service, update that configuration before rebooting; the blacklist alone cannot remove an embedded module."
     fi
-    if [[ -f "$pending" && ! -L "$pending" ]] && [[ "$(cat "$pending")" == "$pending_marker" ]]; then
+    if regular_file "$pending" && [[ "$(cat "$pending")" == "$pending_marker" ]]; then
         rm -- "$pending"
     fi
     success "balanced-plus repaired and applied at ${TEMP_C} C. Original files: $backup"
@@ -1715,7 +1716,7 @@ profile_json() {
 last_apply_records() {
     local LC_ALL=C
     local state_file="$STATE_DIR/last-apply.env"
-    [[ -f "$state_file" && ! -L "$state_file" && -r "$state_file" ]] || return 1
+    regular_file "$state_file" && [[ -r "$state_file" ]] || return 1
     local raw line key value
     while IFS= read -r raw || [[ -n "$raw" ]]; do
         line="$(trim "$raw")"
