@@ -16,7 +16,7 @@ class CommandRunner(QObject):
 
     def run(
         self, argv: list[str], on_done, timeout_ms: int | None = None,
-        on_start_failed=None,
+        on_start_failed=None, on_error=None,
     ) -> None:
         process = QProcess(self)
         self.processes.append(process)
@@ -39,7 +39,11 @@ class CommandRunner(QObject):
                 process.deleteLater()
                 if on_start_failed is not None:
                     on_start_failed()
-                self.failed.emit(f"Could not run {argv[0]}: {process.errorString()}")
+                message = f"Could not run {argv[0]}: {process.errorString()}"
+                if on_error is not None:
+                    on_error(message)
+                else:
+                    self.failed.emit(message)
 
         def timed_out() -> None:
             if process not in self.processes:

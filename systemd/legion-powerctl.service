@@ -1,7 +1,7 @@
 [Unit]
 Description=Apply configurable Lenovo Legion Ryzen CPU limits once at boot
 Documentation=file:///usr/share/doc/legion-powerctl/README.md
-After=systemd-modules-load.service dbus.service
+After=systemd-modules-load.service dbus.service power-profiles-daemon.service
 ConditionFileIsExecutable=/usr/bin/legion-powerctl
 
 [Service]
@@ -9,8 +9,9 @@ Type=oneshot
 ExecStart=/usr/bin/legion-powerctl apply --boot
 RemainAfterExit=yes
 # The first boot apply records the firmware's own SMU limits here, before it
-# overwrites them. UMask is 0077, so the file is relaxed explicitly by the CLI:
-# 'baseline --show' is a read-only query and does not need root.
+# overwrites them. The CLI sets its own umask and writes every file with an explicit
+# mode, so UMask below does not apply to them: 'baseline --show' and 'status' are
+# read-only queries and do not need root.
 StateDirectory=legion-powerctl
 StateDirectoryMode=0755
 TimeoutStartSec=30s

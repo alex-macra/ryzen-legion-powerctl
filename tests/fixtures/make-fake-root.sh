@@ -5,6 +5,11 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     set -Eeuo pipefail
 fi
 
+if (( EUID == 0 )); then
+    printf 'make-fake-root.sh: refusing to run as root. The CLI ignores every test override as root, so it would act on this machine instead of the fake one.\n' >&2
+    exit 1
+fi
+
 FAKE_ROOT="${1:?usage: make-fake-root.sh ROOTDIR}"
 FIXTURE_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -37,6 +42,7 @@ cp "$FIXTURE_REPO/profiles/balanced-plus.conf" "$PROFILES/balanced-plus.conf"
 cp "$FIXTURE_REPO/profiles/quiet.conf" "$PROFILES/quiet.conf"
 printf 'ACTIVE_PROFILE=balanced-plus\n' > "$ETC/config.conf"
 printf 'vendor_id\t: AuthenticAMD\n' > "$CPUINFO"
+printf '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0\n' > "$FAKE_ROOT/boot_id"
 
 cat > "$STATE/last-apply.env" <<'EOF_STATE'
 PROFILE=balanced-plus
@@ -92,6 +98,9 @@ case "$FAKE_BOOST_SHAPE" in
         exit 1
         ;;
 esac
+
+mkdir -p "$SYSFS/cpu0"
+ln -sfn ../cpufreq/policy0 "$SYSFS/cpu0/cpufreq"
 
 : > "$DEV_MEM"
 
@@ -159,12 +168,20 @@ if [[ "${1:-}" == "-i" || "${1:-}" == "--info" ]]; then
     state="${LEGION_FAKE_RYZENADJ_STATE:-}"
     stapm=70000 slow=75000 fast=85000 tctl=72
     [[ -n "$state" && -r "$state" ]] && . "$state"
+    # LEGION_FAKE_RYZENADJ_OMIT drops limit rows and LEGION_FAKE_RYZENADJ_NAN prints nan
+    # for them, both as space-separated parameter names, e.g. "slow-limit tctl-temp".
+    limit_row() {
+        local name="$1" value="$2" parameter="$3"
+        [[ " ${LEGION_FAKE_RYZENADJ_OMIT:-} " == *" $parameter "* ]] && return 0
+        [[ " ${LEGION_FAKE_RYZENADJ_NAN:-} " == *" $parameter "* ]] && value=nan
+        printf '| %s | %s | %s |\n' "$name" "$value" "$parameter"
+    }
     printf 'CPU Family: Fire Range\n'
     printf '| Name | Value | Parameter |\n'
-    printf '| STAPM LIMIT | %d.000 | stapm-limit |\n' "$((stapm / 1000))"
-    printf '| PPT LIMIT SLOW | %d.000 | slow-limit |\n' "$((slow / 1000))"
-    printf '| PPT LIMIT FAST | %d.000 | fast-limit |\n' "$((fast / 1000))"
-    printf '| THM LIMIT CORE | %d.000 | tctl-temp |\n' "${LEGION_FAKE_RYZENADJ_TCTL:-$tctl}"
+    limit_row 'STAPM LIMIT' "$((stapm / 1000)).000" stapm-limit
+    limit_row 'PPT LIMIT SLOW' "$((slow / 1000)).000" slow-limit
+    limit_row 'PPT LIMIT FAST' "$((fast / 1000)).000" fast-limit
+    limit_row 'THM LIMIT CORE' "${LEGION_FAKE_RYZENADJ_TCTL:-$tctl}.000" tctl-temp
     printf '| STAPM VALUE | %s |  |\n' "${LEGION_FAKE_PKG_W:-30.000}"
     printf '| PPT VALUE FAST | %s |  |\n' "${LEGION_FAKE_PKG_W:-30.000}"
     printf '| THM VALUE CORE | %s |  |\n' "${LEGION_FAKE_TCTL_C:-55.000}"
@@ -177,6 +194,10 @@ for arg in "$@"; do
         exit 1
     fi
 done
+if [[ -n "${LEGION_FAKE_RYZENADJ_SET_RC:-}" ]]; then
+    printf 'ryzenadj: error while loading shared libraries\n' >&2
+    exit "$LEGION_FAKE_RYZENADJ_SET_RC"
+fi
 if [[ -n "${LEGION_FAKE_RYZENADJ_STATE:-}" ]]; then
     : > "$LEGION_FAKE_RYZENADJ_STATE"
     for arg in "$@"; do
@@ -189,6 +210,9 @@ if [[ -n "${LEGION_FAKE_RYZENADJ_STATE:-}" ]]; then
     done
 fi
 printf 'Successfully set test limits\n'
+if [[ -n "${LEGION_FAKE_RYZENADJ_KILL_PARENT:-}" ]]; then
+    kill -KILL "$PPID"
+fi
 EOF_FAKE
 
 cat > "$FAKEBIN/powerprofilesctl" <<'EOF_FAKE'
@@ -288,6 +312,11 @@ chmod +x "$FAKEBIN"/*
 FAKE_ENV=(
     LEGION_POWERCTL_TESTING=1
     LEGION_POWERCTL_ETC_DIR="$ETC"
+    LEGION_POWERCTL_CONFIG_FILE="$ETC/config.conf"
+    LEGION_POWERCTL_PROFILES_DIR="$PROFILES"
+    LEGION_POWERCTL_MODULES_LOAD_CONF="$FAKE_ROOT/etc/modules-load.d/legion-powerctl.conf"
+    LEGION_POWERCTL_SMU_BLACKLIST_FILE="$FAKE_ROOT/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf"
+    LEGION_POWERCTL_SERVICE_NAME=legion-powerctl.service
     LEGION_POWERCTL_STATE_DIR="$STATE"
     LEGION_POWERCTL_LIB_DIR="$LIB"
     LEGION_POWERCTL_STOCK_LIMITS_FILE="$LIB/stock-limits.env"
@@ -299,6 +328,7 @@ FAKE_ENV=(
     LEGION_POWERCTL_DEV_MEM_PATH="$DEV_MEM"
     LEGION_POWERCTL_LOCKDOWN_PATH="$LOCKDOWN"
     LEGION_POWERCTL_MODULES_ROOT="$MODULES"
+    LEGION_POWERCTL_BOOT_ID_PATH="$FAKE_ROOT/boot_id"
     LEGION_POWERCTL_RYZENADJ_BIN="$FAKEBIN/ryzenadj"
     LEGION_POWERCTL_POWERPROFILESCTL_BIN="$FAKEBIN/powerprofilesctl"
     LEGION_POWERCTL_SYSTEMCTL_BIN="$FAKEBIN/systemctl"
@@ -309,6 +339,7 @@ FAKE_ENV=(
 BENCH_CLI="$FIXTURE_REPO/tools/legion-powerbench"
 
 BENCH_ENV=(
+    LEGION_POWERBENCH_TESTING=1
     LEGION_POWERBENCH_HWMON_ROOT="$HWMON"
     LEGION_POWERBENCH_POWER_SUPPLY_ROOT="$POWER_SUPPLY"
     LEGION_POWERBENCH_TURBOSTAT_BIN="$FAKEBIN/turbostat"

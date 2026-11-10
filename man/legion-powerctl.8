@@ -12,18 +12,24 @@ P-State EPP. Its systemd service is a one-shot unit that runs once at boot.
 .SH COMMANDS
 .TP
 .B apply [PROFILE] [--dry-run] [--boot]
-Apply a named profile or the selected active profile.
+Apply a named profile or the selected active profile. A powerbench-* scratch
+profile is refused; legion-powerbench applies it through configure --apply. If
+config.conf names a scratch profile or sets no ACTIVE_PROFILE, balanced is
+applied instead and the command exits with an error naming the reason.
 .TP
 .B configure PROFILE [OPTIONS]
 Create or update a profile. Options include --stapm, --slow, --fast, --temp,
 --power-profile, --min-mhz, --max-mhz, --boost, --epp, --description,
---select, and --apply.
+--select, and --apply. With --select and --apply, the boot profile changes only
+after the apply succeeds.
 .TP
 .B wizard [PROFILE]
-Open an interactive profile editor.
+Open an interactive profile editor. powerbench-* scratch names are refused.
 .TP
 .B select PROFILE [--apply]
-Select the profile used at boot.
+Select the profile used at boot. The profile is validated first. With --apply,
+config.conf is written only after the apply succeeds, and only if the profile
+still exists then. powerbench-* scratch profiles cannot be selected.
 .TP
 .B list
 List profiles. The active profile is marked with an asterisk.
@@ -33,6 +39,9 @@ Show a profile, defaulting to the active profile.
 .TP
 .B delete PROFILE [--force]
 Delete a profile. The active profile is protected unless --force is used.
+Forcing the delete of the boot profile moves boot to balanced, and is refused
+when balanced is missing or invalid, or is itself the boot profile. Delete refuses while another power operation holds
+the lock.
 .TP
 .B status [--json|--waybar]
 Show configuration, service state, CPU driver, frequency range, and the most
@@ -64,14 +73,36 @@ Disable the boot service. Existing hardware state remains until firmware or a
 reboot changes it.
 .TP
 .B restore-frequency [--boost on|off|unchanged] [--dry-run]
-Restore the hardware-reported CPUFreq minimum and maximum.
+Restore the hardware-reported CPUFreq minimum and maximum, and update the
+frequency and boost fields of the last-apply record to match.
 Use --dry-run to preview the writes without changing controls.
 .TP
 .B baseline [--capture|--show]
-Record the firmware's own SMU limits, or print the recorded ones. The capture happens
-once and is never overwritten, and it is refused after a profile has already been
-applied this boot, because the SMU no longer holds the firmware values by then. The
-first apply after installation captures them automatically.
+Record the firmware's own SMU limits, or print the recorded ones; the two flags
+cannot be combined. The capture stores nothing unless all four limits read back as
+numbers, and a complete capture is never overwritten. It is refused once any apply or
+repair has started to write limits this boot, because the SMU no longer holds the
+firmware values by then. The first apply after installation captures them
+automatically and, if it could not, says so once on standard output rather than as
+a warning.
+.SH ENVIRONMENT
+.TP
+.B LEGION_POWERCTL_DRY_RUN=1
+Make apply, repair and restore-frequency preview without changing anything.
+Every other mutating subcommand refuses to run while it is set.
+.TP
+.B LEGION_POWERCTL_TESTING
+and the other LEGION_POWERCTL_* variables exist for the test suite. A process
+running as root ignores all of them except LEGION_POWERCTL_DRY_RUN.
+.PP
+RyzenAdj is never looked up on PATH: only /usr/local/bin/ryzenadj and
+/usr/bin/ryzenadj are used, and only when owned by root and not writable by
+group or others, like every directory above them. As root, powerprofilesctl and systemctl are not looked up on
+PATH either: they come from /usr/local/sbin, /usr/local/bin, /usr/sbin, /usr/bin,
+/sbin or /bin, under the same ownership check.
+.SH EXIT STATUS
+0 on success and non-zero on failure. The command never exits 126 or 127 itself: a child that does is reported as 1, because pkexec
+uses those two codes for a dismissed or refused authorization.
 .SH FILES
 .TP
 .I /etc/legion-powerctl/config.conf
@@ -84,7 +115,15 @@ Profile definitions.
 One-shot boot service.
 .TP
 .I /run/legion-powerctl/last-apply.env
-Volatile record of the last apply operation and whether it completed.
+Volatile record of the last apply operation, whether it completed, and whether its
+limits read back: VERIFIED=yes, partial, no or unknown.
+.TP
+.I /run/legion-powerctl/smu-written
+The boot ID of a boot in which an apply or repair started to write SMU limits.
+.TP
+.I /run/legion-powerctl/power-v2.lock
+The power-operation lock, mode 0600 and never removed. A power.lock left by an
+older version is ignored.
 .TP
 .I /var/lib/legion-powerctl/backups/repair-*
 Original profile and module configuration preserved by repair.
@@ -98,16 +137,17 @@ The firmware SMU limits, recorded once before the first apply overwrote them.
 .B legion-powerctl-gui
 opens an unprivileged Qt control panel (requires the optional pyside6
 package). It reads state through 'status --json' and performs privileged
-actions through pkexec. The shipped policy defines one action per subcommand
-(io.github.alexmacra.legion-powerctl.configure, .apply, .select, .delete,
-.enable, .disable), each pinned with exec.argv1. Editing, applying, and
-selecting profiles use auth_admin_keep, which polkit retains for a few
-minutes; treat those three as one trust tier, because
+actions through pkexec. The GUI runs seven subcommands: configure, select,
+apply (Go back), delete, enable, disable and repair. The shipped policy defines
+one action for each (io.github.alexmacra.legion-powerctl.configure, .apply,
+.select, .delete, .enable, .disable, .repair), each pinned with exec.argv1.
+Editing, applying, and selecting profiles use auth_admin_keep, which polkit
+retains for a few minutes; treat those three as one trust tier, because
 .B configure
 accepts --select and --apply and so reaches what the other two do. Deleting a
-profile and enabling or disabling the boot service always prompt, so a
-retained profile-editing authorization cannot be reused to remove a profile
-or to install boot persistence.
+profile, enabling or disabling the boot service, and repair always prompt, so a
+retained profile-editing authorization cannot be reused to remove a profile,
+to install boot persistence, or to unload a module and rewrite a profile.
 .SH NOTES
 This project is not affiliated with Lenovo, AMD, or CachyOS. Legion is a
 trademark of Lenovo. Fire Range and other HX-series CPUs require RyzenAdj

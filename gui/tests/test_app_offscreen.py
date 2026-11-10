@@ -9,6 +9,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from legion_powerctl_gui.goback import NO_OFFER
+
 HERE = Path(__file__).parent
 FAKE_CLI = HERE / "fake-legion-powerctl"
 STATUS_FIXTURE = HERE / "fixtures" / "status.json"
@@ -61,6 +63,7 @@ class OffscreenGuiTest(unittest.TestCase):
             os.environ,
             {
                 "LEGION_POWERCTL_GUI_CLI": str(FAKE_CLI),
+                "LEGION_POWERCTL_GUI_DEV": "1",
                 "LEGION_POWERCTL_GUI_ELEVATE": "none",
                 "LEGION_POWERCTL_GUI_NO_DIALOGS": "1",
             },
@@ -413,9 +416,9 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_chip_counts_what_the_doctor_found(self):
         report = self.window.checks.report
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 2)
-        self.assertIn("2", self.header.checks_button.text())
-        self.assertIn("0 failure(s), 2 warning(s)", self.header.checks_button.accessibleName())
+        self.assertEqual(report.warnings, 3)
+        self.assertIn("3", self.header.checks_button.text())
+        self.assertIn("0 failure(s), 3 warning(s)", self.header.checks_button.accessibleName())
 
     def test_the_checks_chip_is_painted_in_the_severity_it_reports(self):
         from legion_powerctl_gui import model, theme
@@ -445,7 +448,7 @@ class MainWindowTest(OffscreenGuiTest):
     def test_the_checks_dialog_lists_every_check_on_request(self):
         self.window.checks.show()
         self.assertEqual(len(self.checks.rows), len(self.window.checks.report.lines))
-        self.assertIn("0 failure(s), 2 warning(s)", self.checks.summary.text())
+        self.assertIn("0 failure(s), 3 warning(s)", self.checks.summary.text())
 
     def click_repair(self, accept=True):
         from PySide6.QtCore import QTimer
@@ -647,6 +650,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertEqual(self.editor.slow_spin.value(), 75)
 
     def test_failed_action_keeps_unsaved_edits(self):
+        self.window._refresh_timer.stop()
         self.editor.stapm_spin.setValue(58)
         self.editor.advanced.min_freq_edit.setCurrentText("2400")
         self.editor._on_edited()
@@ -654,12 +658,12 @@ class MainWindowTest(OffscreenGuiTest):
         self.window.profile_actions.handle_result(
             126, "", "Request dismissed", saved=self.editor.collect()
         )
-        self.settle()
-        self.assertEqual(
-            self.window.refresh_count, refreshes,
-            "a failed action must not refresh; the reload discards the edits",
+        self.assertTrue(
+            wait_until(self.app, lambda: self.window.refresh_count > refreshes),
+            "a failed action did not re-read the status from disk",
         )
-        self.assertTrue(self.editor.dirty)
+        self.settle()
+        self.assertTrue(self.editor.dirty, "the refresh after a failure discarded the edits")
         self.assertEqual(self.editor.stapm_spin.value(), 58)
         self.assertEqual(self.editor.advanced.min_freq_edit.currentText(), "2400")
 
@@ -819,10 +823,12 @@ class MainWindowTest(OffscreenGuiTest):
 
     def test_invalid_profile_name_never_reaches_a_privileged_command(self):
         from legion_powerctl_gui import model
+        from legion_powerctl_gui.goback import GoBack
 
         self.editor.editing = model.Profile(name="--force")
         self.window.profile_actions.pin_boot("--force")
-        self.window.profile_actions.apply_saved("--force")
+        self.window.profile_actions.go_back(GoBack("--force", "balanced-plus"))
+        self.window.profile_actions.go_back(GoBack("quiet", "--force"))
         self.window.profile_actions.delete()
         self.settle(5)
         log = "\n".join(self.read_log())
@@ -1353,7 +1359,7 @@ class MainWindowTest(OffscreenGuiTest):
             wait_until(self.app, lambda: offer.isHidden()),
             "a save offers to go back to a profile it did not stop running",
         )
-        self.assertEqual(self.window.profile_actions.previous_profile, "")
+        self.assertEqual(self.window.profile_actions.offer, NO_OFFER)
 
     def test_go_back_re_applies_the_profile_that_was_displaced(self):
         self.sidebar.list.setCurrentRow(self._row_of("quiet"))
@@ -1368,6 +1374,18 @@ class MainWindowTest(OffscreenGuiTest):
             ))
         )
         self.assertTrue(self.window.reports.go_back_button.isHidden())
+
+    def test_a_failed_apply_refreshes_the_header_from_disk(self):
+        self.window._refresh_timer.stop()
+        before = self.window.refresh_count
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "configure:1"}):
+            self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+            self.window.profile_actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+            self.assertTrue(
+                wait_until(self.app, lambda: self.window.refresh_count > before),
+                "a failed apply left the header showing what it believed before",
+            )
 
     def test_a_successful_save_is_announced(self):
         with self.announcements() as announce:
@@ -1393,6 +1411,7 @@ class MainWindowTest(OffscreenGuiTest):
             seen.append(box.standardButton(box.defaultButton()))
             QTest.keyClick(box, Qt.Key.Key_Return)
 
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
         self.window.dialogs = True
         try:
             QTimer.singleShot(0, press_enter)
@@ -1409,6 +1428,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertNotIn("delete", "\n".join(self.read_log()))
 
     def test_a_dismissed_pkexec_prompt_is_not_an_error(self):
+        self.window._refresh_timer.stop()
         with unittest.mock.patch.dict(
             os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "pkexec"}
         ):
@@ -1418,11 +1438,171 @@ class MainWindowTest(OffscreenGuiTest):
             self.window.profile_actions.handle_result(
                 126, "", "", saved=self.editor.collect()
             )
+        self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
         self.settle()
         self.assertFalse(self.window.errors, "Cancel raised a critical modal")
         self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
-        self.assertEqual(self.window.refresh_count, refreshes)
         self.assertTrue(self.editor.dirty, "Cancel must not discard the edits")
+
+    def test_an_absolute_pkexec_path_still_detects_a_dismissed_prompt(self):
+        self.window._refresh_timer.stop()
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "/usr/bin/pkexec"}
+        ):
+            self.window.profile_actions.handle_result(127, "", "")
+        self.settle()
+        self.assertFalse(self.window.errors, "a dismissed /usr/bin/pkexec raised a critical modal")
+        self.assertIn("cancelled", self.window.statusBar().currentMessage().lower())
+
+    def test_an_exit_127_from_a_cli_that_already_ran_is_an_error_not_a_cancel(self):
+        shim = Path(tempfile.mkdtemp()) / "pkexec"
+        shim.write_text('#!/bin/sh\nexec "$@"\n')
+        shim.chmod(0o755)
+        self.window._refresh_timer.stop()
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        with unittest.mock.patch.dict(os.environ, {
+            "LEGION_POWERCTL_GUI_ELEVATE": str(shim),
+            "FAKE_CLI_EXIT": "configure:127",
+            "FAKE_CLI_EXIT_STDOUT": "Saved profile 'quiet'.",
+        }):
+            self.window.profile_actions.save()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+        self.assertNotIn("cancelled", self.window.statusBar().currentMessage().lower())
+
+    def test_a_warning_after_an_apply_still_offers_to_go_back(self):
+        offer = self.window.reports.go_back_button
+        self.sidebar.list.setCurrentRow(self._row_of("quiet"))
+        with unittest.mock.patch.dict(
+            os.environ, {"FAKE_CLI_WARNING": "WARNING: this apply is unverified."}
+        ):
+            self.window.profile_actions.apply()
+            self.assertTrue(
+                wait_until(self.app, lambda: not self.window.reports.details_button.isHidden())
+            )
+        self.assertFalse(offer.isHidden(), "a warning hid the way back")
+        self.assertIn("balanced-plus", offer.text())
+
+    def poll_storm(self, env: dict) -> None:
+        from legion_powerctl_gui import app as app_module
+        from PySide6.QtWidgets import QMessageBox
+
+        self.window.dialogs = self.window.reports._dialogs = True
+        self.addCleanup(setattr, self.window, "dialogs", False)
+        self.addCleanup(setattr, self.window.reports, "_dialogs", False)
+        self.window.errors.clear()
+        runs = unittest.mock.patch.object(
+            self.window.runner, "run", wraps=self.window.runner.run
+        )
+        with unittest.mock.patch.dict(os.environ, env), runs as spy, \
+                unittest.mock.patch.object(QMessageBox, "critical") as critical:
+            self.window._refresh_timer.setInterval(30)
+            self.assertTrue(wait_until(self.app, lambda: spy.call_count >= 6, timeout=10.0))
+            self.settle()
+            self.window._refresh_timer.setInterval(app_module.REFRESH_INTERVAL_MS)
+        self.assertEqual(critical.call_count, 0, "the status poll opened a modal")
+        self.assertEqual(len(self.window.errors), 1, list(self.window.errors))
+        self.assertIn(self.window.errors[0], self.window.statusBar().currentMessage())
+
+    def test_a_failing_status_poll_reports_once_and_never_opens_a_modal(self):
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+
+    def test_an_unparseable_status_poll_reports_once_and_never_opens_a_modal(self):
+        broken = Path(tempfile.mkdtemp()) / "status.json"
+        broken.write_text('{"schema_version": 1, "profiles": null}')
+        self.poll_storm({"FAKE_CLI_STATUS_FIXTURE": str(broken)})
+
+    def test_a_repeating_poll_failure_stays_visible_until_a_poll_succeeds(self):
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+        stale = self.window.reports.stale_label
+        self.window.statusBar().clearMessage()
+        self.settle()
+        self.assertFalse(stale.isHidden(), "the failure vanished with the status-bar message")
+        self.assertIn(self.window.errors[0], stale.toolTip())
+        self.window.refresh()
+        self.assertTrue(
+            wait_until(self.app, stale.isHidden), "a successful poll left the indicator up"
+        )
+
+    def test_the_stale_chip_is_named_reachable_and_its_recovery_is_announced(self):
+        from legion_powerctl_gui.reports import RECOVERED_TEXT, STALE_TEXT
+        from PySide6.QtCore import Qt
+
+        self.poll_storm({"FAKE_CLI_EXIT": "status:1"})
+        stale = self.window.reports.stale_label
+        self.assertEqual(self.accessible_name(stale), STALE_TEXT)
+        self.assertIn(self.window.errors[0], stale.accessibleDescription())
+        self.assertTrue(
+            stale.focusPolicy() & Qt.FocusPolicy.TabFocus,
+            "the error behind the chip is only in a tooltip nobody can reach by keyboard",
+        )
+        with self.announcements() as announce:
+            self.window.refresh()
+            self.assertTrue(wait_until(self.app, stale.isHidden))
+            self.window.refresh()
+            refreshes = self.window.refresh_count
+            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        recovered = [call for call in announce.call_args_list if self.spoken(call) == RECOVERED_TEXT]
+        self.assertEqual(len(recovered), 1, announce.call_args_list)
+        self.assertFalse(recovered[0][1].get("interrupt", False), "recovery interrupted the reader")
+
+    def test_a_missing_cli_reports_once_and_never_opens_a_modal(self):
+        self.poll_storm({"LEGION_POWERCTL_GUI_CLI": str(HERE / "there-is-no-such-binary")})
+
+    def test_deleting_the_boot_profile_is_refused_before_any_prompt(self):
+        from legion_powerctl_gui import dialogs
+
+        self.assertEqual(self.editor.current_name, "balanced-plus")
+        self.window.dialogs = True
+        try:
+            with unittest.mock.patch.object(dialogs, "confirm_delete") as confirm:
+                self.window.profile_actions.delete()
+        finally:
+            self.window.dialogs = False
+        confirm.assert_not_called()
+        self.assertTrue(any("boot profile" in error for error in self.window.errors))
+        self.settle(5)
+        self.assertNotIn("delete", "\n".join(self.read_log()))
+
+    def test_while_busy_go_back_is_disabled_and_a_save_says_why_it_did_nothing(self):
+        from legion_powerctl_gui.actions import BUSY
+        from legion_powerctl_gui.goback import GoBack
+
+        actions = self.window.profile_actions
+        actions.offer = GoBack("quiet")
+        self.window.reports.success("Applied.", "quiet")
+        actions._set_busy(True)
+        try:
+            self.assertFalse(self.window.reports.go_back_button.isEnabled())
+            self.window._on_go_back()
+            actions.save()
+            self.settle(5)
+            self.assertEqual(self.window.statusBar().currentMessage(), BUSY)
+        finally:
+            actions._set_busy(False)
+        self.assertTrue(self.window.reports.go_back_button.isEnabled())
+        self.assertFalse(self.window.reports.go_back_button.isHidden())
+        self.assertFalse(
+            [line for line in self.read_log() if not line.startswith(("status", "doctor"))]
+        )
+
+    def test_confirmations_cannot_be_switched_off_without_the_dev_gate(self):
+        from legion_powerctl_gui import model
+        from legion_powerctl_gui.app import MainWindow
+
+        self.assertFalse(self.window.dialogs, "the test gate no longer silences dialogs")
+        with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_DEV": "0"}), \
+                unittest.mock.patch.object(model, "installed_cli", return_value=str(FAKE_CLI)):
+            other = MainWindow()
+        try:
+            self.assertTrue(wait_until(self.app, lambda: other.refresh_count >= 1))
+            self.assertTrue(
+                other.dialogs, "LEGION_POWERCTL_GUI_NO_DIALOGS removed every confirmation"
+            )
+        finally:
+            other._refresh_timer.stop()
+            other.close()
+            other.deleteLater()
+            self.app.processEvents()
 
     def test_the_same_code_from_the_cli_itself_is_still_an_error(self):
         with unittest.mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "none"}):
@@ -1524,7 +1704,7 @@ class MainWindowTest(OffscreenGuiTest):
         polls, privileged = [], []
 
         def record(target):
-            def run(argv, on_done, timeout_ms=None, on_start_failed=None):
+            def run(argv, on_done, timeout_ms=None, on_start_failed=None, on_error=None):
                 target.append((argv, timeout_ms))
                 if timeout_ms is None:
                     on_done(0, "", "")
@@ -1557,7 +1737,7 @@ class MainWindowTest(OffscreenGuiTest):
         self.sidebar.list.setCurrentRow(self._row_of("quiet"))
         asked = {}
 
-        def fake_confirm(parent, name, deltas):
+        def fake_confirm(parent, name, deltas, service_on=False):
             asked["name"] = name
             asked["deltas"] = [(d.label, d.was, d.now) for d in deltas]
             return False
@@ -2403,6 +2583,32 @@ class PanelSeamTest(OffscreenGuiTest):
             header.deleteLater()
             row.deleteLater()
 
+    def test_the_raise_warning_says_when_the_profile_applies_at_boot(self):
+        from legion_powerctl_gui import dialogs, runstate
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox, QWidget
+
+        parent = QWidget()
+        seen = []
+
+        def answer():
+            box = self.app.activeModalWidget()
+            seen.append(box.informativeText())
+            box.button(QMessageBox.StandardButton.Cancel).click()
+
+        delta = [runstate.Delta("Fast PPT", 102, 110, "W")]
+        try:
+            for service_on in (True, False):
+                QTimer.singleShot(0, answer)
+                dialogs.confirm_raise(parent, "quiet", delta, service_on)
+        finally:
+            parent.deleteLater()
+        self.assertEqual(len(seen), 2)
+        self.assertIn("applied at every boot", seen[0])
+        self.assertNotIn("nothing here puts them back", seen[0])
+        self.assertNotIn("every boot", seen[1], "a disabled boot service applies nothing at boot")
+        self.assertIn("boot service is off", seen[1])
+
     def test_a_message_box_marks_the_action_and_keeps_the_safe_default(self):
         from legion_powerctl_gui import dialogs, runstate
         from PySide6.QtCore import QTimer
@@ -2728,6 +2934,264 @@ class QuietRunningVariantTest(VariantFixtureTest):
         self.assertGreaterEqual(
             drawn, tallest, "the readout box is shorter than its figures and cuts their tops off"
         )
+
+
+class DismissedEnableVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["service"] = {"enabled": "disabled", "active": "inactive"}
+
+    def test_a_dismissed_enable_leaves_the_switch_matching_the_status(self):
+        from legion_powerctl_gui.actions import ProfileActions
+
+        self.window._refresh_timer.stop()
+        switch = self.window.header.service_check
+        self.assertFalse(switch.isChecked())
+        before = self.window.refresh_count
+        dismissed = staticmethod(lambda code, stdout: code == 126)
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "enable:126"}), \
+                unittest.mock.patch.object(ProfileActions, "_is_cancelled_elevation", dismissed):
+            switch.setChecked(True)
+            self.assertTrue(
+                wait_until(self.app, lambda: self.window.refresh_count > before),
+                "a dismissed enable did not re-read the status",
+            )
+        self.assertFalse(switch.isChecked(), "the switch claims a service the status says is off")
+        self.assertFalse(self.window.errors)
+
+
+class GoBackVariantTest(VariantFixtureTest):
+    def setUp(self):
+        super().setUp()
+        self.log = tempfile.NamedTemporaryFile(mode="r", suffix=".log", delete=False)
+        self.addCleanup(os.unlink, self.log.name)
+        self.addCleanup(self.log.close)
+        env = unittest.mock.patch.dict(os.environ, {"FAKE_CLI_LOG": self.log.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.actions = self.window.profile_actions
+        self.offer = self.window.reports.go_back_button
+
+    def privileged(self):
+        return [
+            line.split(" --")[0] if line.startswith("configure") else line
+            for line in Path(self.log.name).read_text().splitlines()
+            if not line.startswith(("status", "doctor"))
+        ]
+
+    def apply_profile(self, name):
+        from PySide6.QtCore import Qt
+
+        sidebar = self.window.sidebar
+        row = next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == name
+        )
+        sidebar.list.setCurrentRow(row)
+        self.assertEqual(self.window.editor.editing.name, name)
+        self.actions.apply()
+        self.assertTrue(wait_until(self.app, lambda: not self.offer.isHidden()))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+
+    def pkexec_shim(self, refuse: str) -> str:
+        shim = Path(tempfile.mkdtemp()) / "pkexec"
+        shim.write_text(f'#!/bin/sh\ncase "$2" in {refuse}) exit 126 ;; esac\nexec "$@"\n')
+        shim.chmod(0o755)
+        return str(shim)
+
+    def select_row(self, name):
+        from PySide6.QtCore import Qt
+
+        sidebar = self.window.sidebar
+        sidebar.list.setCurrentRow(next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == name
+        ))
+
+
+class GoBackToAnotherBootVariantTest(GoBackVariantTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+
+    def assert_retry_restores_both(self):
+        before = len(self.privileged())
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= before + 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(self.privileged()[before:], ["apply quiet", "select balanced-plus"])
+
+    def test_go_back_restores_the_running_profile_and_then_the_original_boot_profile(self):
+        self.apply_profile("performance-capped")
+        self.assertIn("quiet", self.offer.text())
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 3))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(
+            self.privileged(),
+            ["configure performance-capped", "apply quiet", "select balanced-plus"],
+        )
+
+    def test_go_back_after_applying_the_boot_profile_only_re_applies(self):
+        self.apply_profile("balanced-plus")
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertEqual(self.privileged(), ["configure balanced-plus", "apply quiet"])
+
+    def assert_half_done(self, env: dict, reason: str) -> None:
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(os.environ, env):
+            refreshes = self.window.refresh_count
+            self.offer.click()
+            self.assertTrue(wait_until(self.app, lambda: self.window.errors))
+            self.assertTrue(wait_until(self.app, lambda: self.window.refresh_count > refreshes))
+        message = self.window.errors[-1]
+        self.assertTrue(
+            message.startswith(
+                "Applied 'quiet', but could not set 'balanced-plus' back as the boot profile: "
+            ),
+            message,
+        )
+        self.assertIn(reason, message)
+        self.assertIn(message, self.window.statusBar().currentMessage())
+        self.assertFalse(self.offer.isHidden(), "the half-done Go back left no way to finish it")
+        self.assertIn("quiet", self.offer.text())
+        self.assert_retry_restores_both()
+
+    def test_a_failed_boot_step_of_go_back_says_what_was_left_half_done(self):
+        self.assert_half_done(
+            {"FAKE_CLI_EXIT": "select:1",
+             "FAKE_CLI_EXIT_STDOUT": "Profile 'balanced-plus' does not exist."},
+            "Profile 'balanced-plus' does not exist.",
+        )
+
+    def test_a_dismissed_prompt_for_the_boot_step_of_go_back_is_still_half_done(self):
+        self.assert_half_done(
+            {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("select")}, "cancelled"
+        )
+        self.assertNotIn("nothing changed", self.window.errors[-1])
+
+    def test_a_half_done_go_back_still_reports_the_first_step_warning(self):
+        self.assert_half_done(
+            {"FAKE_CLI_EXIT": "select:1", "FAKE_CLI_APPLY_WARNING": "WARNING: quiet drifted."},
+            "WARNING: quiet drifted.",
+        )
+
+    def assert_first_step_keeps_the_offer(self, env: dict) -> None:
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(os.environ, env):
+            refreshes = self.window.refresh_count
+            self.offer.click()
+            self.assertTrue(wait_until(
+                self.app,
+                lambda: not self.actions.busy and self.window.refresh_count > refreshes,
+            ))
+        self.assertNotIn("select balanced-plus", self.privileged())
+        self.assertFalse(self.offer.isHidden(), "the stopped Go back can no longer be retried")
+        self.assertTrue(self.offer.isEnabled())
+        self.assertIn("quiet", self.offer.text())
+        self.assert_retry_restores_both()
+
+    def test_a_dismissed_prompt_for_the_first_step_of_go_back_keeps_the_offer(self):
+        self.assert_first_step_keeps_the_offer(
+            {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("apply")}
+        )
+
+    def test_a_failed_first_step_of_go_back_keeps_the_offer(self):
+        self.assert_first_step_keeps_the_offer({"FAKE_CLI_EXIT": "apply:1"})
+
+    def test_a_cancelled_unrelated_action_leaves_the_offer_true_to_its_label(self):
+        self.apply_profile("performance-capped")
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("*")}
+        ):
+            self.actions.pin_boot("quiet")
+            self.assertTrue(wait_until(self.app, lambda: "cancelled" in (
+                self.window.statusBar().currentMessage().lower()
+            )))
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertFalse(self.offer.isHidden())
+        self.assertIn("quiet", self.offer.text())
+        self.assert_retry_restores_both()
+
+    def test_a_failed_apply_of_the_go_back_target_withdraws_the_offer(self):
+        from PySide6.QtCore import Qt
+
+        self.apply_profile("performance-capped")
+        target = "quiet"
+        self.assertIn(target, self.offer.text())
+        sidebar = self.window.sidebar
+        sidebar.list.setCurrentRow(next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == target
+        ))
+        with unittest.mock.patch.dict(os.environ, {"FAKE_CLI_EXIT": "configure:1"}):
+            self.actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(self.actions.offer, NO_OFFER)
+        self.assertTrue(self.offer.isHidden(), f"Go back still names {target!r}, now half applied")
+
+
+    def test_a_dismissed_apply_of_the_go_back_target_keeps_the_offer(self):
+        self.apply_profile("performance-capped")
+        self.select_row("quiet")
+        with unittest.mock.patch.dict(
+            os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": self.pkexec_shim("configure")}
+        ):
+            self.actions.apply()
+            self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertFalse(self.offer.isHidden(), "a dismissed prompt dropped the Go back offer")
+        self.assertIn("quiet", self.offer.text())
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 3))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.assertEqual(
+            self.privileged(),
+            ["configure performance-capped", "apply quiet", "select balanced-plus"],
+        )
+
+
+class ScratchBootVariantTest(GoBackVariantTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "quiet"
+        document["active_profile"] = "powerbench-4242"
+
+    def test_go_back_never_points_boot_back_at_a_scratch_profile(self):
+        self.apply_profile("performance-capped")
+        self.offer.click()
+        self.assertTrue(wait_until(self.app, lambda: len(self.privileged()) >= 2))
+        self.assertTrue(wait_until(self.app, lambda: not self.actions.busy))
+        self.settle()
+        self.assertEqual(
+            self.privileged(), ["configure performance-capped", "select quiet --apply"]
+        )
+
+
+class ScratchRunningVariantTest(VariantFixtureTest):
+    def mutate(self, document):
+        document["last_apply"]["profile"] = "powerbench-4242"
+
+    def test_go_back_is_never_offered_to_a_powerbench_scratch_profile(self):
+        from PySide6.QtCore import Qt
+
+        sidebar = self.window.sidebar
+        row = next(
+            index for index in range(sidebar.list.count())
+            if getattr(sidebar.list.item(index).data(Qt.ItemDataRole.UserRole), "name", "")
+            == "quiet"
+        )
+        sidebar.list.setCurrentRow(row)
+        self.window.profile_actions.apply()
+        self.assertTrue(wait_until(
+            self.app, lambda: "Applied 'quiet'" in self.window.statusBar().currentMessage()
+        ))
+        self.settle()
+        self.assertTrue(self.window.reports.go_back_button.isHidden())
+        self.assertEqual(self.window.profile_actions.offer, NO_OFFER)
 
 
 class PartialApplyVariantTest(VariantFixtureTest):

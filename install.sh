@@ -33,8 +33,9 @@ Options:
                        Remove a previous untracked script install without
                        asking, then continue with the package install
   --no-enable          Install without enabling the boot service
-  --force-config       Overwrite bundled profiles and config (script install only;
-                       the package flow always preserves /etc through pacman)
+  --force-config       Overwrite bundled profiles and config and select balanced
+                       for boot, like a fresh install (script install only; the
+                       package flow always preserves /etc through pacman)
   --migrate-legacy     Disable and archive legion-balanced-plus.service/timer
   -h, --help           Show this help
 
@@ -91,6 +92,9 @@ readonly RYZEN_SMU_SYSFS_DIR='/sys/kernel/ryzen_smu_drv'
 readonly MODULES_LOAD_CONF='/etc/modules-load.d/legion-powerctl.conf'
 readonly RYZEN_SMU_MODULE_DIR='/sys/module/ryzen_smu'
 readonly SMU_BLACKLIST_FILE='/etc/modprobe.d/legion-powerctl-no-ryzen-smu.conf'
+readonly RYZENADJ_DIRS=(/usr/local/bin /usr/bin)
+CONFIG_DIR='/etc/legion-powerctl'
+CLI_BIN='/usr/bin/legion-powerctl'
 
 aur_install_ryzenadj() {
     (( INSTALL_RYZENADJ == 1 )) || die "Rerun with --install-ryzenadj, or install the AUR 'ryzenadj' package first (it replaces ryzenadj-git)."
@@ -125,18 +129,48 @@ ensure_ryzenadj_package() {
     pacman -T "$RYZENADJ_DEP" >/dev/null 2>&1 || die "The ryzenadj installation still does not satisfy '${RYZENADJ_DEP}'."
 }
 
+root_controlled_path() {
+    local path="$1" owner mode
+    while true; do
+        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
+        [[ "$path" != / ]] || return 0
+        path="${path%/*}"
+        path="${path:-/}"
+    done
+}
+
+trusted_ryzenadj() {
+    local dir file
+    for dir in "${RYZENADJ_DIRS[@]}"; do
+        [[ -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
+        file="$(readlink -f -- "$dir/ryzenadj" 2>/dev/null || true)"
+        [[ "$file" == /* && -f "$file" ]] || continue
+        if root_controlled_path "$file"; then
+            printf '%s' "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+
 ensure_ryzenadj_binary() {
-    if command -v ryzenadj >/dev/null 2>&1; then
-        info "RyzenAdj found at $(command -v ryzenadj)."
+    local found elsewhere
+    if found="$(trusted_ryzenadj)"; then
+        info "RyzenAdj found at $found."
         return 0
+    fi
+    elsewhere="$(command -v ryzenadj 2>/dev/null || true)"
+    if [[ -n "$elsewhere" ]]; then
+        warn "A ryzenadj exists at $elsewhere, but legion-powerctl only runs a root-owned ryzenadj in ${RYZENADJ_DIRS[*]} that only root can change."
     fi
 
     if (( ARCH_FAMILY == 0 )); then
-        die "RyzenAdj is missing and this is not an Arch-family system. Build it from source first: https://github.com/FlyGoat/RyzenAdj"
+        die "No usable RyzenAdj in ${RYZENADJ_DIRS[*]} and this is not an Arch-family system. Build it from source and install it as root to /usr/local/bin: https://github.com/FlyGoat/RyzenAdj"
     fi
     aur_install_ryzenadj
-    command -v ryzenadj >/dev/null 2>&1 || die "RyzenAdj installation completed without exposing a ryzenadj executable."
-    info "Installed RyzenAdj at $(command -v ryzenadj)."
+    found="$(trusted_ryzenadj)" || die "RyzenAdj installation completed without a root-owned ryzenadj in ${RYZENADJ_DIRS[*]}."
+    info "Installed RyzenAdj at $found."
 }
 
 secure_boot_on() {
@@ -404,7 +438,7 @@ enable_service() {
         return 0
     }
     info "Enabling the boot service (doctor runs first; use 'legion-powerctl enable --force' to override)..."
-    if ! "${SUDO[@]}" /usr/bin/legion-powerctl enable; then
+    if ! "${SUDO[@]}" "$CLI_BIN" enable; then
         warn "The files are installed, but the service was not enabled."
         warn "Fix the doctor failures above, then run: sudo legion-powerctl enable"
         return 1
@@ -415,14 +449,14 @@ package_install() {
     [[ $EUID -ne 0 ]] || die "makepkg refuses to run as root. Run ./install.sh as your normal user."
     command -v tar >/dev/null 2>&1 || die "tar is required to build the package tarball."
 
-    if [[ -e /usr/bin/legion-powerctl ]] && ! pacman -Qo /usr/bin/legion-powerctl >/dev/null 2>&1; then
-        warn "A previous script install was detected at /usr/bin/legion-powerctl."
+    local remove_script_install=0
+    if [[ -e "$CLI_BIN" ]] && ! pacman -Qo "$CLI_BIN" >/dev/null 2>&1; then
+        warn "A previous script install was detected at $CLI_BIN."
         warn "pacman will not overwrite files it does not own, so it has to be removed first."
         warn "Your profiles and configuration in /etc/legion-powerctl are kept either way."
-        if (( REPLACE_SCRIPT_INSTALL == 1 )) || confirm "Remove the previous script install now?"; then
-            info "Removing the previous script install..."
-            [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove /usr/bin/legion-powerctl by hand."
-            "$ROOT_DIR/uninstall.sh"
+        [[ -x "$ROOT_DIR/uninstall.sh" ]] || die "uninstall.sh is missing from this checkout; remove $CLI_BIN by hand."
+        if (( REPLACE_SCRIPT_INSTALL == 1 )) || confirm "Remove the previous script install just before the package installs?"; then
+            remove_script_install=1
         else
             die "Run ./uninstall.sh once, then rerun this installer - or rerun with --replace-script-install."
         fi
@@ -446,7 +480,30 @@ package_install() {
     info "Building legion-powerctl $version package in $BUILD_DIR..."
     make -C "$ROOT_DIR" dist DISTDIR="$BUILD_DIR"
     cp "$ROOT_DIR/packaging/arch/PKGBUILD" "$ROOT_DIR/packaging/arch/legion-powerctl.install" "$BUILD_DIR/"
-    (cd "$BUILD_DIR" && makepkg -si)
+    (cd "$BUILD_DIR" && makepkg -sf) || die "The package build failed. Nothing was installed or removed."
+    local package="" built
+    while IFS= read -r built; do
+        [[ "${built##*/}" != "legion-powerctl-$version-"* ]] || package="$built"
+    done < <(cd "$BUILD_DIR" && makepkg --packagelist)
+    [[ -n "$package" && -f "$package" ]] || die "makepkg finished without a legion-powerctl $version package. Nothing was installed or removed."
+    local recovery="Install it with: sudo pacman -U $package"
+    if (( remove_script_install == 1 )); then
+        local had_modules_load=0
+        [[ ! -e "$MODULES_LOAD_CONF" ]] || had_modules_load=1
+        info "Removing the previous script install..."
+        trap - EXIT
+        recovery="The built package was kept at $package. Finish removing the script install with: ./uninstall.sh, then install the package with: sudo pacman -U $package"
+        "$ROOT_DIR/uninstall.sh" || die "Removing the script install failed. $recovery"
+        if (( had_modules_load == 1 )) && [[ ! -e "$SMU_BLACKLIST_FILE" ]] && ryzen_smu_usable; then
+            persist_ryzen_smu
+        fi
+        recovery="The script install was already removed and its boot service disabled. Recover with: sudo pacman -U $package, then: sudo legion-powerctl enable"
+        trap 'rm -rf "${BUILD_DIR:-}"' EXIT
+    fi
+    if ! "${SUDO[@]}" pacman -U --noconfirm "$package"; then
+        trap - EXIT
+        die "pacman could not install $package. $recovery"
+    fi
 
     ensure_gui_runtime
     enable_service || true
@@ -464,6 +521,22 @@ install_preserving() {
     fi
 }
 
+install_config_files() {
+    local profile created=0
+    "${SUDO[@]}" install -d -m0755 "$CONFIG_DIR/profiles.d"
+    [[ -e "$CONFIG_DIR/config.conf" && $FORCE_CONFIG -eq 0 ]] || created=1
+    install_preserving "$ROOT_DIR/config/config.conf" "$CONFIG_DIR/config.conf" 0644
+    for profile in "$ROOT_DIR"/profiles/*.conf; do
+        install_preserving "$profile" "$CONFIG_DIR/profiles.d/${profile##*/}" 0644
+    done
+    (( created == 1 )) || return 0
+    if "${SUDO[@]}" "$CLI_BIN" select balanced >/dev/null; then
+        info "The boot profile is balanced."
+    else
+        warn "Could not select balanced for boot. Run: sudo legion-powerctl select balanced"
+    fi
+}
+
 script_install() {
     warn "Script install: files will NOT be tracked by a package manager."
     warn "On Arch/CachyOS prefer the default makepkg flow; run ./uninstall.sh before switching to it."
@@ -475,12 +548,7 @@ script_install() {
     info "Installing legion-powerctl..."
     "${SUDO[@]}" make -C "$ROOT_DIR" install-files PREFIX=/usr
 
-    "${SUDO[@]}" install -d -m0755 /etc/legion-powerctl/profiles.d
-    install_preserving "$ROOT_DIR/config/config.conf" /etc/legion-powerctl/config.conf 0644
-    local profile
-    for profile in "$ROOT_DIR"/profiles/*.conf; do
-        install_preserving "$profile" "/etc/legion-powerctl/profiles.d/${profile##*/}" 0644
-    done
+    install_config_files
 
     "${SUDO[@]}" systemd-analyze verify /usr/lib/systemd/system/legion-powerctl.service
     "${SUDO[@]}" systemctl daemon-reload
@@ -522,7 +590,7 @@ main() {
 
     printf '\n'
     info "Installation complete."
-    /usr/bin/legion-powerctl doctor || true
+    "$CLI_BIN" doctor || true
     printf '\nUseful commands:\n'
     printf '  legion-powerctl status\n'
     printf '  legion-powerctl-gui\n'

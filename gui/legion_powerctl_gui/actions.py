@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
 from . import dialogs, model, runstate
+from .goback import NO_OFFER, NO_STEPS, REAPPLY, SELECT_AND_APPLY, GoBack, Steps, offer_for
 
 if TYPE_CHECKING:
     from .app import MainWindow
@@ -18,6 +20,7 @@ PKEXEC_DISMISSED = 126
 PKEXEC_NOT_RUN = 127
 
 SERVICE_ON = "Boot service on; the boot profile was applied."
+BUSY = "Still working on the previous action; nothing else was started."
 
 
 class ProfileActions(QObject):
@@ -26,8 +29,10 @@ class ProfileActions(QObject):
     warned = Signal(str, str)
     cancelled = Signal(str)
     busy_changed = Signal(bool)
+    refused = Signal(str)
     repaired = Signal()
     repair_backup = Signal(str)
+    half_done = Signal(str)
 
     def __init__(
         self,
@@ -42,7 +47,11 @@ class ProfileActions(QObject):
         self._editor = editor
         self._sidebar = sidebar
         self._busy = False
-        self.previous_profile = ""
+        self.offer = NO_OFFER
+
+    @property
+    def busy(self) -> bool:
+        return self._busy
 
     def save(self) -> None:
         profile = self._guard_editor()
@@ -58,28 +67,51 @@ class ProfileActions(QObject):
         profile = self._guard_editor()
         if profile is None:
             return
-        running = runstate.run_state(self._window.status) if self._window.status else None
-        go_back = ""
+        status = self._window.status
+        running = runstate.run_state(status) if status else None
+        offer = NO_OFFER
         if running is not None:
             deltas = runstate.raising_deltas(running, profile)
-            if deltas and self._window.dialogs:
-                if not dialogs.confirm_raise(self._window, profile.name, deltas):
-                    return
-            go_back = running.profile if running.profile != profile.name else ""
+            service_on = status.service_enabled == "enabled"
+            if deltas and self._window.dialogs and not dialogs.confirm_raise(
+                self._window, profile.name, deltas, service_on
+            ):
+                return
+            offer = offer_for(running.profile, status.active_profile, profile.name)
         self._run(
             model.build_configure_args(profile, apply_now=True, select=True),
             f"Applied '{profile.name}'. It will also be applied at boot.",
-            saved=profile,
-            go_back=go_back,
+            saved=profile, steps=Steps(offer=offer, withdraw=profile.name == self.offer.profile),
         )
 
-    def apply_saved(self, name: str) -> None:
-        if not model.valid_profile_name(name):
-            self.failed.emit(f"Refusing to act on an invalid profile name: {name!r}")
+    def go_back(self, offer: GoBack) -> None:
+        invalid = offer.invalid_name()
+        if invalid is not None:
+            self.failed.emit(f"Refusing to act on an invalid profile name: {invalid!r}")
             return
+        name, boot, plan = offer.profile, offer.boot, offer.plan()
+        if plan == REAPPLY:
+            self._run(model.build_apply_args(name), f"Applied '{name}'. '{boot}' still boots.")
+        elif plan == SELECT_AND_APPLY:
+            self._run(
+                model.build_select_args(name, apply_now=True),
+                f"Applied '{name}'. It will also be applied at boot.",
+            )
+        else:
+            self._run(
+                model.build_apply_args(name), f"Applied '{name}'.",
+                steps=Steps(then=lambda warning: self._restore_boot(offer, warning)),
+            )
+
+    def _restore_boot(self, offer: GoBack, warning: str) -> None:
+        def half_done(reason: str) -> None:
+            self.offer = offer.half_done()
+            self.half_done.emit(offer.half_done_message(reason))
+
         self._run(
-            model.build_select_args(name, apply_now=True),
-            f"Applied '{name}'. It will also be applied at boot.",
+            model.build_select_args(offer.boot),
+            f"Applied '{offer.profile}'. '{offer.boot}' boots again.",
+            steps=Steps(carried=warning, on_error=half_done),
         )
 
     def repair_balanced_plus(self) -> None:
@@ -88,10 +120,22 @@ class ProfileActions(QObject):
         dirty = self._editor.current_name if self._editor.dirty else ""
         if self._window.dialogs and not dialogs.confirm_repair(self._window.checks.dialog, dirty):
             return
+        found: list[str] = []
+
+        def find_backup(code: int, stdout: str, stderr: str) -> str:
+            found[:] = [line for line in stdout.splitlines() if line.startswith("Recovery backup: ")]
+            if found and code != 0:
+                return f"{stderr.strip() or 'Repair failed.'}\n{found[0]}"
+            return stderr
+
         self._run(
             ["repair", "balanced-plus"],
             "Repaired and applied 'balanced-plus'. The previous settings were backed up.",
-            on_success=self.repaired.emit,
+            steps=Steps(
+                on_success=self.repaired.emit,
+                on_output=find_backup,
+                after=lambda: found and self.repair_backup.emit(found[0]),
+            ),
         )
 
     def pin_boot(self, name: str) -> None:
@@ -132,6 +176,13 @@ class ProfileActions(QObject):
             self._editor.clear()
             self._sidebar.discard_draft(name)
             return
+        boot = self._window.status.active_profile if self._window.status else ""
+        if name == boot:
+            self.failed.emit(
+                f"'{name}' is the boot profile. Set another profile as the boot profile "
+                "before deleting it."
+            )
+            return
         if self._window.dialogs and not dialogs.confirm_delete(self._window, name):
             return
         self._run(model.build_delete_args(name), f"Deleted profile '{name}'.")
@@ -144,7 +195,7 @@ class ProfileActions(QObject):
         if self._window.dialogs and not dialogs.confirm_enable(self._window, boot):
             self._window.header.set_service_checked(False)
             return
-        self._run(["enable"], SERVICE_ON, on_fail=self._offer_force)
+        self._run(["enable"], SERVICE_ON, steps=Steps(on_fail=self._offer_force))
 
     def _offer_force(self, stdout: str, stderr: str) -> bool:
         detail = stderr.strip() or stdout.strip()
@@ -177,38 +228,28 @@ class ProfileActions(QObject):
         return name
 
     def _run(
-        self,
-        args: list[str],
-        message: str,
-        saved: model.Profile | None = None,
-        on_fail=None,
-        go_back: str = "",
-        on_success=None,
+        self, args: list[str], message: str, saved: model.Profile | None = None,
+        steps: Steps = NO_STEPS,
     ) -> None:
         if self._busy:
+            self.refused.emit(BUSY)
             return
-        self.previous_profile = go_back
         self._set_busy(True)
 
         def done(code: int, stdout: str, stderr: str) -> None:
             self._set_busy(False)
-            backup = ""
-            if args == ["repair", "balanced-plus"]:
-                backup = next((line for line in stdout.splitlines()
-                               if line.startswith("Recovery backup: ")), "")
-                if backup and code != 0:
-                    stderr = f"{stderr.strip() or 'Repair failed.'}\n{backup}"
-            if code == 0 and on_success is not None:
-                on_success()
-            self.handle_result(
-                code, stdout, stderr, saved=saved, message=message, on_fail=on_fail
+            cancelled = self._is_cancelled_elevation(code, stdout)
+            if code == 0:
+                self.offer = steps.offer
+            elif steps.withdraw and not cancelled:
+                self.offer = NO_OFFER
+            report = partial(
+                self.handle_result, saved=saved, message=message, on_fail=steps.on_fail
             )
-            if backup:
-                self.repair_backup.emit(backup)
+            steps.finish(code, stdout, stderr, cancelled, report)
 
         self._runner.run(
-            model.privileged_command(args), done,
-            on_start_failed=lambda: self._set_busy(False),
+            model.privileged_command(args), done, on_start_failed=lambda: self._set_busy(False)
         )
 
     def _set_busy(self, busy: bool) -> None:
@@ -217,19 +258,12 @@ class ProfileActions(QObject):
             self.busy_changed.emit(busy)
 
     def handle_result(
-        self,
-        code: int,
-        stdout: str,
-        stderr: str,
-        saved: model.Profile | None = None,
-        message: str = "Done.",
-        on_fail=None,
+        self, code: int, stdout: str, stderr: str, saved: model.Profile | None = None,
+        message: str = "Done.", on_fail=None,
     ) -> None:
         if code != 0:
-            if self._is_cancelled_elevation(code):
-                self.cancelled.emit(
-                    stderr.strip() or "Authorisation was cancelled; nothing changed."
-                )
+            if self._is_cancelled_elevation(code, stdout):
+                self.cancelled.emit(stderr.strip() or "Authorisation was cancelled; nothing changed.")
                 return
             if on_fail is not None and on_fail(stdout, stderr):
                 return
@@ -243,8 +277,9 @@ class ProfileActions(QObject):
         self.succeeded.emit(message)
 
     @staticmethod
-    def _is_cancelled_elevation(code: int) -> bool:
+    def _is_cancelled_elevation(code: int, stdout: str) -> bool:
         return (
             code in (PKEXEC_DISMISSED, PKEXEC_NOT_RUN)
-            and model.elevation_command() == "pkexec"
+            and not stdout.strip()
+            and model.elevation_is_pkexec()
         )

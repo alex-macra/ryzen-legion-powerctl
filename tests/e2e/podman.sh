@@ -17,7 +17,7 @@ fi
 exec "$ENGINE" run --rm --tty \
     --security-opt label=disable \
     --volume "$ROOT_DIR:/src:ro" \
-    --tmpfs /tmp:exec,size=512m \
+    --tmpfs /tmp:exec,mode=1777,size=512m \
     --workdir /src \
     --env "E2E_TIMEOUT=${E2E_TIMEOUT:-300}" \
     --env "E2E_WAIT=${E2E_WAIT:-20}" \

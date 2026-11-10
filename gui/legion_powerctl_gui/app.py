@@ -42,8 +42,11 @@ class MainWindow(QMainWindow):
         self.resize(960, 620)
         self.setMinimumSize(720, 480)
 
-        self.dialogs = os.environ.get("LEGION_POWERCTL_GUI_NO_DIALOGS") != "1"
+        self.dialogs = not (
+            model.dev_mode() and os.environ.get("LEGION_POWERCTL_GUI_NO_DIALOGS") == "1"
+        )
         self._status_inflight = False
+        self._poll_error = ""
         self._pending_open = ""
         self._focus_before_busy = None
         self.refresh_count = 0
@@ -121,13 +124,16 @@ class MainWindow(QMainWindow):
         self.profile_actions.failed.connect(self._on_action_failed)
         self.profile_actions.cancelled.connect(self._on_action_cancelled)
         self.profile_actions.busy_changed.connect(self._set_busy)
+        self.profile_actions.refused.connect(self.reports.note)
+        self.profile_actions.half_done.connect(self._on_action_failed)
 
     def _show_error(self, message: str) -> None:
         self.errors.append(message)
         self.reports.error(message)
+        self.reports.offer_go_back(self.profile_actions.offer.profile)
 
     def _on_action_succeeded(self, message: str) -> None:
-        self.reports.success(message, self.profile_actions.previous_profile)
+        self.reports.success(message, self.profile_actions.offer.profile)
         self.refresh()
 
     def _on_repaired(self) -> None:
@@ -137,22 +143,28 @@ class MainWindow(QMainWindow):
         self.checks.run()
 
     def _on_action_warned(self, message: str, detail: str) -> None:
-        self.reports.warning(message, detail)
+        self.reports.warning(message, detail, self.profile_actions.offer.profile)
         self.refresh()
 
     def _on_action_failed(self, message: str) -> None:
         self._pending_open = ""
         self._show_error(message)
+        self.refresh()
 
     def _on_action_cancelled(self, message: str) -> None:
         self._pending_open = ""
         self.reports.note(message)
+        self.reports.offer_go_back(self.profile_actions.offer.profile)
+        self.refresh()
 
     def _on_go_back(self) -> None:
-        previous = self.profile_actions.previous_profile
+        actions = self.profile_actions
+        offer = actions.offer
+        if actions.busy:
+            return
         self.reports.clear_offers()
-        if previous:
-            self.profile_actions.apply_saved(previous)
+        if offer.profile:
+            actions.go_back(offer)
 
     def _set_busy(self, busy: bool) -> None:
         if busy:
@@ -162,6 +174,7 @@ class MainWindow(QMainWindow):
         self.sidebar.setEnabled(not busy)
         self.checks.dialog.repair_button.setEnabled(not busy)
         self.checks.dialog.rerun_button.setEnabled(not busy)
+        self.reports.set_busy(busy)
         if not busy:
             widget, self._focus_before_busy = self._focus_before_busy, None
             if widget is not None and isValid(widget) and widget.isEnabled():
@@ -173,6 +186,7 @@ class MainWindow(QMainWindow):
             model.unprivileged_command(["status", "--json"]),
             self._on_status_done,
             timeout_ms=POLL_TIMEOUT_MS,
+            on_error=self._on_poll_failed,
         )
 
     def _on_refresh_timer(self) -> None:
@@ -184,13 +198,15 @@ class MainWindow(QMainWindow):
         self._status_inflight = False
         self.refresh_count += 1
         if code != 0:
-            self._show_error(stderr.strip() or "status --json failed.")
+            self._on_poll_failed(stderr.strip() or "status --json failed.")
             return
         try:
             status = model.parse_status(stdout)
         except model.StatusParseError as exc:
-            self._show_error(str(exc))
+            self._on_poll_failed(str(exc))
             return
+        self._poll_error = ""
+        self.reports.poll_recovered()
         self.status = status
         self.header.show_status(status)
         running = str((status.last_apply or {}).get("profile", ""))
@@ -201,6 +217,13 @@ class MainWindow(QMainWindow):
         if self._pending_open:
             name, self._pending_open = self._pending_open, ""
             self.sidebar.select_by_name(name)
+
+    def _on_poll_failed(self, message: str) -> None:
+        self._status_inflight = False
+        if message != self._poll_error:
+            self._poll_error = message
+            self.errors.append(message)
+            self.reports.poll_error(message)
 
     def _on_profile_chosen(self, profile: model.Profile) -> None:
         if self.editor.dirty and self.editor.editing is not None:

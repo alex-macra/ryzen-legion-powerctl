@@ -4,8 +4,9 @@
 # 'make dist' tarball next to this PKGBUILD and run makepkg -si here.
 # The ryzenadj dependency is an AUR package makepkg cannot resolve by
 # itself - install it first (paru -S ryzenadj).
-# Before AUR submission: switch source= to the tagged release tarball
-# (commented below) and replace sha256sums with updpkgsums.
+# sha256sums=('SKIP') is only for that local, unreleased tarball. It MUST change
+# before any AUR submission: switch source= to the tagged release tarball
+# (commented below) and generate real checksums with updpkgsums.
 pkgname=legion-powerctl
 pkgver=0.3.0
 pkgrel=1
@@ -21,6 +22,7 @@ optdepends=('power-profiles-daemon: apply Linux power profiles through powerprof
             'pyside6: graphical control panel (legion-powerctl-gui)'
             'polkit: authentication for privileged GUI and widget actions')
 backup=('etc/legion-powerctl/config.conf'
+        'etc/legion-powerctl/profiles.d/balanced.conf'
         'etc/legion-powerctl/profiles.d/balanced-plus.conf'
         'etc/legion-powerctl/profiles.d/quiet.conf'
         'etc/legion-powerctl/profiles.d/performance-capped.conf')

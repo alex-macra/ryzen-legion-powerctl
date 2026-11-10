@@ -7,7 +7,9 @@
 - `/etc/legion-powerctl/profiles.d/*.conf`: user-editable profiles
 - `/usr/lib/systemd/system/legion-powerctl.service`: one-shot boot application
 - `/run/legion-powerctl/last-apply.env`: volatile record of the most recent successful application
-- `/var/lib/legion-powerctl/stock-limits.env`: the firmware's own SMU limits, captured once before the first apply overwrote them
+- `/run/legion-powerctl/power-v2.lock`: the power-operation lock, mode 0600 and never unlinked; an older version's `power.lock` is ignored
+- `/run/legion-powerctl/smu-written`: the boot ID, written before an apply's first power write; a baseline capture is refused while it names the current boot
+- `/var/lib/legion-powerctl/stock-limits.env`: the firmware's own SMU limits, captured once before the first apply overwrote them, and only when all four read back as numbers
 - `/usr/bin/legion-powerbench`: the measurement harness. Separate binary, unprivileged, no state of its own
 - `/usr/bin/legion-powerctl-gui`: PySide6 launcher; sets `PYTHONSAFEPATH` and `cd /` before importing anything
 - `/usr/share/legion-powerctl/gui/legion_powerctl_gui/`: the Qt Widgets application, a flat package
@@ -39,7 +41,7 @@ the CLI being one copyable file. Instead of directories, the file is divided by
 | Output helpers | `info`/`success`/`warn`/`die` |
 | Usage | the help text |
 | Value predicates | `require_root`, `in_list`, `trim`, `is_uint`, name and description rules |
-| External binaries | resolving `ryzenadj` (newest on PATH wins), `powerprofilesctl`, `systemctl` |
+| External binaries | resolving `ryzenadj` (newest root-owned binary in `/usr/local/bin` or `/usr/bin` wins), `powerprofilesctl`, `systemctl` |
 | Configuration and profile loading | `load_global_config`, `load_profile`, `try_load_profile` |
 | Validation | `validate_profile` and the frequency rules |
 | Writing configuration and profiles | `write_global_config`, `write_profile`, `print_profile` |
@@ -51,9 +53,12 @@ the CLI being one copyable file. Instead of directories, the file is divided by
 | Dispatch | `main` |
 
 Every change to the machine passes through `run_or_print` or `write_sysfs`, so a
-dry run has exactly two places to intercept. The profile schema is a table rather
-than four parallel lists, because the reset, the key dispatch, the file that gets
-written and the runtime record all have to agree about what a profile contains.
+dry run has exactly two places to intercept; a command with no dry run of its own
+refuses `LEGION_POWERCTL_DRY_RUN=1` instead. Every file the CLI keeps goes through
+`atomic_write`, which renames a temporary file over the target and refuses a symlink.
+The profile schema is a table rather than four parallel lists, because the reset, the
+key dispatch, the file that gets written and the runtime record all have to agree about
+what a profile contains.
 
 ## Inside the GUI package
 
@@ -68,7 +73,8 @@ length ceiling below.
 | --- | --- |
 | `__main__.py` | the entry point: builds the application and shows the window |
 | `app.py` | the window: assembles the panels, runs the poll, and arbitrates whether a click on the sidebar may change the editor |
-| `actions.py` | every privileged argv the GUI builds - the six subcommands that reach `pkexec`: `configure`, `apply`, `select`, `delete`, `enable`, `disable` - and what each exit code means |
+| `actions.py` | every privileged argv the GUI builds - the seven subcommands that reach `pkexec`: `configure`, `select`, `apply` (Go back), `delete`, `enable`, `disable` and `repair` - and what each exit code means |
+| `goback.py` | the Go back offer as data: which profile was displaced, which boot profile to restore, the order of the steps that undo an apply, and the `Steps` hooks a privileged run fires in order. Builds no argv and has no Qt |
 | `editor.py` | the form for one profile - reads and writes the widgets, validates, and shows an unreadable profile without arming anything |
 | `editor_column.py` | the frame around the form: the profile's title above the scrolling cards, and the problems callout and `Apply now` below them, so neither scrolls away |
 | `advanced.py` | the collapsed disclosure holding boost, EPP and the frequency range |

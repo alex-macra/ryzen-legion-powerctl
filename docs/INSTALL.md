@@ -42,8 +42,11 @@ directly and stay untracked by any package manager.
 
 If you used a script install before, pacman will not overwrite those unowned files. The
 installer detects them and offers to run `./uninstall.sh` for you first, keeping
-`/etc/legion-powerctl`. The prompt defaults to no; `--replace-script-install` answers it
-for unattended runs.
+`/etc/legion-powerctl` and rewriting the `ryzen_smu` boot entry if the script install had
+one. The package is built before anything is removed, and rebuilt even if one of the same
+version already exists. If `pacman -U` then fails, the installer prints the recovery:
+`sudo pacman -U` on the built package, then `sudo legion-powerctl enable`. The prompt
+defaults to no; `--replace-script-install` answers it for unattended runs.
 
 For a machine that already has an earlier `legion-balanced-plus.service` created by
 hand:
@@ -67,8 +70,11 @@ missing, RyzenAdj does not fall back to `/dev/mem`. Check the apply output rathe
 than assuming the command interface means limits were set.
 
 The post-apply confirmation and doctor's `Limits` line read limits back with
-`ryzenadj -i`. A successful apply can still report `this apply is unverified`
-when its metrics cannot be read. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
+`ryzenadj -i`. A limit counts as confirmed only when `-i` prints a number for it
+that matches; a missing row or `nan` counts as not read, not as drift. Only when
+all four match does the apply say confirmed and record `VERIFIED=yes`; when some
+were not read it names them and records `VERIFIED=partial`. A successful apply
+can still report `this apply is unverified` when none of its metrics can be read. When `ryzenadj -i` fails, `doctor` run as root warns; an unprivileged `doctor` prints no `Limits` line, because reading the SMU needs root. [Fire Range PM-table support is still incomplete](https://github.com/amkillam/ryzen_smu/issues/49).
 
 `./install.sh --install-ryzen-smu` installs it for you: it works out which headers
 package matches the running kernel (from `/usr/lib/modules/$(uname -r)/pkgbase`, so
@@ -134,10 +140,17 @@ The header separates the two things that are easy to confuse. **Running now** is
 last written to the hardware, read from the record `apply` leaves in `/run`, with the
 watts that actually reached the SMU and whether they were read back and confirmed. **At
 boot** is the profile `config.conf` points at, which the boot service applies at the next
-start. A fresh install boots `balanced`. **Apply now** and **Go back** also make that
-profile the boot profile, so what you apply in the GUI survives a reboot. The `BOOT` pin
-on a profile row sets the boot profile without applying it, and `legion-powerctl apply`
-from a terminal stays a one-off that leaves the boot profile alone.
+start. A fresh install boots `balanced`: the package's `post_install`, or a script
+install that creates `config.conf`, runs `legion-powerctl select balanced` without
+applying anything. Upgrades and reinstalls leave an existing `config.conf` alone.
+**Apply now** also makes the profile the boot profile, but only once the apply has
+succeeded, so what you apply in the GUI survives a reboot. **Go back** puts back both
+the profile that was running and the boot profile that was set before that apply. If it
+re-applies the old profile but cannot set the old boot profile back, it says so and keeps
+the offer so you can finish it; a cancelled or failed Go back keeps the offer too. The
+`BOOT` pin on a profile row sets the boot profile without applying it, and
+`legion-powerctl apply` from a terminal stays a one-off that leaves the boot profile
+alone.
 
 There is one button, **Apply now**, which writes the profile, applies it, and keeps it for
 boot. `Ctrl+S` saves without applying. Applying limits higher than what is running asks first; lowering
@@ -182,8 +195,14 @@ key on it.
 
 Pull a newer checkout and rerun `./install.sh`. On Arch and CachyOS the rebuilt package
 upgrades the previous one through pacman, and edited profiles in `/etc/legion-powerctl`
-are preserved as `.pacnew` candidates. Script installs preserve existing profiles unless
-`--force-config` is supplied.
+are preserved as `.pacnew` candidates. The upgrade never moves the boot profile: if
+pacman replaces an unedited `config.conf` with the shipped one, the package selects the
+previous boot profile again, without applying it. Script installs preserve existing profiles unless
+`--force-config` is supplied, which resets every profile and `config.conf` to the shipped
+files and selects `balanced` for boot, exactly as a fresh install does. `sudo make install`
+likewise keeps existing files under `/etc/legion-powerctl` unless `FORCE_CONFIG=1` is set;
+when it writes `config.conf` itself it selects `balanced`. A staged install with
+`DESTDIR` ships the file unchanged for the package.
 
 To try changes in your local checkout without pushing to GitHub or reinstalling,
 run `make dev-gui` from that checkout. Close and reopen it after edits; it reads
@@ -191,7 +210,8 @@ the GUI and CLI source files directly while using the installed profiles. Privil
 edits may use a generic `pkexec` prompt because the installed polkit policy names
 `/usr/bin/legion-powerctl`. This preview does not replace the installed desktop
 launcher. A local commit is enough for a package rebuild with `./install.sh`;
-`make dist` archives local `HEAD`, so uncommitted edits are not packaged.
+`make dist` archives local `HEAD`, so uncommitted edits are not packaged. A copy that is
+not its own git checkout, such as an extracted ZIP, is packed from the working tree.
 
 ## Uninstalling
 

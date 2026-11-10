@@ -243,6 +243,23 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(status.last_apply["profile"], "quiet")
         self.assertEqual(status.active_profile, "quiet")
 
+    def test_go_back_restores_the_running_profile_and_the_original_boot_profile(self):
+        status = model.parse_status(self.run_cli("status", "--json").stdout)
+        quiet = next(p for p in status.profiles if p.name == "quiet")
+        pinned = model.Profile(name="pinned", stapm_w=40, slow_w=45, fast_w=50, temp_c=70)
+        proc = self.run_cli(*model.build_configure_args(pinned, select=True))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        proc = self.run_cli(*model.build_configure_args(quiet, apply_now=True, select=True))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for argv in (model.build_apply_args("balanced-plus"), model.build_select_args("pinned")):
+            proc = self.run_cli(*argv)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+        status = model.parse_status(self.run_cli("status", "--json").stdout)
+        self.assertEqual(status.last_apply["profile"], "balanced-plus")
+        self.assertEqual(status.active_profile, "pinned")
+        config = Path(self.env["LEGION_POWERCTL_ETC_DIR"]) / "config.conf"
+        self.assertIn("ACTIVE_PROFILE=pinned", config.read_text().splitlines())
+
     def test_the_profile_apply_now_runs_is_the_one_the_next_boot_applies(self):
         status = model.parse_status(self.run_cli("status", "--json").stdout)
         quiet = next(p for p in status.profiles if p.name == "quiet")
@@ -265,7 +282,7 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(self.run_cli("apply", "quiet").returncode, 0)
         status = model.parse_status(self.run_cli("status", "--json").stdout)
         self.assertIn("verified", status.last_apply)
-        self.assertIn(status.last_apply["verified"], ("yes", "no", "unknown"))
+        self.assertIn(status.last_apply["verified"], ("yes", "no", "partial", "unknown"))
 
 
 class DesktopEntryContractTest(unittest.TestCase):

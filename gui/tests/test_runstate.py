@@ -30,6 +30,14 @@ class RunStateTest(unittest.TestCase):
         for value in (state.stapm_w, state.slow_w, state.fast_w, state.temp_c):
             self.assertIsInstance(value, int)
 
+    def test_only_plain_ascii_digits_count_as_a_limit(self):
+        for raw in ("6_0", "\uff16\uff10", " 60", "-60", "60.0"):
+            with self.subTest(raw=raw):
+                state = runstate.run_state(status_with({"profile": "quiet", "stapm_w": raw}))
+                self.assertIsNone(state.stapm_w)
+        state = runstate.run_state(status_with({"profile": "quiet", "stapm_w": 60}))
+        self.assertEqual(state.stapm_w, 60)
+
     def test_nothing_applied_since_boot_says_so(self):
         state = runstate.run_state(status_with(None))
         self.assertFalse(state.applied)
@@ -53,6 +61,12 @@ class RunStateTest(unittest.TestCase):
             status_with({"profile": "quiet", "result": "ok", "verified": "yes"})
         )
         self.assertEqual(confirmed.mark(), ("confirmed", "OK"))
+
+    def test_a_partly_read_back_apply_says_so_and_is_not_confirmed(self):
+        state = runstate.run_state(
+            status_with({"profile": "quiet", "result": "ok", "verified": "partial"})
+        )
+        self.assertEqual(state.mark(), ("partly confirmed", "WARN"))
 
     def test_a_record_written_by_an_older_cli_still_parses(self):
         state = runstate.run_state(status_with({"profile": "quiet", "result": "ok"}))

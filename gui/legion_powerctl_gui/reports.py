@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QMessageBox, QPushButton, QStatusBar, QWidget
+from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton, QStatusBar, QWidget
 
 from . import a11y, styles
 
@@ -12,6 +12,8 @@ ERROR_MS = 10000
 NOTE_MS = 8000
 WARNING_MS = 15000
 OFFER_GAP = 8
+STALE_TEXT = "Status not updating"
+RECOVERED_TEXT = "Status is updating again."
 
 
 class ReportArea(QObject):
@@ -32,6 +34,11 @@ class ReportArea(QObject):
         self._margins = dict.fromkeys(self._offers, 0)
         status_bar.addWidget(self.go_back_button)
         status_bar.addWidget(self.details_button)
+        self.stale_label = QLabel(STALE_TEXT)
+        self.stale_label.setAccessibleName(STALE_TEXT)
+        self.stale_label.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.stale_label.hide()
+        status_bar.addPermanentWidget(self.stale_label)
         status_bar.messageChanged.connect(self._place_offers)
         status_bar.installEventFilter(self)
         self.restyle(status_bar.palette())
@@ -54,6 +61,7 @@ class ReportArea(QObject):
         self._sheet = (
             f"{styles.ghost_button_style(palette)} QPushButton {{ background-color: {plane}; }}"
         )
+        styles.set_sheet(self.stale_label, styles.chip_style(palette, "WARN"))
         self._place_offers()
 
     def _place_offers(self, *_args) -> None:
@@ -87,6 +95,22 @@ class ReportArea(QObject):
         self._bar.showMessage(message, ERROR_MS)
         a11y.announce(self._bar, message, interrupt=True)
 
+    def poll_error(self, message: str) -> None:
+        self.stale_label.setToolTip(message)
+        self.stale_label.setAccessibleDescription(message)
+        self.stale_label.show()
+        self._bar.showMessage(message, ERROR_MS)
+        a11y.announce(self._bar, message, interrupt=True)
+
+    def poll_recovered(self) -> None:
+        if self.stale_label.isHidden():
+            return
+        self.stale_label.hide()
+        a11y.announce(self._bar, RECOVERED_TEXT)
+
+    def set_busy(self, busy: bool) -> None:
+        self.go_back_button.setEnabled(not busy)
+
     def note(self, message: str) -> None:
         self._bar.showMessage(message, NOTE_MS)
         a11y.announce(self._bar, message)
@@ -94,20 +118,28 @@ class ReportArea(QObject):
     def success(self, message: str, go_back_to: str = "") -> None:
         self.clear_offers()
         self.note(message)
-        if go_back_to:
-            self.go_back_button.setText(f"Go back to '{go_back_to}'")
-            self.go_back_button.show()
-            self._place_offers()
+        self._offer_go_back(go_back_to)
+        self._place_offers()
 
-    def warning(self, message: str, detail: str) -> None:
+    def warning(self, message: str, detail: str, go_back_to: str = "") -> None:
         self.last_warning = detail
         self.clear_offers()
         first = detail.splitlines()[0] if detail else ""
         text = f"{message} {first}".strip()
         self._bar.showMessage(text, WARNING_MS)
         a11y.announce(self._bar, text, interrupt=True)
+        self._offer_go_back(go_back_to)
         self.details_button.show()
         self._place_offers()
+
+    def offer_go_back(self, go_back_to: str) -> None:
+        self._offer_go_back(go_back_to)
+        self._place_offers()
+
+    def _offer_go_back(self, go_back_to: str) -> None:
+        if go_back_to:
+            self.go_back_button.setText(f"Go back to '{go_back_to}'")
+            self.go_back_button.show()
 
     def offer_repair_backup(self, backup: str) -> None:
         if self.details_button.isHidden():

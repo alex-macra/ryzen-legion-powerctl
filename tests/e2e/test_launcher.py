@@ -45,10 +45,10 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(report["cwd"], "/", "the launcher did not leave the launch directory")
         self.assertEqual(report["env"].get("PYTHONSAFEPATH"), "1")
         self.assertEqual(report["env"].get("PYTHONDONTWRITEBYTECODE"), "1")
-        self.assertEqual(
-            report["env"].get("LEGION_POWERCTL_GUI_CLI"),
-            str(TREE / "usr" / "bin" / "legion-powerctl"),
-            "the CLI handed to pkexec was not pinned to the one beside the launcher",
+        self.assertNotIn(
+            "LEGION_POWERCTL_GUI_CLI", report["env"],
+            "the launcher handed the app a CLI path through the environment; the GUI "
+            "resolves the CLI beside its own install instead",
         )
         self.assertEqual(report["env"]["PYTHONPATH"].split(":")[0], str(STUB_GUI))
         self.assertEqual(report["argv"][1:], ["--flag", "value"], "extra arguments were dropped")

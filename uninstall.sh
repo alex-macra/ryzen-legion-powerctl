@@ -39,5 +39,11 @@ else
 fi
 "${SUDO[@]}" systemctl daemon-reload
 "${SUDO[@]}" systemctl reset-failed legion-powerctl.service 2>/dev/null || true
+if command -v update-desktop-database >/dev/null 2>&1; then
+    "${SUDO[@]}" update-desktop-database -q /usr/share/applications 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    "${SUDO[@]}" gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+fi
 
 echo "legion-powerctl removed. RyzenAdj and the ryzen_smu module were not removed."

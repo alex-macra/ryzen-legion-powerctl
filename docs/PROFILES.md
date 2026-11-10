@@ -1,12 +1,14 @@
 # Profile reference
 
-Each profile is a strict `KEY=VALUE` file. Unknown keys are rejected so spelling mistakes do not silently leave a setting unapplied.
+Each profile is a strict `KEY=VALUE` file. Unknown keys are rejected so spelling mistakes do not silently leave a setting unapplied, and a key set twice is rejected with both line numbers rather than letting the last one win.
+
+`config.conf` names the boot profile with `ACTIVE_PROFILE=NAME`. With no `config.conf` at all, boot applies `balanced`. A `config.conf` that exists but sets no `ACTIVE_PROFILE` (for example an empty file) still applies `balanced`, so the machine keeps its limits, but the boot unit then exits with an error saying why and `doctor` flags it, so a damaged file is not mistaken for a choice. A `config.conf` that names a `powerbench-*` scratch profile, which `select`, `configure --select` and `wizard` all refuse, is handled the same way: boot applies `balanced`, exits with an error naming the scratch profile, and `doctor` flags it.
 
 ## Metadata
 
 ### `DESCRIPTION`
 
-One line of free text shown by `show`, `status --json`, and the GUI. Set it with `configure NAME --description TEXT` or by editing the field in the GUI. Newlines and control characters are rejected; quotes and backslashes round-trip through the file format unchanged.
+One line of free text shown by `show`, `status --json`, and the GUI. Set it with `configure NAME --description TEXT` or by editing the field in the GUI. Tabs, newlines and other control characters are rejected; quotes and backslashes round-trip through the file format unchanged.
 
 ## RyzenAdj limits
 

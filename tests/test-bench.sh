@@ -180,11 +180,14 @@ short_run "$TMP/unknown.csv" --dry-run >/dev/null 2>&1
 reset_machine
 
 printf 'Test 11: a scratch-name collision cannot overwrite a saved profile\n'
-LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=balanced-plus)
+cp "$PROFILES/quiet.conf" "$PROFILES/powerbench-taken.conf"
+cp "$PROFILES/quiet.conf" "$TMP/known-taken.conf"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=powerbench-taken)
 assert_fails 'a colliding scratch name was accepted' short_run "$TMP/collision.csv"
 assert_fails 'a dry-run accepted a colliding scratch name' short_run "$TMP/collision.csv" --dry-run
-cmp "$TMP/known-balanced-plus.conf" "$PROFILES/balanced-plus.conf"
+cmp "$TMP/known-taken.conf" "$PROFILES/powerbench-taken.conf"
 assert_eq '' "$(<"$LOG")" 'a scratch-name collision caused a hardware write'
+rm -f "$PROFILES/powerbench-taken.conf"
 reset_machine
 
 printf 'Test 12: the final two minutes determine sustained power limits\n'
@@ -355,11 +358,12 @@ PY
 done
 reset_machine
 
-printf 'Test 26: restoration failure is returned to the caller\n'
+printf 'Test 26: restoration failure is returned to the caller and the scratch profile still goes\n'
 LEGION_BENCH_ENV=(LEGION_FAKE_RYZENADJ_FAIL_TEMP=72)
 assert_fails 'a failed restoration was reported as successful' short_run "$TMP/failed-restore.csv"
 assert_eq '1' "$(grep -c -- '--tctl-temp=72' "$LOG" || true)" 'restoration was attempted more than once'
-rm -f -- "$PROFILES"/powerbench-*.conf
+assert_eq '' "$(find "$PROFILES" -maxdepth 1 -name 'powerbench-*.conf' -print)" \
+    'a failed restoration left its scratch profile behind'
 reset_machine
 
 printf 'Test 27: the GPU is only ever read\n'
@@ -429,5 +433,236 @@ awk -F, '$2 == "load" && $3 == 595 { print } { print }' \
     "$TMP/covered.csv" > "$TMP/duplicate-time.csv"
 assert_contains 'inconclusive' "$(run_bench report "$TMP/duplicate-time.csv")" \
     'duplicate timestamps were accepted as continuous sustained measurements'
+
+reset_machine
+for signal_name in SIGINT SIGHUP; do
+    printf 'Test 34: %s with stderr piped into a reader that dies still restores and cleans up\n' "$signal_name"
+    reset_machine
+    python3 - "$BENCH_CLI" "$TMP" "$signal_name" "${BENCH_ENV[@]}" <<'PY'
+import os
+from pathlib import Path
+import shlex
+import signal
+import subprocess
+import sys
+import time
+
+bench, root, signal_name, *environment = sys.argv[1:]
+env = os.environ | dict(item.split("=", 1) for item in environment)
+root = Path(root)
+leader_file = root / f"pipe-{signal_name}.leader"
+workload = f"printf '%s\\n' \"$$\" > {shlex.quote(str(leader_file))}; sleep 300"
+run = [bench, "run", "--ladder", "stapm", "--from", "65", "--to", "65",
+       "--workload-cmd", workload, "--soak", "30", "--cool", "0", "--interval", "1",
+       "--out", str(root / f"pipe-{signal_name}.csv")]
+pipeline = " ".join(shlex.quote(arg) for arg in run) + " 2>&1 | cat >/dev/null"
+
+
+def restore_default_signals():
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+        signal.signal(number, signal.SIG_DFL)
+
+
+process = subprocess.Popen(
+    ["bash", "-c", pipeline], env=env, start_new_session=True,
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    preexec_fn=restore_default_signals,
+)
+group = process.pid
+try:
+    deadline = time.monotonic() + 15
+    while not (leader_file.exists() and leader_file.stat().st_size):
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise AssertionError(f"{signal_name}: workload did not start")
+        time.sleep(0.02)
+    os.killpg(group, getattr(signal, signal_name))
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        process.poll()
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"{signal_name}: the run did not finish")
+finally:
+    process.poll()
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+PY
+    assert_restored_once
+done
+reset_machine
+
+printf 'Test 35: a --to off the step grid is refused, not silently skipped\n'
+output="$(run_bench run --ladder stapm --from 65 --to 100 --step 10 --dry-run --out "$TMP/grid.csv" 2>&1 || true)"
+assert_contains '--to 100 is not on the ladder from 65 by 10; use --to 95 or 105' "$output" \
+    'an off-grid --to was not refused with the nearest grid values'
+refute_contains 'DRY-RUN' "$output" 'an off-grid ladder still printed a plan'
+assert_eq '' "$(<"$LOG")" 'an off-grid ladder invoked a helper'
+reset_machine
+
+printf 'Test 36: run refuses an interval or soak the report would call inconclusive\n'
+assert_fails 'run accepted a 31 s interval' short_run "$TMP/interval.csv" --interval 31
+untested_bench() {
+    env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 "$BENCH_CLI" "$@"
+}
+output="$(untested_bench run --ladder stapm --from 65 --to 65 --soak 119 --dry-run --out "$TMP/soak.csv" 2>&1 || true)"
+assert_contains '--soak must be 120..86400' "$output" 'run accepted a soak shorter than the report window'
+output="$(untested_bench run --ladder stapm --from 65 --to 65 --soak 120 --dry-run --out "$TMP/soak.csv" 2>&1 || true)"
+refute_contains '--soak must be' "$output" 'run refused a 120 s soak'
+reset_machine
+
+printf 'Test 37: a failing GPU load is named and its own log is shown\n'
+cat > "$TMP/failing-vkmark" <<'EOF_FAKE'
+#!/usr/bin/env bash
+printf 'vkmark: no Vulkan device was found\n' >&2
+exit 3
+EOF_FAKE
+chmod +x "$TMP/failing-vkmark"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_VKMARK_BIN="$TMP/failing-vkmark"
+    LEGION_POWERBENCH_STRESS_NG_BIN="$FAKEBIN/stress-ng")
+output="$(run_bench run --ladder stapm --from 65 --to 65 --workload crossload \
+    --soak 5 --cool 0 --interval 1 --out "$TMP/gpu-fail.csv" 2>&1 || true)"
+assert_contains 'vkmark: no Vulkan device was found' "$output" "the GPU load's error was discarded"
+assert_contains 'The GPU workload ended before the measurement finished (exit 3)' "$output" \
+    'the failing load was not named'
+assert_restored_once
+reset_machine
+
+printf 'Test 38: every load runs under timeout, so a SIGKILLed harness cannot strand it\n'
+# shellcheck disable=SC2016
+printf -v wrapper_probe 'tr "\\0" " " < /proc/$(ps -o ppid= -p $PPID | tr -d " ")/cmdline > %q; sleep 300' \
+    "$TMP/load-wrapper"
+short_run "$TMP/wrapped.csv" --workload-cmd "$wrapper_probe" >/dev/null 2>&1
+assert_match "$(<"$TMP/load-wrapper")" 'timeout -k 10 61 bash -c *' \
+    'the load is not wrapped in a timeout of soak plus 60 seconds'
+assert_restored_once
+reset_machine
+
+printf 'Test 39: without turbostat each step renews sudo, and the run says why\n'
+cat > "$TMP/logging-sudo" <<EOF_FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> $(printf '%q' "$TMP/sudo.log")
+while [[ "\${1:-}" == -* ]]; do shift; done
+exec "\$@"
+EOF_FAKE
+chmod +x "$TMP/logging-sudo"
+: > "$TMP/sudo.log"
+LEGION_BENCH_ENV=(LEGION_FAKE_NO_TURBOSTAT=1 LEGION_POWERBENCH_SUDO_BIN="$TMP/logging-sudo")
+output="$(run_bench run --ladder stapm --from 65 --to 75 --workload none \
+    --soak 2 --cool 0 --interval 1 --out "$TMP/sudo.csv" 2>&1)"
+assert_contains "renewing it with 'sudo -n -v'" "$output" 'a run without turbostat did not warn'
+assert_eq '2' "$(grep -cx -- '-v' "$TMP/sudo.log" || true)" 'sudo -v did not run once before each step'
+[[ "$(grep -cx -- '-n -v' "$TMP/sudo.log" || true)" -ge 4 ]] || {
+    printf 'FAIL: the sudo credential was not renewed during each step\n%s\n' "$(<"$TMP/sudo.log")" >&2
+    exit 1
+}
+reset_machine
+: > "$TMP/sudo.log"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_SUDO_BIN="$TMP/logging-sudo")
+output="$(short_run "$TMP/sudo-turbostat.csv" 2>&1)"
+refute_contains "sudo -n -v" "$output" 'a run with turbostat warned about sudo'
+assert_eq '0' "$(grep -cx -- '-n -v' "$TMP/sudo.log" || true)" 'turbostat already renews sudo'
+reset_machine
+
+printf 'Test 40: --no-gpu never runs nvidia-smi\n'
+cat > "$TMP/counting-nvidia-smi" <<EOF_FAKE
+#!/usr/bin/env bash
+printf 'called\n' >> $(printf '%q' "$TMP/nvidia-smi.log")
+exec $(printf '%q' "$FAKEBIN/nvidia-smi") "\$@"
+EOF_FAKE
+chmod +x "$TMP/counting-nvidia-smi"
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_NVIDIA_SMI_BIN="$TMP/counting-nvidia-smi")
+run_bench sample --duration 2 --interval 1 --no-gpu --out "$TMP/no-gpu.csv" >/dev/null 2>&1
+[[ ! -e "$TMP/nvidia-smi.log" ]] || { printf 'FAIL: --no-gpu still ran nvidia-smi\n' >&2; exit 1; }
+assert_eq ',,,' "$(awk -F, 'NR == 2 { print $14 "," $15 "," $16 "," $17 }' "$TMP/no-gpu.csv")" \
+    '--no-gpu still recorded GPU telemetry'
+run_bench sample --duration 1 --interval 1 --out "$TMP/gpu.csv" >/dev/null 2>&1
+assert_file_contains 'called' "$TMP/nvidia-smi.log" 'the counting nvidia-smi was never reached'
+short_run "$TMP/no-gpu-run.csv" --no-gpu >/dev/null 2>&1
+assert_eq ',,,' "$(awk -F, '$2 == "load" { print $14 "," $15 "," $16 "," $17; exit }' "$TMP/no-gpu-run.csv")" \
+    'run --no-gpu still recorded GPU telemetry'
+reset_machine
+
+printf 'Test 41: an exported LEGION_POWERCTL_* variable is refused, since sudo would drop it\n'
+LEGION_BENCH_ENV=(LEGION_POWERCTL_ETC_DIR="$TMP/elsewhere")
+assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(run_bench doctor 2>&1 || true)" \
+    'doctor read a machine the sudo writes would not see'
+assert_contains 'Unset LEGION_POWERCTL_ETC_DIR' "$(short_run "$TMP/env.csv" --dry-run 2>&1 || true)" \
+    'run read a machine the sudo writes would not see'
+assert_eq '' "$(<"$LOG")" 'a refused environment still invoked a helper'
+LEGION_BENCH_ENV=(LEGION_POWERCTL_GUI_SCHEME=desktop)
+refute_contains 'Unset' "$(run_bench doctor 2>&1 || true)" \
+    'the GUI scheme the docs recommend was refused although the CLI never reads it'
+LEGION_BENCH_ENV=()
+reset_machine
+
+printf 'Test 42: without TESTING the ryzenadj and CLI overrides are never executed\n'
+mkdir -p "$TMP/planted"
+for planted in ryzenadj legion-powerctl; do
+    # shellcheck disable=SC2016
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$0" >> %q\nexit 1\n' "$TMP/planted.log" > "$TMP/planted/$planted"
+    chmod +x "$TMP/planted/$planted"
+done
+printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/planted/sudo"
+chmod +x "$TMP/planted/sudo"
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_FAKE_NO_TURBOSTAT=1 \
+    LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
+    LEGION_POWERBENCH_CLI_BIN="$TMP/planted/legion-powerctl" \
+    PATH="$TMP/planted:$PATH" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+[[ ! -e "$TMP/planted.log" ]] || {
+    printf 'FAIL: powerbench ran a planted binary without TESTING:\n%s\n' "$(<"$TMP/planted.log")" >&2
+    exit 1
+}
+env "${BENCH_ENV[@]}" LEGION_FAKE_NO_TURBOSTAT=1 LEGION_POWERBENCH_RYZENADJ_BIN="$TMP/planted/ryzenadj" \
+    "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+assert_file_contains "$TMP/planted/ryzenadj" "$TMP/planted.log" 'TESTING no longer reaches the ryzenadj override'
+reset_machine
+
+printf 'Test 43: the scratch profile is always powerbench-*, and only TESTING may name it\n'
+LEGION_BENCH_ENV=(LEGION_POWERBENCH_PROFILE_NAME=mybench)
+output="$(short_run "$TMP/mybench.csv" --dry-run 2>&1 || true)"
+assert_contains 'Invalid scratch profile name' "$output" 'a scratch name without the powerbench- prefix was accepted'
+assert_eq '' "$(<"$LOG")" 'a refused scratch name still invoked a helper'
+output="$(env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 LEGION_POWERBENCH_PROFILE_NAME='not a name' \
+    PATH="$TMP/planted:$PATH" "$BENCH_CLI" run --ladder stapm --from 65 --to 65 --workload none \
+    --soak 120 --cool 0 --interval 1 --out "$TMP/untested-name.csv" --dry-run 2>&1 || true)"
+refute_contains 'Invalid scratch profile name' "$output" 'the scratch-name override was honoured without TESTING'
+reset_machine
+
+printf 'Test 44: a running profile with a dot in its name can be restored\n'
+cp "$PROFILES/balanced-plus.conf" "$PROFILES/v1.2.conf"
+sed -i 's/^PROFILE=.*/PROFILE=v1.2/' "$STATE/last-apply.env"
+output="$(short_run "$TMP/dotted.csv" --dry-run 2>&1)" || {
+    printf 'FAIL: a running profile named v1.2 was not restorable\n%s\n' "$output" >&2
+    exit 1
+}
+refute_contains 'Cannot restore' "$output" 'a running profile named v1.2 was not restorable'
+rm -f "$PROFILES/v1.2.conf"
+reset_machine
+
+printf 'Test 45: without TESTING the sudo, turbostat and nvidia-smi overrides are never executed\n'
+mkdir -p "$TMP/override" "$TMP/pathbin"
+for name in sudo turbostat nvidia-smi; do
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q >> %q\nexit 1\n' "$name" "$TMP/override.log" > "$TMP/override/$name"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/pathbin/$name"
+done
+chmod +x "$TMP/override"/* "$TMP/pathbin"/*
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_TESTING=0 \
+    LEGION_POWERBENCH_SUDO_BIN="$TMP/override/sudo" \
+    LEGION_POWERBENCH_TURBOSTAT_BIN="$TMP/override/turbostat" \
+    LEGION_POWERBENCH_NVIDIA_SMI_BIN="$TMP/override/nvidia-smi" \
+    PATH="$TMP/pathbin:$PATH" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+[[ ! -e "$TMP/override.log" ]] || {
+    printf 'FAIL: powerbench ran an override without TESTING:\n%s\n' "$(<"$TMP/override.log")" >&2
+    exit 1
+}
+env "${BENCH_ENV[@]}" LEGION_POWERBENCH_SUDO_BIN="$TMP/override/sudo" "$BENCH_CLI" doctor >/dev/null 2>&1 || true
+assert_file_contains 'sudo' "$TMP/override.log" 'TESTING no longer reaches the sudo override'
+reset_machine
 
 printf '\nAll legion-powerbench tests passed.\n'

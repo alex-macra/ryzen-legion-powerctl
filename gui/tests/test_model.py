@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -48,6 +50,15 @@ class ParseStatusTest(unittest.TestCase):
     def test_rejects_non_object(self):
         with self.assertRaises(model.StatusParseError):
             model.parse_status("[1, 2]")
+
+    def test_profiles_that_are_not_a_list_are_a_parse_error(self):
+        for value in ("null", "5", '"quiet"', "{}"):
+            with self.subTest(profiles=value), self.assertRaises(model.StatusParseError):
+                model.parse_status(f'{{"schema_version": 1, "profiles": {value}}}')
+
+    def test_a_null_boot_profile_reads_as_none_set(self):
+        status = model.parse_status('{"schema_version": 1, "active_profile": null}')
+        self.assertEqual(status.active_profile, "")
 
     def test_profile_with_bad_numbers_becomes_invalid(self):
         payload = (
@@ -114,7 +125,7 @@ class ParseDoctorTest(unittest.TestCase):
     def test_parses_fixture(self):
         report = model.parse_doctor((FIXTURES / "doctor.txt").read_text(), 0)
         self.assertEqual(report.failures, 0)
-        self.assertEqual(report.warnings, 2)
+        self.assertEqual(report.warnings, 3)
         self.assertEqual(report.exit_code, 0)
         self.assertEqual(len(report.lines), 16)
         smu = next(line for line in report.lines if line.label == "SMU-backend")
@@ -203,6 +214,12 @@ class ValidateProfileTest(unittest.TestCase):
         self.assertFalse(model.valid_frequency("10001"))
         self.assertFalse(model.valid_frequency("fast"))
 
+    def test_a_trailing_newline_is_not_part_of_a_valid_value(self):
+        self.assertTrue(model.valid_profile_name("quiet"))
+        self.assertFalse(model.valid_profile_name("quiet\n"))
+        self.assertFalse(model.valid_frequency("3000\n"))
+        self.assertFalse(model.valid_frequency("stock\n"))
+
     def test_leading_zero_frequency_is_rejected_like_the_cli_does(self):
         self.assertFalse(model.valid_frequency("0700"))
         problems = model.validate_profile(self._profile(min_freq_mhz="0700"))
@@ -279,11 +296,14 @@ class CommandBuildingTest(unittest.TestCase):
         self.assertEqual(args[args.index("--description") + 1], "")
 
 
+DEV = {"LEGION_POWERCTL_GUI_DEV": "1"}
+
+
 class ElevationTest(unittest.TestCase):
     def test_elevation_command_names_what_wraps_the_cli(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "none"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "none"}):
             self.assertIsNone(model.elevation_command())
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "sudo"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}):
             self.assertEqual(model.elevation_command(), "sudo")
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
@@ -292,17 +312,78 @@ class ElevationTest(unittest.TestCase):
             with mock.patch("os.geteuid", return_value=0):
                 self.assertIsNone(model.elevation_command())
 
+    def test_the_elevation_override_needs_the_dev_gate(self):
+        for elevate in ("none", "/tmp/evil/pkexec", "sudo"):
+            with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": elevate}), \
+                    mock.patch("os.geteuid", return_value=1000):
+                os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+                self.assertEqual(model.elevation_command(), "pkexec", elevate)
+                self.assertEqual(
+                    model.privileged_command(["delete", "x"])[0], "pkexec",
+                    f"{elevate} replaced pkexec without the dev gate",
+                )
+        for gate in ("0", "yes", ""):
+            env = {"LEGION_POWERCTL_GUI_DEV": gate, "LEGION_POWERCTL_GUI_ELEVATE": "none"}
+            with mock.patch.dict(os.environ, env), mock.patch("os.geteuid", return_value=1000):
+                self.assertEqual(model.elevation_command(), "pkexec", gate)
+
+    def test_root_still_runs_directly_without_the_gate(self):
+        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_ELEVATE": "sudo"}), \
+                mock.patch("os.geteuid", return_value=0):
+            os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+            self.assertIsNone(model.elevation_command())
+
+    def test_pkexec_is_recognised_by_its_basename(self):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "/usr/bin/pkexec"}):
+            self.assertTrue(model.elevation_is_pkexec())
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "/tmp/notpkexec"}):
+            self.assertFalse(model.elevation_is_pkexec())
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_ELEVATE": "none"}):
+            self.assertFalse(model.elevation_is_pkexec())
+
     def test_cli_override_is_used(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
             self.assertEqual(model.unprivileged_command(["status"]), ["/tmp/fake", "status"])
 
+    def test_the_cli_override_needs_the_dev_gate(self):
+        for gate in (None, "0", "yes", ""):
+            env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/evil/legion-powerctl"}
+            if gate is not None:
+                env["LEGION_POWERCTL_GUI_DEV"] = gate
+            with mock.patch.dict(os.environ, env), mock.patch("os.geteuid", return_value=1000):
+                if gate is None:
+                    os.environ.pop("LEGION_POWERCTL_GUI_DEV", None)
+                argv = model.privileged_command(["apply", "quiet"])
+                self.assertEqual(argv[0], "pkexec", gate)
+                self.assertNotEqual(argv[1], "/tmp/evil/legion-powerctl", f"gate {gate!r}")
+                self.assertNotIn("/tmp/evil/legion-powerctl", model.unprivileged_command(["status"]))
+
+    def test_an_install_runs_the_cli_beside_it_even_through_a_symlink(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        package = root / "opt" / "share" / "legion-powerctl" / "gui" / "legion_powerctl_gui"
+        package.mkdir(parents=True)
+        (package / "model.py").write_text("")
+        (root / "opt" / "bin").mkdir()
+        cli = root / "opt" / "bin" / "legion-powerctl"
+        cli.write_text("#!/bin/sh\n")
+        self.assertEqual(model.installed_cli(str(package / "model.py")), str(cli))
+        decoy = root / "decoy" / "share" / "legion-powerctl"
+        decoy.mkdir(parents=True)
+        (decoy / "gui").symlink_to(package.parent)
+        (root / "decoy" / "bin").mkdir()
+        (root / "decoy" / "bin" / "legion-powerctl").write_text("#!/bin/sh\n")
+        linked = decoy / "gui" / "legion_powerctl_gui" / "model.py"
+        self.assertEqual(model.installed_cli(str(linked)), str(cli))
+        self.assertIsNone(model.installed_cli(str(root / "elsewhere" / "pkg" / "model.py")))
+
     def test_elevate_none_runs_directly(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "none"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "none"}
         with mock.patch.dict(os.environ, env):
             self.assertEqual(model.privileged_command(["enable"]), ["/tmp/fake", "enable"])
 
     def test_default_wraps_with_pkexec(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}
         with mock.patch.dict(os.environ, env, clear=False):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
             with mock.patch("os.geteuid", return_value=1000):
@@ -312,14 +393,14 @@ class ElevationTest(unittest.TestCase):
                 )
 
     def test_custom_elevator_is_respected(self):
-        env = {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}
+        env = {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake", "LEGION_POWERCTL_GUI_ELEVATE": "sudo"}
         with mock.patch.dict(os.environ, env):
             self.assertEqual(
                 model.privileged_command(["disable"]), ["sudo", "/tmp/fake", "disable"]
             )
 
     def test_root_runs_directly(self):
-        with mock.patch.dict(os.environ, {"LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
+        with mock.patch.dict(os.environ, {**DEV, "LEGION_POWERCTL_GUI_CLI": "/tmp/fake"}):
             os.environ.pop("LEGION_POWERCTL_GUI_ELEVATE", None)
             with mock.patch("os.geteuid", return_value=0):
                 self.assertEqual(model.privileged_command(["enable"]), ["/tmp/fake", "enable"])

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 from dataclasses import dataclass, field
 
 SCHEMA_VERSION = 1
@@ -33,8 +32,8 @@ EPP_VALUES = (
 
 CONTROL_CHARACTERS = frozenset(chr(code) for code in range(0x20)) | {chr(0x7F)}
 
-PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-FREQ_RE = re.compile(r"^(stock|unchanged|0|[1-9][0-9]*)$")
+PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+FREQ_RE = re.compile(r"stock|unchanged|0|[1-9][0-9]*")
 
 DOCTOR_LINE_RE = re.compile(r"^(OK|WARN|FAIL)\s+(\S+)\s+(.*)$")
 DOCTOR_RESULT_RE = re.compile(r"^Doctor result: (\d+) failure\(s\), (\d+) warning\(s\)\.$")
@@ -109,8 +108,11 @@ def parse_status(payload: str) -> Status:
             f"schema {SCHEMA_VERSION}. Update legion-powerctl and the GUI together."
         )
 
+    entries = data.get("profiles", [])
+    if not isinstance(entries, list):
+        raise StatusParseError("status --json gave profiles that are not a list.")
     profiles: list[Profile] = []
-    for entry in data.get("profiles", []):
+    for entry in entries:
         if not isinstance(entry, dict) or "name" not in entry:
             continue
         if not entry.get("valid", False):
@@ -144,7 +146,7 @@ def parse_status(payload: str) -> Status:
     service = data.get("service") or {}
     return Status(
         version=str(data.get("version", "")),
-        active_profile=str(data.get("active_profile", "")),
+        active_profile=str(data.get("active_profile") or ""),
         power_profile=data.get("power_profile"),
         cpu_driver=data.get("cpu_driver"),
         cpu_epp=data.get("cpu_epp"),
@@ -206,11 +208,11 @@ def enforce_power_order(
 
 
 def valid_profile_name(name: str) -> bool:
-    return bool(PROFILE_NAME_RE.match(name))
+    return bool(PROFILE_NAME_RE.fullmatch(name))
 
 
 def valid_frequency(value: str) -> bool:
-    if not FREQ_RE.match(value):
+    if not FREQ_RE.fullmatch(value):
         return False
     if value.isdigit():
         return 100 <= int(value) <= 10000
@@ -251,25 +253,40 @@ def validate_profile(profile: Profile) -> list[str]:
     return problems
 
 
+def installed_cli(module_file: str = __file__) -> str | None:
+    package = os.path.dirname(os.path.realpath(module_file))
+    gui = os.path.dirname(package)
+    data = os.path.dirname(gui)
+    share = os.path.dirname(data)
+    layout = (os.path.basename(gui), os.path.basename(data), os.path.basename(share))
+    cli = os.path.join(os.path.dirname(share), "bin", "legion-powerctl")
+    if layout == ("gui", "legion-powerctl", "share") and os.path.isfile(cli):
+        return cli
+    return None
+
+
 def cli_path() -> str:
-    override = os.environ.get("LEGION_POWERCTL_GUI_CLI")
-    if override:
-        return override
-    if os.path.exists("/usr/bin/legion-powerctl"):
-        return "/usr/bin/legion-powerctl"
-    found = shutil.which("legion-powerctl")
-    return found or "/usr/bin/legion-powerctl"
+    override = os.environ.get("LEGION_POWERCTL_GUI_CLI") if dev_mode() else None
+    return override or installed_cli() or "/usr/bin/legion-powerctl"
 
 
 def unprivileged_command(args: list[str]) -> list[str]:
     return [cli_path(), *args]
 
 
+def dev_mode() -> bool:
+    return os.environ.get("LEGION_POWERCTL_GUI_DEV") == "1"
+
+
 def elevation_command() -> str | None:
-    elevate = os.environ.get("LEGION_POWERCTL_GUI_ELEVATE")
-    if elevate == "none" or (elevate is None and os.geteuid() == 0):
+    elevate = os.environ.get("LEGION_POWERCTL_GUI_ELEVATE") if dev_mode() else None
+    if elevate == "none" or (not elevate and os.geteuid() == 0):
         return None
     return elevate or "pkexec"
+
+
+def elevation_is_pkexec() -> bool:
+    return os.path.basename(elevation_command() or "") == "pkexec"
 
 
 def privileged_command(args: list[str]) -> list[str]:
@@ -300,6 +317,10 @@ def build_configure_args(
     if apply_now:
         args.append("--apply")
     return args
+
+
+def build_apply_args(profile_name: str) -> list[str]:
+    return ["apply", profile_name]
 
 
 def build_select_args(profile_name: str, apply_now: bool = False) -> list[str]:

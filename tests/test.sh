@@ -344,9 +344,10 @@ chmod +x "$TMP/pathB/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$TMP/pathB:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor did not report a second ryzenadj on PATH'
 assert_contains "$TMP/pathB/ryzenadj" "$doctor_out" 'doctor did not name the shadowed binary'
-assert_contains 'OK    RyzenAdj-shadow' "$doctor_out" \
-    'a shadow the tool already resolved correctly is not a warning'
-refute_contains 'WARN  RyzenAdj-shadow' "$doctor_out" 'the shadow warning came back'
+assert_contains 'WARN  RyzenAdj-shadow' "$doctor_out" \
+    'an older ryzenadj beside the selected one was reported as OK'
+assert_contains "Stale: $TMP/pathB/ryzenadj 0.18.0" "$doctor_out" \
+    'the shadow line did not name the older binary and its version'
 assert_contains '(newest)' "$doctor_out" 'the shadow line no longer says which binary was chosen'
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$FAKEBIN:$PATH" run_cli doctor 2>&1 || true)"
 refute_contains 'RyzenAdj-shadow' "$doctor_out" 'doctor reported a shadow with only one ryzenadj on PATH'
@@ -389,6 +390,14 @@ cp "$TMP/noversion/ryzenadj" "$TMP/noversion2/ryzenadj"
 doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/noversion:$TMP/noversion2:$PATH" run_cli doctor 2>&1 || true)"
 assert_contains "using $TMP/noversion/ryzenadj, but no version from" "$doctor_out" \
     'with no version anywhere the shadow line left a gap where the version would go'
+
+printf 'Test 28e: with an unreadable candidate too, the stale one is still named\n'
+doctor_out="$(LEGION_TEST_RYZENADJ_BIN='' PATH="$TMP/fresh:$TMP/stale:$TMP/noversion:$PATH" run_cli doctor 2>&1 || true)"
+assert_contains 'WARN  RyzenAdj-shadow' "$doctor_out" 'three candidates with one unreadable were not a warning'
+assert_contains "Stale: $TMP/stale/ryzenadj 0.14.0" "$doctor_out" \
+    'an unreadable candidate hid the stale binary from the shadow line'
+assert_contains "no version from $TMP/noversion/ryzenadj" "$doctor_out" \
+    'the shadow line did not name the candidate without a version'
 
 printf 'Test 28d: two ryzenadj at the same version are not ranked against each other\n'
 mkdir -p "$TMP/tieA" "$TMP/tieB"
@@ -664,7 +673,7 @@ assert_exit 1 'baseline --show succeeded with nothing captured' run_cli baseline
 
 printf 'Test 50: baseline captures the firmware limits once and never overwrites them\n'
 rm -rf "$LIB"
-rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env" "$STATE/smu-written"
 run_cli baseline --capture >/dev/null
 assert_file_contains 'STAPM_W=70.000' "$LIB/stock-limits.env" 'the firmware STAPM was not captured'
 assert_file_contains 'TEMP_C=72.000' "$LIB/stock-limits.env" 'the firmware Tctl ceiling was not captured'
@@ -675,7 +684,7 @@ assert_eq "$first_capture" "$(<"$LIB/stock-limits.env")" 'a second capture overw
 
 printf 'Test 51: an apply captures the firmware limits before it overwrites them\n'
 rm -rf "$LIB"
-rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env"
+rm -f "$RYZENADJ_STATE" "$STATE/last-apply.env" "$STATE/smu-written"
 run_cli apply dev >/dev/null
 assert_file_contains 'STAPM_W=70.000' "$LIB/stock-limits.env" \
     'apply recorded its own limits instead of the firmware ones'
@@ -692,14 +701,92 @@ assert_contains 'already applied this boot' "$tainted_out" \
     exit 1
 }
 
-printf 'Test 53: a fresh install boots the shipped balanced profile\n'
-cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+printf 'Test 53: every fresh-install path boots balanced; an existing pointer is kept\n'
+fresh_boot_profile() {
+    rm -f "$STATE/last-apply.env"
+    : > "$LOG"
+    run_cli apply --boot 2>&1 | sed -n "s/^Boot apply: profile '\(.*\)'$/\1/p"
+}
 cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
-rm -f "$STATE/last-apply.env"
-boot_out="$(run_cli apply --boot 2>&1)"
-assert_contains "Boot apply: profile 'balanced'" "$boot_out" 'the shipped config does not boot balanced'
-assert_file_contains 'PROFILE=balanced' "$STATE/last-apply.env" 'the boot apply did not record balanced'
-refute_contains 'PROFILE=balanced-plus' "$(<"$STATE/last-apply.env")" 'the boot apply recorded balanced-plus'
+rm -f "$ETC/config.conf"
+assert_eq 'balanced' "$(fresh_boot_profile)" 'with no config.conf the CLI does not fall back to balanced'
+
+pacman_scriptlet="$TMP/legion-powerctl.install"
+pacman_varlib="$TMP/pacstrap-var-lib"
+mkdir -p "$TMP/pacstrap-run"
+chmod 0555 "$TMP/pacstrap-run"
+sed -e "s|/etc/legion-powerctl|$ETC|g" -e "s|/var/lib/legion-powerctl|$pacman_varlib|g" \
+    -e "s|/run/|$TMP/pacstrap-run/|g" \
+    -e "s|legion-powerctl select|$FAKEBIN/legion-powerctl select|g" \
+    -e "s|legion-powerctl show|$FAKEBIN/legion-powerctl show|g" \
+    "$ROOT_DIR/packaging/arch/legion-powerctl.install" > "$pacman_scriptlet"
+# shellcheck disable=SC2329
+pacman_install() {
+    local extracted="$1"
+    (
+        # shellcheck source=/dev/null
+        . "$pacman_scriptlet"
+        pre_install
+        if [[ -e "$ETC/config.conf" ]]; then
+            [[ "$extracted" == unchanged ]] || cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf.pacnew"
+        else
+            cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+        fi
+        post_install
+    )
+}
+rm -f "$ETC/config.conf"
+: > "$LOG"
+post_install_out="$(pacman_install new)"
+assert_contains 'The boot profile is balanced' "$post_install_out" 'post_install did not report the boot profile'
+assert_eq '' "$(<"$LOG")" 'post_install applied something'
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'post_install did not select balanced'
+assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh package install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+pacman_install new >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'post_install replaced a config.conf pacman kept'
+cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+pacman_install unchanged >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" 'post_install moved a config.conf that existed before the install'
+rm -f "$ETC/config.conf"
+pacman_install new >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
+refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'a stale config.conf.pacnew stopped a fresh install from selecting balanced'
+[[ ! -e "$pacman_varlib/fresh-config" ]] || {
+    printf 'FAIL: post_install left its fresh-install marker behind\n' >&2
+    exit 1
+}
+rm -f "$ETC/config.conf.pacnew"
+
+installer_functions="$TMP/installer-functions.sh"
+awk '/^(install_preserving|install_config_files)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_functions"
+assert_contains 'install_config_files()' "$(<"$installer_functions")" 'install.sh no longer has install_config_files'
+# shellcheck disable=SC2034,SC2329
+run_script_install_config() {
+    (
+        SUDO=()
+        FORCE_CONFIG="${1:-0}"
+        CONFIG_DIR="$ETC"
+        CLI_BIN="$FAKEBIN/legion-powerctl"
+        info() { printf '%s\n' "$*"; }
+        warn() { printf 'WARNING: %s\n' "$*" >&2; }
+        # shellcheck source=/dev/null
+        . "$installer_functions"
+        install_config_files
+    )
+}
+mv "$ETC" "$TMP/etc-before-script-install"
+run_script_install_config >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'a fresh script install did not select balanced'
+assert_eq 'balanced' "$(fresh_boot_profile)" 'a fresh script install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+run_script_install_config >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'a script reinstall moved the boot profile'
+run_script_install_config 1 >/dev/null
+assert_eq 'balanced' "$(fresh_boot_profile)" 'install.sh --force-config did not reset boot to balanced like a fresh install'
+rm -rf "$ETC"
+mv "$TMP/etc-before-script-install" "$ETC"
+cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
 
 printf 'Test 54: the profile the GUI applies is the one the next boot applies\n'
 run_cli select balanced-plus >/dev/null
@@ -713,5 +800,366 @@ for gui_argv in "select quiet --apply" "select balanced --apply"; do
     assert_contains "Boot apply: profile '$expected'" "$boot_out" "the next boot did not apply '$expected'"
     assert_eq "PROFILE=$expected" "$(grep '^PROFILE=' "$STATE/last-apply.env")" "the next boot recorded the wrong profile"
 done
+
+printf 'Test 55: the shipped config.conf still points at balanced-plus, so a pacman upgrade never flips boot\n'
+assert_eq "$(printf '# Profile applied by legion-powerctl.service once at boot.\nACTIVE_PROFILE=balanced-plus\nx')" \
+    "$(cat "$ROOT_DIR/config/config.conf"; printf x)" \
+    'config/config.conf changed; pacman installs an unedited backup file silently and flips boot'
+
+printf 'Test 56: every file make install puts under /etc is in the PKGBUILD backup array\n'
+stage="$TMP/stage"
+make -s -C "$ROOT_DIR" install DESTDIR="$stage" PREFIX=/usr SYSCONFDIR=/etc >/dev/null
+staged="$(cd "$stage" && find etc -type f | LC_ALL=C sort)"
+backed_up="$(
+    # shellcheck source=/dev/null
+    . "$ROOT_DIR/packaging/arch/PKGBUILD"
+    # shellcheck disable=SC2154
+    printf '%s\n' "${backup[@]}" | LC_ALL=C sort
+)"
+assert_eq "$staged" "$backed_up" 'PKGBUILD backup= does not match the files installed under /etc'
+
+printf 'Test 57: moving to the package flow removes the script install only once every precondition passed\n'
+pkg_root="$TMP/pkg-root"
+mkdir -p "$pkg_root/packaging/arch"
+: > "$pkg_root/packaging/arch/PKGBUILD"
+: > "$pkg_root/packaging/arch/legion-powerctl.install"
+printf '#!/usr/bin/env bash\nprintf "uninstall.sh\\n" >> %q\n[[ ! -e %q ]] || exit 1\nrm -f %q\n' \
+    "$TMP/pkg-flow.log" "$TMP/uninstall-fails" "$TMP/modules-load.conf" > "$pkg_root/uninstall.sh"
+chmod +x "$pkg_root/uninstall.sh"
+: > "$TMP/script-installed-cli"
+package_functions="$TMP/package-install.sh"
+awk '/^package_install\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$package_functions"
+assert_contains 'package_install()' "$(<"$package_functions")" 'install.sh no longer has package_install'
+# shellcheck disable=SC2034,SC2329
+run_package_install() {
+    local failing="$1"
+    : > "$TMP/pkg-flow.log"
+    (
+        CLI_BIN="$TMP/script-installed-cli"
+        REPLACE_SCRIPT_INSTALL=1
+        FORCE_CONFIG=0
+        info() { :; }
+        warn() { :; }
+        die() { printf 'died: %s\n' "$*" >> "$TMP/pkg-flow.log"; exit 1; }
+        SUDO=()
+        MODULES_LOAD_CONF="$TMP/modules-load.conf"
+        confirm() { return 1; }
+        persist_ryzen_smu() { printf 'persist_ryzen_smu\n' >> "$TMP/pkg-flow.log"; }
+        SMU_BLACKLIST_FILE="$TMP/smu-blacklist.conf"
+        ryzen_smu_usable() { [[ "${SMU_USABLE:-1}" == 1 ]]; }
+        pacman() {
+            [[ "$1" == -U ]] || return 1
+            printf 'pacman %s %s %s\n' "$1" "$2" "${3##*/}" >> "$TMP/pkg-flow.log"
+            [[ "$failing" != pacman ]]
+        }
+        make() { [[ " $* " != *' print-version '* ]] || printf '0.0.0\n'; }
+        makepkg() {
+            if [[ "$1" == --packagelist ]]; then
+                printf '%s/legion-powerctl-debug-0.0.0-1-x86_64.pkg.tar.zst\n' "$BUILD_DIR"
+                printf '%s/legion-powerctl-0.0.0-1-any.pkg.tar.zst\n' "$BUILD_DIR"
+                return 0
+            fi
+            printf 'makepkg %s\n' "$*" >> "$TMP/pkg-flow.log"
+            [[ "$failing" != makepkg ]] || return 1
+            : > "$BUILD_DIR/legion-powerctl-0.0.0-1-any.pkg.tar.zst"
+        }
+        step() { [[ "$1" != "$failing" ]] || die "$1 failed"; }
+        check_pacman_lock() { step check_pacman_lock; }
+        ensure_ryzenadj_package() { step ensure_ryzenadj_package; }
+        ensure_ryzen_smu() { step ensure_ryzen_smu; }
+        migrate_legacy() { step migrate_legacy; }
+        ensure_gui_runtime() { :; }
+        enable_service() { :; }
+        # shellcheck source=/dev/null
+        . "$package_functions"
+        ROOT_DIR="$pkg_root" package_install
+    ) >/dev/null 2>&1 || true
+}
+for failing in check_pacman_lock ensure_ryzenadj_package migrate_legacy makepkg; do
+    run_package_install "$failing"
+    refute_contains 'uninstall.sh' "$(<"$TMP/pkg-flow.log")" \
+        "a failing $failing still removed the script install first"
+done
+run_package_install none
+assert_eq "$(printf 'makepkg -sf\nuninstall.sh\npacman -U --noconfirm legion-powerctl-0.0.0-1-any.pkg.tar.zst')" "$(<"$TMP/pkg-flow.log")" \
+    'the script install was not removed between a finished (re)build and the pacman install'
+: > "$TMP/modules-load.conf"
+run_package_install pacman
+assert_match "$(<"$TMP/pkg-flow.log")" "*$(printf 'uninstall.sh\npersist_ryzen_smu\npacman -U')*" \
+    'moving to the package dropped the ryzen_smu boot entry the script install had written'
+pkg_failure="$(<"$TMP/pkg-flow.log")"
+: > "$TMP/modules-load.conf"
+SMU_USABLE=0 run_package_install none
+refute_contains 'persist_ryzen_smu' "$(<"$TMP/pkg-flow.log")" \
+    'moving to the package rewrote a ryzen_smu boot entry for a module that does not work'
+: > "$TMP/smu-blacklist.conf"
+: > "$TMP/modules-load.conf"
+run_package_install none
+refute_contains 'persist_ryzen_smu' "$(<"$TMP/pkg-flow.log")" \
+    'moving to the package rewrote a ryzen_smu boot entry while SMU recovery blacklists the module'
+rm -f "$TMP/smu-blacklist.conf"
+for recovery_step in 'sudo pacman -U ' 'legion-powerctl-0.0.0-1-any.pkg.tar.zst' 'then: sudo legion-powerctl enable'; do
+    assert_contains "$recovery_step" "$pkg_failure" 'a failed pacman install after the script removal gave an incomplete recovery'
+done
+: > "$TMP/uninstall-fails"
+run_package_install none
+rm -f "$TMP/uninstall-fails"
+uninstall_failure="$(<"$TMP/pkg-flow.log")"
+assert_contains 'died: Removing the script install failed.' "$uninstall_failure" \
+    'a failed script removal did not stop the move to the package'
+refute_contains 'pacman -U --noconfirm' "$uninstall_failure" 'pacman ran after the script removal failed'
+kept_package="$(sed -n 's/.*kept at \([^ ]*\.pkg\.tar\.zst\)\..*/\1/p' <<<"$uninstall_failure")"
+[[ -n "$kept_package" && -f "$kept_package" ]] || {
+    printf 'FAIL: a failed script removal deleted the built package its recovery names\n%s\n' "$uninstall_failure" >&2
+    exit 1
+}
+rm -rf -- "${kept_package%/*}"
+
+printf 'Test 58: make dist inside an enclosing git repository still packs this tree\n'
+nested="$TMP/enclosing/legion-powerctl"
+mkdir -p "$nested"
+git -C "$TMP/enclosing" init -q
+tar -C "$ROOT_DIR" --exclude=./.git --exclude=./dist -cf - . | tar -C "$nested" -xf -
+make -s -C "$nested" dist DISTDIR="$TMP/nested-dist" >/dev/null 2>&1
+dist_version="$(make -s -C "$ROOT_DIR" print-version)"
+packed="$(tar -tzf "$TMP/nested-dist/legion-powerctl-$dist_version.tar.gz")"
+for packed_file in bin/legion-powerctl Makefile packaging/arch/PKGBUILD profiles/balanced.conf; do
+    assert_contains "legion-powerctl-$dist_version/$packed_file" "$packed" \
+        "make dist under an enclosing repository left out $packed_file"
+done
+
+printf 'Test 59: make install keeps edited /etc files unless FORCE_CONFIG=1\n'
+config_stage="$TMP/config-stage"
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
+cmp -s "$ROOT_DIR/config/config.conf" "$config_stage/etc/legion-powerctl/config.conf" || {
+    printf 'FAIL: a staged (DESTDIR) install changed the config.conf bytes pacman relies on\n' >&2
+    exit 1
+}
+printf 'ACTIVE_PROFILE=quiet\n' > "$config_stage/etc/legion-powerctl/config.conf"
+printf 'STAPM_W=1\n' > "$config_stage/etc/legion-powerctl/profiles.d/quiet.conf"
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$config_stage/etc/legion-powerctl/config.conf")" \
+    'make install overwrote an edited config.conf'
+assert_eq 'STAPM_W=1' "$(<"$config_stage/etc/legion-powerctl/profiles.d/quiet.conf")" \
+    'make install overwrote an edited profile'
+make -s -C "$ROOT_DIR" install-config DESTDIR="$config_stage" SYSCONFDIR=/etc FORCE_CONFIG=1 >/dev/null
+cmp -s "$ROOT_DIR/config/config.conf" "$config_stage/etc/legion-powerctl/config.conf" || {
+    printf 'FAIL: FORCE_CONFIG=1 did not reset config.conf\n' >&2
+    exit 1
+}
+cmp -s "$ROOT_DIR/profiles/quiet.conf" "$config_stage/etc/legion-powerctl/profiles.d/quiet.conf" || {
+    printf 'FAIL: FORCE_CONFIG=1 did not reset a profile\n' >&2
+    exit 1
+}
+
+fresh_etc="$TMP/fresh-make-etc"
+make -s -C "$ROOT_DIR" install-config DESTDIR= SYSCONFDIR="$fresh_etc" >/dev/null
+assert_eq 'ACTIVE_PROFILE=balanced' "$(grep '^ACTIVE_PROFILE=' "$fresh_etc/legion-powerctl/config.conf")" \
+    'a fresh make install does not boot balanced'
+printf 'ACTIVE_PROFILE=quiet\n' > "$fresh_etc/legion-powerctl/config.conf"
+make -s -C "$ROOT_DIR" install-config DESTDIR= SYSCONFDIR="$fresh_etc" >/dev/null
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$fresh_etc/legion-powerctl/config.conf")" \
+    'make install moved the boot profile of an existing install'
+
+printf 'Test 60: make uninstall disables the unit before removing it, and refuses when it cannot\n'
+uninstall_prefix="$TMP/uninstall-prefix"
+uninstall_bin="$TMP/uninstall-bin"
+mkdir -p "$uninstall_bin"
+cat > "$uninstall_bin/systemctl" <<EOF_FAKE
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "\$*" >> $(printf '%q' "$TMP/uninstall.log")
+[[ -z "\${FAKE_SYSTEMCTL_FAIL:-}" ]]
+EOF_FAKE
+chmod +x "$uninstall_bin/systemctl"
+uninstall_make() {
+    PATH="$uninstall_bin:$PATH" make -s -C "$ROOT_DIR" uninstall DESTDIR= \
+        PREFIX="$uninstall_prefix" SYSCONFDIR="$uninstall_prefix/etc" \
+        SYSTEMDUNITDIR="$uninstall_prefix/lib/systemd/system"
+}
+mkdir -p "$uninstall_prefix/lib/systemd/system"
+: > "$uninstall_prefix/lib/systemd/system/legion-powerctl.service"
+: > "$TMP/uninstall.log"
+FAKE_SYSTEMCTL_FAIL=1 assert_fails 'make uninstall removed a unit it could not disable' uninstall_make
+[[ -e "$uninstall_prefix/lib/systemd/system/legion-powerctl.service" ]] || {
+    printf 'FAIL: make uninstall removed the unit after systemctl disable failed\n' >&2
+    exit 1
+}
+uninstall_make >/dev/null
+assert_file_contains 'systemctl disable legion-powerctl.service' "$TMP/uninstall.log" \
+    'make uninstall did not disable the unit'
+assert_eq 'systemctl daemon-reload' "$(tail -n1 "$TMP/uninstall.log")" \
+    'make uninstall left systemd holding the removed unit'
+[[ ! -e "$uninstall_prefix/lib/systemd/system/legion-powerctl.service" ]] || {
+    printf 'FAIL: make uninstall left the unit behind\n' >&2
+    exit 1
+}
+
+printf 'Test 61: uninstall.sh refreshes the desktop database and icon cache it leaves stale\n'
+uninstall_sh_bin="$TMP/uninstall-sh-bin"
+mkdir -p "$uninstall_sh_bin"
+printf '#!/usr/bin/env bash\nprintf "sudo %%s\\n" "$*" >> %q\n' "$TMP/uninstall-sh.log" > "$uninstall_sh_bin/sudo"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$uninstall_sh_bin/pacman"
+for tool in update-desktop-database gtk-update-icon-cache; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$uninstall_sh_bin/$tool"
+done
+chmod +x "$uninstall_sh_bin"/*
+: > "$TMP/uninstall-sh.log"
+PATH="$uninstall_sh_bin:$PATH" "$ROOT_DIR/uninstall.sh" >/dev/null
+uninstall_sh_log="$(<"$TMP/uninstall-sh.log")"
+assert_contains 'sudo update-desktop-database -q /usr/share/applications' "$uninstall_sh_log" \
+    'uninstall.sh did not refresh the desktop database'
+assert_contains 'sudo gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor' "$uninstall_sh_log" \
+    'uninstall.sh did not refresh the icon cache'
+assert_match "$uninstall_sh_log" '*uninstall-files*update-desktop-database*' \
+    'uninstall.sh refreshed the caches before removing the files'
+
+printf 'Test 62: the boot unit orders after power-profiles-daemon without pulling it in\n'
+unit_text="$(<"$ROOT_DIR/systemd/legion-powerctl.service")"
+assert_match "$(grep '^After=' <<<"$unit_text")" '*power-profiles-daemon.service*' \
+    'the unit can apply before power-profiles-daemon resets the platform profile'
+refute_contains 'Wants=power-profiles-daemon' "$unit_text" 'the unit pulls power-profiles-daemon in'
+refute_contains 'Requires=power-profiles-daemon' "$unit_text" 'the unit requires power-profiles-daemon'
+
+run_package_install pacman
+assert_contains 'died: pacman could not install' "$(<"$TMP/pkg-flow.log")" \
+    'a failed pacman -U did not say how to install the built package'
+
+printf 'Test 63: install.sh trusts exactly the ryzenadj locations the CLI runs from\n'
+cli_dirs="$(grep '^readonly -a RYZENADJ_DIRS=' "$ROOT_DIR/bin/legion-powerctl" | sed 's/^readonly -a RYZENADJ_DIRS=//')"
+installer_dirs="$(grep '^readonly RYZENADJ_DIRS=' "$ROOT_DIR/install.sh" | sed 's/^readonly RYZENADJ_DIRS=//')"
+bench_dirs="$(grep '^readonly -a TRUSTED_DIRS=' "$ROOT_DIR/tools/legion-powerbench" | sed 's/^readonly -a TRUSTED_DIRS=//')"
+assert_contains '/usr/bin' "$cli_dirs" 'the CLI ryzenadj directory list was not found'
+assert_eq "$cli_dirs" "$installer_dirs" 'install.sh and the CLI trust different ryzenadj directories'
+assert_eq "$cli_dirs" "$bench_dirs" 'legion-powerbench and the CLI trust different directories'
+ryzenadj_functions="$TMP/ryzenadj-functions.sh"
+awk '/^(trusted_ryzenadj|ensure_ryzenadj_binary)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$ryzenadj_functions"
+assert_contains 'ensure_ryzenadj_binary()' "$(<"$ryzenadj_functions")" 'install.sh no longer has ensure_ryzenadj_binary'
+mkdir -p "$TMP/path-only" "$TMP/no-ryzenadj"
+cp "$FAKEBIN/ryzenadj" "$TMP/path-only/ryzenadj"
+installer_rc=0
+# shellcheck disable=SC2034,SC2329
+installer_out="$(
+    RYZENADJ_DIRS=("$TMP/no-ryzenadj")
+    ARCH_FAMILY=0
+    info() { printf '%s\n' "$*"; }
+    warn() { printf 'WARNING: %s\n' "$*"; }
+    die() { printf 'ERROR: %s\n' "$*"; exit 1; }
+    # shellcheck source=/dev/null
+    . "$ryzenadj_functions"
+    PATH="$TMP/path-only:$PATH" ensure_ryzenadj_binary
+)" || installer_rc=$?
+assert_eq '1' "$installer_rc" 'install.sh accepted a ryzenadj the CLI will never run'
+assert_contains "$TMP/path-only/ryzenadj" "$installer_out" 'install.sh did not name the ryzenadj it cannot use'
+
+printf 'Test 64: a pacman upgrade never moves the boot profile the old package left behind\n'
+# shellcheck disable=SC2329
+pacman_upgrade() {
+    local rewrites="$1"
+    (
+        # shellcheck source=/dev/null
+        . "$pacman_scriptlet"
+        pre_upgrade
+        [[ "$rewrites" != shipped ]] || cp "$ROOT_DIR/config/config.conf" "$ETC/config.conf"
+        [[ "$rewrites" != user-selects-quiet ]] || printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+        post_upgrade
+    )
+}
+cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+printf '# Profile applied by legion-powerctl.service once at boot.\nACTIVE_PROFILE=balanced\n' > "$ETC/config.conf"
+: > "$LOG"
+upgrade_out="$(pacman_upgrade shipped)"
+assert_file_contains 'ACTIVE_PROFILE=balanced' "$ETC/config.conf" 'the upgrade flipped boot to the shipped profile'
+refute_contains 'balanced-plus' "$(<"$ETC/config.conf")" 'the upgrade flipped boot to the shipped profile'
+assert_contains 'selected balanced again' "$upgrade_out" 'the upgrade did not say it restored the boot profile'
+assert_eq '' "$(<"$LOG")" 'restoring the boot profile applied something'
+[[ ! -e "$pacman_varlib/pre-upgrade-boot" ]] || {
+    printf 'FAIL: post_upgrade left the saved boot profile behind\n' >&2
+    exit 1
+}
+printf 'ACTIVE_PROFILE=quiet\n' > "$ETC/config.conf"
+upgrade_out="$(pacman_upgrade kept)"
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'an upgrade that kept config.conf rewrote it'
+refute_contains 'selected' "$upgrade_out" 'an unchanged boot profile was selected again'
+cp "$ROOT_DIR/profiles/quiet.conf" "$PROFILES/quiet.conf"
+printf 'ACTIVE_PROFILE=balanced\n' > "$ETC/config.conf"
+: > "$LOG"
+upgrade_out="$(pacman_upgrade user-selects-quiet)"
+assert_eq 'ACTIVE_PROFILE=quiet' "$(<"$ETC/config.conf")" 'the upgrade undid a select made during the transaction'
+refute_contains 'replaced' "$upgrade_out" 'the upgrade blamed itself for a select made during the transaction'
+assert_eq '' "$(<"$LOG")" 'the upgrade applied something'
+cp "$ROOT_DIR/profiles/quiet.conf" "$PROFILES/powerbench-old.conf"
+printf 'ACTIVE_PROFILE=powerbench-old\n' > "$ETC/config.conf"
+upgrade_out="$(pacman_upgrade shipped)"
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" 'the upgrade selected a benchmark scratch profile for boot'
+assert_contains 'temporary benchmark profile, so it was not selected again' "$upgrade_out" \
+    'the upgrade did not explain why the benchmark profile stayed unselected'
+refute_contains 'select powerbench-old' "$upgrade_out" 'the upgrade advised a select that the CLI refuses'
+rm -f "$PROFILES/powerbench-old.conf"
+printf 'ACTIVE_PROFILE=gone\n' > "$ETC/config.conf"
+pacman_upgrade shipped >/dev/null
+assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" \
+    'the upgrade pointed boot back at a profile that no longer exists'
+[[ ! -e "$pacman_varlib/pre-upgrade-boot" ]] || {
+    printf 'FAIL: post_upgrade left the saved boot profile behind\n' >&2
+    exit 1
+}
+
+printf 'Test 65: a root-owned binary in a directory others control is never trusted\n'
+if ! unshare --map-root-user true >/dev/null 2>&1; then
+    printf '  (skipped: no unprivileged user namespace to become root in)\n'
+else
+    unsafe_dir="$TMP/unsafe-dir"
+    mkdir -p "$unsafe_dir"
+    cp "$FAKEBIN/ryzenadj" "$unsafe_dir/ryzenadj"
+    chmod 0755 "$unsafe_dir/ryzenadj"
+    chmod 0777 "$unsafe_dir"
+    assert_eq '0 755' "$(unshare --map-root-user stat -c '%u %a' "$unsafe_dir/ryzenadj")" \
+        'the namespace does not show the planted ryzenadj as root-owned'
+    awk '/^(root_controlled_path|trusted_executable)\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-trust.sh"
+    awk '/^(root_controlled_path|trusted_executable)\(\) \{$/,/^}$/' "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-trust.sh"
+    awk '/^(root_controlled_path|trusted_ryzenadj)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$TMP/installer-trust.sh"
+    # shellcheck disable=SC2016
+    trust_check='TESTING=0; . "$1"; if [[ "$1" == *installer* ]]; then RYZENADJ_DIRS=("${2%/*}"); trusted_ryzenadj >/dev/null; else trusted_executable "$2"; fi'
+    for trust in cli bench installer; do
+        if unshare --map-root-user bash -c "$trust_check" _ "$TMP/$trust-trust.sh" "$unsafe_dir/ryzenadj"; then
+            printf 'FAIL: the %s trusted a root-owned binary in a world-writable directory\n' "$trust" >&2
+            exit 1
+        fi
+    done
+    system_bash="$(readlink -f -- "$(command -v bash)")"
+    for trust in cli bench; do
+        bash -c "$trust_check" _ "$TMP/$trust-trust.sh" "$system_bash" || {
+            printf 'FAIL: the %s no longer trusts %s, root-owned all the way up\n' "$trust" "$system_bash" >&2
+            exit 1
+        }
+    done
+    chmod 0755 "$unsafe_dir"
+fi
+
+printf 'Test 66: a system command found through a symlink runs the target the trust walk checked\n'
+plant_dir="$TMP/user-bin"
+mkdir -p "$plant_dir"
+system_bash="$(readlink -f -- "$(command -v bash)")"
+ln -sfn "$system_bash" "$plant_dir/tool"
+awk '/^(root_controlled_path|trusted_executable|resolve_system_command)\(\) \{$/,/^}$/' \
+    "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-resolve.sh"
+grep -q 'for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do' "$TMP/cli-resolve.sh" || {
+    printf 'FAIL: resolve_system_command no longer has the directory list this test replaces\n' >&2
+    exit 1
+}
+# shellcheck disable=SC2016
+sed -i -e 's#^\( *\)if (( EUID != 0 )); then$#\1if false; then#' \
+    -e 's#for dir in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do#for dir in "$PLANT_DIR"; do#' \
+    "$TMP/cli-resolve.sh"
+grep -q 'if false; then' "$TMP/cli-resolve.sh" || { printf 'FAIL: the root branch was not isolated\n' >&2; exit 1; }
+awk '/^(root_controlled_path|trusted_executable|system_binary)\(\) \{$/,/^}$/' \
+    "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-resolve.sh"
+# shellcheck disable=SC2016
+cli_resolved="$(PLANT_DIR="$plant_dir" bash -c 'TESTING=0; . "$1"; resolve_system_command tool' _ "$TMP/cli-resolve.sh")"
+# shellcheck disable=SC2016
+bench_resolved="$(bash -c 'TESTING=0; TRUSTED_DIRS=("$2"); . "$1"; system_binary tool ""' _ \
+    "$TMP/bench-resolve.sh" "$plant_dir")"
+assert_eq "$system_bash" "$cli_resolved" 'the CLI returned a symlink in a user-owned directory instead of its checked target'
+assert_eq "$system_bash" "$bench_resolved" 'legion-powerbench returned a symlink in a user-owned directory instead of its checked target'
 
 printf 'All tests passed.\n'

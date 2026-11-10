@@ -209,24 +209,31 @@ directly with:
 ryzenadj --help | grep -i '^Version'
 ```
 
-`doctor`'s `RyzenAdj-shadow` line reports how many `ryzenadj` binaries are on
-`PATH` - more than one is typically an old `make install` source build in
-`/usr/local/bin` sitting in front of the packaged `/usr/bin/ryzenadj`.
+legion-powerctl never looks for `ryzenadj` on `PATH`. It considers exactly two
+locations, `/usr/local/bin/ryzenadj` and `/usr/bin/ryzenadj`, and uses one only
+if it is a regular file owned by root and not writable by group or others, in
+directories that are all root-owned and not writable by group or others either. A
+binary that fails that check is skipped silently, as if it were not installed.
 
-This is normally an `OK` row, not a warning. legion-powerctl picks the
-**newest** of the candidates rather than the first, so the shadow does not
-affect the tool; the row names the one it chose and the ones it passed over,
-because typing `ryzenadj` by hand still runs whichever comes first on `PATH`.
+`doctor`'s `RyzenAdj-shadow` line reports when both locations hold a binary -
+typically an old `make install` source build in `/usr/local/bin` next to the
+packaged `/usr/bin/ryzenadj`.
 
-It turns into a `WARN` only when one of the candidates does not print a version
-its `--help` banner can be parsed from. Then "newest" cannot be proven and the
-choice falls back to `PATH` order, so the line names the binary it could not
-read. Fix that one, or pin a binary with the environment variable below.
+legion-powerctl picks the **newest** of the candidates rather than the first,
+so the shadow does not affect the tool. The row names every candidate with its
+version, because typing `ryzenadj` by hand still runs whichever comes first on
+`PATH`.
+
+It is a `WARN` when an older candidate sits beside the chosen one (`Stale:`), or
+when a candidate does not print a version its `--help` banner can be parsed
+from. In the second case "newest" cannot be proven and the choice falls back to
+`/usr/local/bin` first; the line names the binary it could not read and still
+names any stale one. Two candidates at the same version are an `OK` row.
 
 Candidates at the *same* version are reported as `Same version:` rather than
-`Stale:`, and the line does not offer to delete them. That tie is broken by
-`PATH` order rather than by recency, and on a default Arch `PATH` the binary
-that loses it is the packaged `/usr/bin/ryzenadj` - which is a hard dependency,
+`Stale:`, and the line does not offer to delete them. That tie goes to
+`/usr/local/bin` rather than to the more recent build, so the binary that loses
+it is the packaged `/usr/bin/ryzenadj` - which is a hard dependency,
 so deleting it is exactly the wrong move.
 
 The tool never removes a shadowing binary - no package owns `/usr/local` files
@@ -238,14 +245,10 @@ pacman -Qo /usr/local/bin/ryzenadj     # "No package owns" confirms it is yours
 sudo rm /usr/local/bin/ryzenadj        # only after that check
 ```
 
-To pin a specific binary regardless of `PATH`, set
-`LEGION_POWERCTL_RYZENADJ_BIN`. For the boot service:
-
-```bash
-sudo systemctl edit legion-powerctl.service
-# [Service]
-# Environment=LEGION_POWERCTL_RYZENADJ_BIN=/usr/bin/ryzenadj
-```
+There is no way to point legion-powerctl at another binary: the
+`LEGION_POWERCTL_RYZENADJ_BIN` override only works in the test harness (see
+[SECURITY.md](../SECURITY.md)). To make it use the packaged binary, remove the
+other one as above.
 
 ## `Not identified as a Lenovo Legion` on a Legion
 

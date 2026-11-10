@@ -55,7 +55,7 @@ The two are distinct and nothing keeps them in step. The running cell comes from
 GUI, because it does not say which of the two it means.
 
 The running cell is the window's readout, and the one loud thing in it. Its top line is
-the apply record - the `confirmed`, `unverified` or `limits did not take` badge and when it
+the apply record - the `confirmed`, `partly confirmed`, `unverified` or `limits did not take` badge and when it
 happened - and under it the running profile's name, at the size of the editor's title,
 sits beside the four limits it is running: sustained, slow PPT, fast PPT and the ceiling,
 each a large tabular figure over a small caps caption. When the readback disagreed the
@@ -162,8 +162,8 @@ Three panels are painted rather than laid out, and all three were forced:
   missing `ryzen_smu` module - none of which a user acts on, and a window that always
   shows warnings teaches its user to stop reading them on the first day. One badge at the
   top of the window carries the count and its severity; the list is one click behind it, worst
-  first. Those two examples are no longer warnings at all: the doctor now reports a
-  resolved `ryzenadj` shadow as `OK`, and reports the module state as one
+  first. The doctor reports a second `ryzenadj` at the same version as `OK` and
+  warns only about a stale or unreadable one, and it reports the module state as one
   `SMU-backend` line rather than two rows for one cause.
 - **The power envelope** (`envelope.py`). Three sliders drew three independent
   numbers, and these three are nested: the CLI refuses them out of order and the
@@ -214,7 +214,7 @@ GUIs, and polkit's own guidance is a minimal privileged helper.
 - One polkit action namespace: `io.github.alexmacra.legion-powerctl.*`, with
   one action per subcommand pinned via `exec.argv1`. Two trust tiers -
   auth_admin_keep on configure/apply/select, always-prompt on
-  delete/enable/disable; SECURITY.md has the action table and why the split
+  delete/enable/disable/repair; SECURITY.md has the action table and why the split
   holds.
 - Implemented (GUI v1, widgets, waybar): `pkexec /usr/bin/legion-powerctl <cmd>`
   behind those actions. The GUI validates every argument through its model
@@ -268,6 +268,12 @@ that name then outlives the message - which is why it is the fallback. Only erro
 are assertive; everything else waits its turn. A message is announced once per
 change, which matters most for the message a broken profile shows, because the
 fifteen-second poll re-selects the same row and would otherwise repeat it forever.
+A failing status poll goes to the status bar and never opens a dialog, and the same
+failure is reported once until a poll succeeds. After that message times out, a
+"Status not updating" chip stays at the right of the status bar, with the error as
+its tooltip and accessible description, until a poll succeeds. The chip takes Tab focus
+so a keyboard or screen reader user can reach that error, and the recovery is announced
+politely.
 
 **Keyboard.** Every control carrying a mnemonic claims a different letter; the form
 labels deliberately have none, because a label that names a stop has no focus to hand
