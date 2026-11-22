@@ -63,6 +63,27 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The installed CLI found no `ryzenadj` at all: the ownership check ran with the `IFS`
+  of the lookup that called it, misread the owner and mode of every binary, and rejected
+  a correctly root-owned `/usr/bin/ryzenadj`. Every apply stopped with "ryzenadj is not
+  installed or executable", so the boot service failed at each start, `doctor` reported
+  a RyzenAdj failure and the GUI showed "ryzenadj missing". An upgrade looked healthy
+  until the next reboot because the limits of the previous version were still in force.
+  The ownership check in the CLI, `legion-powerbench` and `install.sh` no longer depends
+  on the caller.
+- `enable` no longer refuses because the limits of the boot profile are not in force
+  yet: it reports them as a warning, applies them by restarting the service, then reads
+  them back and fails if they still differ. A service that fails to start is named, with
+  the `journalctl` command that shows why. `doctor` on its own still fails on drifted
+  limits.
+- `install.sh` no longer ends with "Installation complete." after the boot service
+  could not be enabled: it says the install is not working yet and exits non-zero.
+- `status` no longer calls a missing runtime record "normal immediately after reboot"
+  when the boot service failed: it says nothing was applied this boot and names the
+  `journalctl` command that shows why.
+- The unit comments no longer imply `/dev/mem` is reachable from the boot service:
+  `ProtectClock=yes` turns the device filter on. No directive changed, and whether a
+  machine whose only backend is `/dev/mem` can apply at boot is not verified on hardware.
 - A pacman upgrade never moves the boot profile. `pre_upgrade` records it and, when
   pacman replaces an unedited `config.conf` with the shipped one, `post_upgrade` selects
   the recorded profile again, without applying it, if that profile still exists and is

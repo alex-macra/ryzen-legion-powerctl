@@ -7,6 +7,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_RYZENADJ=0
 INSTALL_RYZEN_SMU=0
 ENABLE_SERVICE=1
+ENABLE_FAILED=0
 FORCE_CONFIG=0
 MIGRATE_LEGACY=0
 SCRIPT_INSTALL=0
@@ -130,9 +131,10 @@ ensure_ryzenadj_package() {
 }
 
 root_controlled_path() {
-    local path="$1" owner mode
+    local path="$1" owner mode stat_out
     while true; do
-        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        stat_out="$(stat -c '%u %a' -- "$path" 2>/dev/null)" || return 1
+        IFS=' ' read -r owner mode <<<"$stat_out"
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
@@ -439,8 +441,9 @@ enable_service() {
     }
     info "Enabling the boot service (doctor runs first; use 'legion-powerctl enable --force' to override)..."
     if ! "${SUDO[@]}" "$CLI_BIN" enable; then
-        warn "The files are installed, but the service was not enabled."
-        warn "Fix the doctor failures above, then run: sudo legion-powerctl enable"
+        ENABLE_FAILED=1
+        warn "The files are installed, but the boot profile is not confirmed in force."
+        warn "Fix what enable reported above, then run: sudo legion-powerctl enable"
         return 1
     fi
 }
@@ -559,6 +562,28 @@ script_install() {
     enable_service || true
 }
 
+finish_install() {
+    printf '\n'
+    if (( ENABLE_FAILED == 1 )); then
+        warn "Installed, but NOT working yet: the boot profile is not confirmed in force."
+        warn "If the service failed, see why: journalctl -b -u legion-powerctl.service"
+    else
+        info "Installation complete."
+    fi
+    "$CLI_BIN" doctor || true
+    printf '\nUseful commands:\n'
+    printf '  legion-powerctl status\n'
+    printf '  legion-powerctl-gui\n'
+    printf '  sudo legion-powerctl wizard balanced-plus\n'
+    printf '  sudo legion-powerctl select balanced --apply\n'
+    printf '  legion-powerbench doctor\n'
+    printf '  systemctl status legion-powerctl.service\n'
+    (( ENABLE_FAILED == 0 )) || {
+        warn "Not working yet: rerun 'sudo legion-powerctl enable' once the failure above is fixed."
+        return 1
+    }
+}
+
 main() {
     [[ -x "$ROOT_DIR/bin/legion-powerctl" ]] || die "Run install.sh from the repository checkout."
     command -v systemctl >/dev/null 2>&1 || die "systemd/systemctl is required."
@@ -588,16 +613,7 @@ main() {
         script_install
     fi
 
-    printf '\n'
-    info "Installation complete."
-    "$CLI_BIN" doctor || true
-    printf '\nUseful commands:\n'
-    printf '  legion-powerctl status\n'
-    printf '  legion-powerctl-gui\n'
-    printf '  sudo legion-powerctl wizard balanced-plus\n'
-    printf '  sudo legion-powerctl select balanced --apply\n'
-    printf '  legion-powerbench doctor\n'
-    printf '  systemctl status legion-powerctl.service\n'
+    finish_install
 }
 
 main "$@"

@@ -165,6 +165,7 @@ refuse_without_dry_run() {
 
 MUTATION_LOCK_FD=""
 APPLY_SCRATCH_OK=0
+DOCTOR_BEFORE_ENABLE=0
 LOCKLESS_SELECT=0
 LOCK_SKIPPED=0
 acquire_mutation_lock() {
@@ -242,7 +243,7 @@ root_controlled_path() {
     local path="$1" owner mode stat_out
     while true; do
         stat_out="$(stat -c '%u %a' -- "$path" 2>/dev/null)" || return 1
-        read -r owner mode <<<"$stat_out"
+        IFS=' ' read -r owner mode <<<"$stat_out"
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
@@ -259,10 +260,10 @@ trusted_executable() {
 }
 
 ryzenadj_candidates() {
-    local IFS=: dir resolved
+    local dir resolved
     local -A seen=()
     local -a dirs=("${RYZENADJ_DIRS[@]}")
-    [[ "$TESTING" != 1 ]] || read -r -a dirs <<<"$PATH"
+    [[ "$TESTING" != 1 ]] || IFS=: read -r -a dirs <<<"$PATH"
     for dir in "${dirs[@]}"; do
         [[ -n "$dir" && -f "$dir/ryzenadj" && -x "$dir/ryzenadj" ]] || continue
         resolved="$(readlink -f "$dir/ryzenadj" 2>/dev/null || printf '%s' "$dir/ryzenadj")"
@@ -1827,6 +1828,9 @@ cmd_status() {
     if last_apply="$(last_apply_records)"; then
         printf '\n%s\n' "$(last_apply_heading "$last_apply")"
         [[ -z "$last_apply" ]] || printf '  %s\n' "${last_apply//$'\n'/$'\n'  }"
+    elif [[ "$STATUS_SERVICE_ACTIVE" == failed ]]; then
+        printf '\nLast successful apply: no runtime record, and the boot service failed: nothing was applied this boot.\n'
+        printf "  See why: journalctl -b -u %s\n" "$SERVICE_NAME"
     else
         printf '\nLast successful apply: no runtime record (normal immediately after reboot if the service has not run).\n'
     fi
@@ -2101,8 +2105,13 @@ cmd_doctor() {
         case "$drift_rc" in
             0) doctor_line OK Limits "in force: ${STAPM_W}/${SLOW_W}/${FAST_W} W, ${TEMP_C} C" ;;
             1)
-                doctor_line FAIL Limits "$drift_detail; re-run 'legion-powerctl apply'"
-                ((failures += 1))
+                if [[ "$DOCTOR_BEFORE_ENABLE" == 1 ]]; then
+                    doctor_line WARN Limits "$drift_detail; enabling the service applies them"
+                    ((warnings += 1))
+                else
+                    doctor_line FAIL Limits "$drift_detail; re-run 'legion-powerctl apply'"
+                    ((failures += 1))
+                fi
                 ;;
             2)
                 doctor_line WARN Limits "'$ryzenadj -i' returned nothing this version can read"
@@ -2146,7 +2155,7 @@ cmd_enable() {
     refuse_without_dry_run enable
     require_root
     if (( force == 0 )); then
-        cmd_doctor || die "doctor reported failures. Fix them first, or rerun with 'legion-powerctl enable --force'."
+        DOCTOR_BEFORE_ENABLE=1 cmd_doctor || die "doctor reported failures. Fix them first, or rerun with 'legion-powerctl enable --force'."
     fi
 
     local systemctl_bin
@@ -2154,7 +2163,17 @@ cmd_enable() {
     [[ -n "$systemctl_bin" && -x "$systemctl_bin" ]] || die "systemctl not found."
     run_unlocked "$systemctl_bin" daemon-reload
     run_unlocked "$systemctl_bin" enable "$SERVICE_NAME"
-    run_unlocked "$systemctl_bin" restart "$SERVICE_NAME"
+    run_unlocked "$systemctl_bin" restart "$SERVICE_NAME" \
+        || die "$SERVICE_NAME is enabled, but it reported a failure. See why: journalctl -b -u $SERVICE_NAME"
+
+    local ryzenadj drift_detail="" drift_rc=0
+    load_global_config
+    ryzenadj="$(resolve_ryzenadj)"
+    if [[ -n "$ryzenadj" && -x "$ryzenadj" ]] && try_load_profile "$ACTIVE_PROFILE"; then
+        drift_detail="$(verify_ryzenadj_limits "$ryzenadj")" || drift_rc=$?
+        (( drift_rc != 1 )) \
+            || die "$SERVICE_NAME is enabled, but the limits are still not in force: $drift_detail"
+    fi
     success "$SERVICE_NAME is enabled and the active profile was applied."
 }
 

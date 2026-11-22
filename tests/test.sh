@@ -1136,6 +1136,91 @@ else
     chmod 0755 "$unsafe_dir"
 fi
 
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-walk.sh"
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-walk.sh"
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$TMP/installer-walk.sh"
+printf 'Test 65b: outside the test harness the real lookup still finds a root-owned ryzenadj\n'
+awk '/^(root_controlled_path|trusted_executable|ryzenadj_candidates)\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-lookup.sh"
+lookup_bash="$(readlink -f -- "$(command -v bash)")"
+lookup_dir="$TMP/lookup-bin"
+mkdir -p "$lookup_dir"
+ln -s "$lookup_bash" "$lookup_dir/ryzenadj"
+# shellcheck disable=SC2016
+lookup_check='TESTING=0; . "$1"; RYZENADJ_DIRS=("$2"); ryzenadj_candidates'
+grep -q '^ryzenadj_candidates() {$' "$TMP/cli-lookup.sh" || {
+    printf 'FAIL: could not extract ryzenadj_candidates from the CLI\n' >&2
+    exit 1
+}
+lookup_root_owned=1
+lookup_walk="$lookup_bash"
+while true; do
+    lookup_stat="$(stat -c '%u %a' -- "$lookup_walk")"
+    [[ "${lookup_stat%% *}" == 0 ]] && (( (8#${lookup_stat##* } & 8#022) == 0 )) || lookup_root_owned=0
+    [[ "$lookup_walk" != / ]] || break
+    lookup_walk="${lookup_walk%/*}"
+    lookup_walk="${lookup_walk:-/}"
+done
+for trust in bench installer; do
+    cmp -s "$TMP/cli-walk.sh" "$TMP/$trust-walk.sh" || {
+        printf 'FAIL: the %s ownership walk no longer matches the one in the CLI\n' "$trust" >&2
+        exit 1
+    }
+done
+if (( lookup_root_owned == 1 )); then
+    assert_eq "$lookup_bash" "$(bash -c "$lookup_check" _ "$TMP/cli-lookup.sh" "$lookup_dir")" \
+        'the real ryzenadj lookup rejects a binary that is root-owned all the way up'
+    for trust in cli bench installer; do
+        # shellcheck disable=SC2016
+        bash -c '. "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
+            printf 'FAIL: the %s ownership walk rejects a root-owned path\n' "$trust" >&2
+            exit 1
+        }
+        # shellcheck disable=SC2016
+        bash -c 'IFS=:; . "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
+            printf 'FAIL: the %s ownership walk depends on the IFS of its caller\n' "$trust" >&2
+            exit 1
+        }
+    done
+else
+    printf '  (skipped: %s is not root-owned all the way up on this machine)\n' "$lookup_bash"
+fi
+
+printf 'Test 65c: the installer does not call a failed enable a completed install\n'
+installer_finish="$TMP/installer-finish.sh"
+awk '/^(info|warn)\(\) \{.*\}$/; /^(enable_service|finish_install)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_finish"
+for installer_fn in 'enable_service()' 'finish_install()'; do
+    assert_contains "$installer_fn" "$(<"$installer_finish")" "install.sh no longer has $installer_fn"
+done
+[[ "$(awk '/^main\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" | tail -n 2 | head -n 1)" == '    finish_install' ]] || {
+    printf 'FAIL: install.sh main no longer ends on the status of finish_install\n' >&2
+    exit 1
+}
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\n[[ "$1" != enable ]] || exit "${FAKE_ENABLE_RC:-0}"\n' > "$TMP/installer-cli"
+chmod +x "$TMP/installer-cli"
+run_installer_finish() {
+    FAKE_ENABLE_RC="$1" ENABLE_SERVICE="$2" bash -c '
+        set -Eeuo pipefail
+        . "$1"
+        SUDO=() CLI_BIN="$2" ENABLE_FAILED=0
+        enable_service || true
+        finish_install
+    ' _ "$installer_finish" "$TMP/installer-cli" 2>&1
+}
+installer_rc=0
+installer_out="$(run_installer_finish 1 1)" || installer_rc=$?
+assert_eq '1' "$installer_rc" 'install.sh exited 0 after the boot service could not be enabled'
+assert_contains 'NOT working yet' "$installer_out" 'install.sh did not say the install is not working'
+refute_contains 'Installation complete.' "$installer_out" 'install.sh called a failed enable a completed install'
+installer_rc=0
+installer_out="$(run_installer_finish 0 1)" || installer_rc=$?
+assert_eq '0' "$installer_rc" 'install.sh failed although enable succeeded'
+assert_contains 'Installation complete.' "$installer_out" 'install.sh did not report a completed install'
+installer_rc=0
+installer_out="$(run_installer_finish 1 0)" || installer_rc=$?
+assert_eq '0' "$installer_rc" 'install.sh --no-enable failed on an enable it never ran'
+assert_contains 'Installation complete.' "$installer_out" 'install.sh --no-enable did not report a completed install'
+
 printf 'Test 66: a system command found through a symlink runs the target the trust walk checked\n'
 plant_dir="$TMP/user-bin"
 mkdir -p "$plant_dir"

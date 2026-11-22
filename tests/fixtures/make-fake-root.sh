@@ -303,8 +303,17 @@ cat > "$FAKEBIN/systemctl" <<'EOF_FAKE'
 #!/usr/bin/env bash
 case "${1:-}" in
     is-enabled) printf 'enabled\n' ;;
-    is-active) printf 'active\n' ;;
-    *) printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}" ;;
+    is-active)
+        printf '%s\n' "${LEGION_FAKE_SERVICE_ACTIVE:-active}"
+        [[ "${LEGION_FAKE_SERVICE_ACTIVE:-active}" == active ]]
+        ;;
+    *)
+        printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}"
+        [[ "${1:-}" != restart || -z "${LEGION_FAKE_RESTART_FAILS:-}" ]] || exit 1
+        # LEGION_FAKE_RESTART_APPLIES names the CLI the restarted unit would run.
+        [[ "${1:-}" != restart || -z "${LEGION_FAKE_RESTART_APPLIES:-}" ]] \
+            || "$LEGION_FAKE_RESTART_APPLIES" apply --boot >/dev/null
+        ;;
 esac
 EOF_FAKE
 chmod +x "$FAKEBIN"/*

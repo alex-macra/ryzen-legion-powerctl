@@ -126,7 +126,9 @@ Reapply with `sudo legion-powerctl apply` when required.
 Existing `/etc/legion-powerctl` profiles are always preserved: by pacman's `backup=`
 handling in the package flow, and by the installer itself in the script flow. The boot
 service is enabled through `legion-powerctl enable`, which runs `doctor` first and
-refuses on failures. `--force` overrides that.
+refuses on failures. `--force` overrides that. Limits that are not in force yet are only
+a warning at that point, because enabling applies them; `enable` reads them back
+afterwards and fails if they still differ.
 
 ## The graphical interface
 
