@@ -1147,9 +1147,28 @@ mkdir -p "$lookup_dir"
 ln -s "$lookup_bash" "$lookup_dir/ryzenadj"
 # shellcheck disable=SC2016
 lookup_check='TESTING=0; . "$1"; RYZENADJ_DIRS=("$2"); ryzenadj_candidates'
-if bash -c 'TESTING=0; . "$1"; root_controlled_path "$2"' _ "$TMP/cli-lookup.sh" "$lookup_bash"; then
+grep -q '^ryzenadj_candidates() {$' "$TMP/cli-lookup.sh" || {
+    printf 'FAIL: could not extract ryzenadj_candidates from the CLI\n' >&2
+    exit 1
+}
+lookup_root_owned=1
+lookup_walk="$lookup_bash"
+while true; do
+    lookup_stat="$(stat -c '%u %a' -- "$lookup_walk")"
+    [[ "${lookup_stat%% *}" == 0 ]] && (( (8#${lookup_stat##* } & 8#022) == 0 )) || lookup_root_owned=0
+    [[ "$lookup_walk" != / ]] || break
+    lookup_walk="${lookup_walk%/*}"
+    lookup_walk="${lookup_walk:-/}"
+done
+if (( lookup_root_owned == 1 )); then
     assert_eq "$lookup_bash" "$(bash -c "$lookup_check" _ "$TMP/cli-lookup.sh" "$lookup_dir")" \
         'the real ryzenadj lookup rejects a binary that is root-owned all the way up'
+    for trust in bench installer; do
+        cmp -s "$TMP/cli-walk.sh" "$TMP/$trust-walk.sh" || {
+            printf 'FAIL: the %s ownership walk no longer matches the one in the CLI\n' "$trust" >&2
+            exit 1
+        }
+    done
     for trust in cli bench installer; do
         # shellcheck disable=SC2016
         bash -c '. "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
@@ -1165,6 +1184,38 @@ if bash -c 'TESTING=0; . "$1"; root_controlled_path "$2"' _ "$TMP/cli-lookup.sh"
 else
     printf '  (skipped: %s is not root-owned all the way up on this machine)\n' "$lookup_bash"
 fi
+
+printf 'Test 65c: the installer does not call a failed enable a completed install\n'
+installer_finish="$TMP/installer-finish.sh"
+awk '/^(info|warn)\(\) \{.*\}$/; /^(enable_service|finish_install)\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$installer_finish"
+for installer_fn in 'enable_service()' 'finish_install()'; do
+    assert_contains "$installer_fn" "$(<"$installer_finish")" "install.sh no longer has $installer_fn"
+done
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\n[[ "$1" != enable ]] || exit "${FAKE_ENABLE_RC:-0}"\n' > "$TMP/installer-cli"
+chmod +x "$TMP/installer-cli"
+run_installer_finish() {
+    FAKE_ENABLE_RC="$1" ENABLE_SERVICE="$2" bash -c '
+        set -Eeuo pipefail
+        . "$1"
+        SUDO=() CLI_BIN="$2" ENABLE_FAILED=0
+        enable_service || true
+        finish_install
+    ' _ "$installer_finish" "$TMP/installer-cli" 2>&1
+}
+installer_rc=0
+installer_out="$(run_installer_finish 1 1)" || installer_rc=$?
+assert_eq '1' "$installer_rc" 'install.sh exited 0 after the boot service could not be enabled'
+assert_contains 'NOT working yet' "$installer_out" 'install.sh did not say the install is not working'
+refute_contains 'Installation complete.' "$installer_out" 'install.sh called a failed enable a completed install'
+installer_rc=0
+installer_out="$(run_installer_finish 0 1)" || installer_rc=$?
+assert_eq '0' "$installer_rc" 'install.sh failed although enable succeeded'
+assert_contains 'Installation complete.' "$installer_out" 'install.sh did not report a completed install'
+installer_rc=0
+installer_out="$(run_installer_finish 1 0)" || installer_rc=$?
+assert_eq '0' "$installer_rc" 'install.sh --no-enable failed on an enable it never ran'
+assert_contains 'Installation complete.' "$installer_out" 'install.sh --no-enable did not report a completed install'
 
 printf 'Test 66: a system command found through a symlink runs the target the trust walk checked\n'
 plant_dir="$TMP/user-bin"

@@ -66,7 +66,8 @@ The dry run prints the planned changes without writing files or unloading module
 .TP
 .B enable [--force]
 Run doctor, then enable the boot service and apply the selected profile.
-Refuses when doctor reports failures unless --force is supplied.
+Refuses when doctor reports failures unless --force is supplied. Limits that are not in
+force yet are a warning here, because enabling applies them; they are read back afterwards.
 .TP
 .B disable
 Disable the boot service. Existing hardware state remains until firmware or a

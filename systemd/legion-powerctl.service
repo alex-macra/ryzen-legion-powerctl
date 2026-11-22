@@ -16,7 +16,7 @@ StateDirectory=legion-powerctl
 StateDirectoryMode=0755
 TimeoutStartSec=30s
 # ProtectSystem stays "full", not "strict": this writes CPUFreq/EPP sysfs and
-# /run/legion-powerctl, and RyzenAdj needs /dev/mem or a usable ryzen_smu sysfs interface. Do not
+# /run/legion-powerctl, and RyzenAdj needs a usable SMU interface (see the device note below). Do not
 # add ProtectKernelTunables - it blocks the sysfs writes this service exists for.
 NoNewPrivileges=yes
 ProtectHome=yes
@@ -37,8 +37,9 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectProc=invisible
 SystemCallArchitectures=native
-# @raw-io alongside @system-service: RyzenAdj reaches the SMU through /dev/mem or the
-# ryzen_smu sysfs interface, and some builds fall back to port I/O, which needs iopl/ioperm.
+# @raw-io alongside @system-service: RyzenAdj reaches the SMU through the ryzen_smu sysfs
+# interface or PCI configuration space, and some builds fall back to port I/O, which needs
+# iopl/ioperm. The syscall filter does not open /dev/mem: see the device note below.
 SystemCallFilter=@system-service @raw-io
 SystemCallErrorNumber=EPERM
 UMask=0077
@@ -47,8 +48,11 @@ UMask=0077
 # the boot apply silently. Tighten them once there is a verified boot.
 # Know this before relying on /dev/mem here: ProtectClock=yes implies
 # "DeviceAllow=char-rtc r", and any DeviceAllow turns the device filter on, so /dev/mem,
-# /dev/port and /dev/cpu/*/msr are closed to this unit. The boot apply has not needed
-# them; check with: systemctl show legion-powerctl.service -p DevicePolicy -p DeviceAllow
+# /dev/port and /dev/cpu/*/msr are closed to this unit. Whether a machine whose only
+# backend is /dev/mem can apply at boot is not verified on hardware: an interactive apply
+# may work where this unit fails. Check with
+#   systemctl show legion-powerctl.service -p DevicePolicy -p DeviceAllow
+#   journalctl -b -u legion-powerctl.service
 
 [Install]
 WantedBy=multi-user.target

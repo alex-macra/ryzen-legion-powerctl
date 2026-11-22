@@ -1054,10 +1054,29 @@ case_status_names_a_failed_boot_apply_that_left_no_record() {
     json="$(run_cli status --json)"
     assert_contains '"active":"failed"' "$json" 'status --json lost the failed service state'
 
-    LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE=inactive)
-    text="$(run_cli status 2>&1)"
-    assert_contains 'normal immediately after reboot' "$text" \
-        'status blamed a service that has simply not run yet'
+    local state
+    for state in inactive activating active; do
+        LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE="$state")
+        text="$(run_cli status 2>&1)"
+        assert_contains 'normal immediately after reboot' "$text" \
+            "status blamed a service that is $state, not failed"
+    done
+}
+
+case_enable_names_a_boot_service_that_failed_to_start() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RESTART_FAILS=1)
+    local output rc=0
+    : > "$LOG"
+    output="$(run_cli enable 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'enable exited 0 although the service failed to start'
+    assert_contains 'is enabled, but it reported a failure' "$output" \
+        'enable did not say the service is enabled and failed'
+    assert_contains 'journalctl -b -u legion-powerctl.service' "$output" \
+        'enable did not say where the failure is recorded'
+    refute_contains 'the active profile was applied' "$output" \
+        'enable claimed an apply the service did not report'
+    assert_file_contains 'systemctl enable legion-powerctl.service' "$LOG" \
+        'the service was not enabled before the restart'
 }
 
 case_enable_is_not_refused_for_limits_it_is_about_to_apply() {
@@ -1065,7 +1084,12 @@ case_enable_is_not_refused_for_limits_it_is_about_to_apply() {
     local output rc=0
     : > "$LOG"
     output="$(run_cli enable 2>&1)" || rc=$?
-    assert_eq '0' "$rc" "enable refused because the limits are not in force yet: $output"
+    assert_eq '1' "$rc" "enable reported success although the limits never took: $output"
+    assert_contains 'the limits are still not in force: ' "$output" \
+        'enable did not name the limits that are still wrong after the restart'
+    assert_contains 'Tctl wanted 72, reads 95' "$output" 'the remaining drift was not named'
+    refute_contains 'the active profile was applied' "$output" \
+        'enable claimed the profile was applied while the limits are wrong'
     assert_doctor_line WARN Limits 'Tctl wanted 72, reads 95' "$output" \
         'enable did not report the limits it is about to apply as a warning'
     assert_file_contains 'systemctl restart legion-powerctl.service' "$LOG" \
@@ -2175,7 +2199,9 @@ case_the_wizard_takes_the_lock_before_it_writes_the_profile() {
 run_case case_the_wizard_takes_the_lock_before_it_writes_the_profile \
     'the wizard takes the power lock before it writes a profile it will select or apply'
 run_case case_enable_is_not_refused_for_limits_it_is_about_to_apply \
-    'enable is not refused for limits it is about to apply'
+    'enable is not refused for limits it is about to apply, and checks them afterwards'
+run_case case_enable_names_a_boot_service_that_failed_to_start \
+    'enable names a boot service that failed to start'
 run_case case_status_names_a_failed_boot_apply_that_left_no_record \
     'status names a failed boot apply that left no record'
 

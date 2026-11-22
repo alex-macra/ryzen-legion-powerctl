@@ -307,7 +307,10 @@ case "${1:-}" in
         printf '%s\n' "${LEGION_FAKE_SERVICE_ACTIVE:-active}"
         [[ "${LEGION_FAKE_SERVICE_ACTIVE:-active}" == active ]]
         ;;
-    *) printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}" ;;
+    *)
+        printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}"
+        [[ "${1:-}" != restart || -z "${LEGION_FAKE_RESTART_FAILS:-}" ]] || exit 1
+        ;;
 esac
 EOF_FAKE
 chmod +x "$FAKEBIN"/*
