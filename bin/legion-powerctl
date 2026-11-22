@@ -1828,6 +1828,9 @@ cmd_status() {
     if last_apply="$(last_apply_records)"; then
         printf '\n%s\n' "$(last_apply_heading "$last_apply")"
         [[ -z "$last_apply" ]] || printf '  %s\n' "${last_apply//$'\n'/$'\n'  }"
+    elif [[ "$STATUS_SERVICE_ACTIVE" == failed ]]; then
+        printf '\nLast successful apply: no runtime record, and the boot service failed: nothing was applied this boot.\n'
+        printf "  See why: journalctl -b -u %s\n" "$SERVICE_NAME"
     else
         printf '\nLast successful apply: no runtime record (normal immediately after reboot if the service has not run).\n'
     fi

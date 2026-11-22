@@ -1040,6 +1040,26 @@ case_doctor_reports_limits_that_drifted_from_the_profile() {
     assert_eq '1' "$rc" 'doctor exited 0 with the limits not in force'
 }
 
+case_status_names_a_failed_boot_apply_that_left_no_record() {
+    local text json
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE=failed)
+    rm -f "$STATE/last-apply.env"
+    text="$(run_cli status 2>&1)"
+    assert_contains 'the boot service failed: nothing was applied this boot' "$text" \
+        'status called a failed boot apply normal'
+    assert_contains "journalctl -b -u legion-powerctl.service" "$text" \
+        'status did not say where the failure is recorded'
+    refute_contains 'normal immediately after reboot' "$text" \
+        'status still called the missing record normal'
+    json="$(run_cli status --json)"
+    assert_contains '"active":"failed"' "$json" 'status --json lost the failed service state'
+
+    LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE=inactive)
+    text="$(run_cli status 2>&1)"
+    assert_contains 'normal immediately after reboot' "$text" \
+        'status blamed a service that has simply not run yet'
+}
+
 case_enable_is_not_refused_for_limits_it_is_about_to_apply() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_TCTL=95)
     local output rc=0
@@ -2156,6 +2176,8 @@ run_case case_the_wizard_takes_the_lock_before_it_writes_the_profile \
     'the wizard takes the power lock before it writes a profile it will select or apply'
 run_case case_enable_is_not_refused_for_limits_it_is_about_to_apply \
     'enable is not refused for limits it is about to apply'
+run_case case_status_names_a_failed_boot_apply_that_left_no_record \
+    'status names a failed boot apply that left no record'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"

@@ -42,9 +42,13 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service @raw-io
 SystemCallErrorNumber=EPERM
 UMask=0077
-# Deliberately NOT set: CapabilityBoundingSet and DeviceAllow. Both would have to be
-# proven against a real SMU write on the laptop, and getting them wrong fails the
-# boot apply silently. Tighten them once there is a verified boot.
+# Deliberately NOT set: CapabilityBoundingSet and an explicit DeviceAllow. Both would
+# have to be proven against a real SMU write on the laptop, and getting them wrong fails
+# the boot apply silently. Tighten them once there is a verified boot.
+# Know this before relying on /dev/mem here: ProtectClock=yes implies
+# "DeviceAllow=char-rtc r", and any DeviceAllow turns the device filter on, so /dev/mem,
+# /dev/port and /dev/cpu/*/msr are closed to this unit. The boot apply has not needed
+# them; check with: systemctl show legion-powerctl.service -p DevicePolicy -p DeviceAllow
 
 [Install]
 WantedBy=multi-user.target

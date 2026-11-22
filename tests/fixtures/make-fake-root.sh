@@ -303,7 +303,10 @@ cat > "$FAKEBIN/systemctl" <<'EOF_FAKE'
 #!/usr/bin/env bash
 case "${1:-}" in
     is-enabled) printf 'enabled\n' ;;
-    is-active) printf 'active\n' ;;
+    is-active)
+        printf '%s\n' "${LEGION_FAKE_SERVICE_ACTIVE:-active}"
+        [[ "${LEGION_FAKE_SERVICE_ACTIVE:-active}" == active ]]
+        ;;
     *) printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}" ;;
 esac
 EOF_FAKE

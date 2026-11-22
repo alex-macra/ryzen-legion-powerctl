@@ -76,6 +76,11 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   on its own still fails on drifted limits.
 - `install.sh` no longer ends with "Installation complete." after the boot service
   could not be enabled: it says the install is not working yet and exits non-zero.
+- `status` no longer calls a missing runtime record "normal immediately after reboot"
+  when the boot service failed: it says nothing was applied this boot and names the
+  `journalctl` command that shows why.
+- The unit comments no longer imply `/dev/mem` is reachable from the boot service:
+  `ProtectClock=yes` turns the device filter on. No directive changed.
 - A pacman upgrade never moves the boot profile. `pre_upgrade` records it and, when
   pacman replaces an unedited `config.conf` with the shipped one, `post_upgrade` selects
   the recorded profile again, without applying it, if that profile still exists and is
