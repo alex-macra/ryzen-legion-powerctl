@@ -442,7 +442,7 @@ enable_service() {
     info "Enabling the boot service (doctor runs first; use 'legion-powerctl enable --force' to override)..."
     if ! "${SUDO[@]}" "$CLI_BIN" enable; then
         ENABLE_FAILED=1
-        warn "The files are installed, but the boot service is not enabled and running."
+        warn "The files are installed, but the boot profile is not confirmed in force."
         warn "Fix what enable reported above, then run: sudo legion-powerctl enable"
         return 1
     fi
@@ -565,8 +565,8 @@ script_install() {
 finish_install() {
     printf '\n'
     if (( ENABLE_FAILED == 1 )); then
-        warn "Installed, but NOT working yet: the boot service is not enabled and running."
-        warn "Fix what enable reported above (journalctl -b -u legion-powerctl.service), then rerun: sudo legion-powerctl enable"
+        warn "Installed, but NOT working yet: the boot profile is not confirmed in force."
+        warn "If the service failed, see why: journalctl -b -u legion-powerctl.service"
     else
         info "Installation complete."
     fi

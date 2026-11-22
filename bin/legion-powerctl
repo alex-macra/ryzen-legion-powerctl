@@ -2167,6 +2167,7 @@ cmd_enable() {
         || die "$SERVICE_NAME is enabled, but it reported a failure. See why: journalctl -b -u $SERVICE_NAME"
 
     local ryzenadj drift_detail="" drift_rc=0
+    load_global_config
     ryzenadj="$(resolve_ryzenadj)"
     if [[ -n "$ryzenadj" && -x "$ryzenadj" ]] && try_load_profile "$ACTIVE_PROFILE"; then
         drift_detail="$(verify_ryzenadj_limits "$ryzenadj")" || drift_rc=$?

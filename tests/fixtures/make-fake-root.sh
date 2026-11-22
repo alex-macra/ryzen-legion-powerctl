@@ -310,6 +310,9 @@ case "${1:-}" in
     *)
         printf 'systemctl %s\n' "$*" >> "${LEGION_TEST_LOG:?}"
         [[ "${1:-}" != restart || -z "${LEGION_FAKE_RESTART_FAILS:-}" ]] || exit 1
+        # LEGION_FAKE_RESTART_APPLIES names the CLI the restarted unit would run.
+        [[ "${1:-}" != restart || -z "${LEGION_FAKE_RESTART_APPLIES:-}" ]] \
+            || "$LEGION_FAKE_RESTART_APPLIES" apply --boot >/dev/null
         ;;
 esac
 EOF_FAKE

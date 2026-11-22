@@ -1160,15 +1160,15 @@ while true; do
     lookup_walk="${lookup_walk%/*}"
     lookup_walk="${lookup_walk:-/}"
 done
+for trust in bench installer; do
+    cmp -s "$TMP/cli-walk.sh" "$TMP/$trust-walk.sh" || {
+        printf 'FAIL: the %s ownership walk no longer matches the one in the CLI\n' "$trust" >&2
+        exit 1
+    }
+done
 if (( lookup_root_owned == 1 )); then
     assert_eq "$lookup_bash" "$(bash -c "$lookup_check" _ "$TMP/cli-lookup.sh" "$lookup_dir")" \
         'the real ryzenadj lookup rejects a binary that is root-owned all the way up'
-    for trust in bench installer; do
-        cmp -s "$TMP/cli-walk.sh" "$TMP/$trust-walk.sh" || {
-            printf 'FAIL: the %s ownership walk no longer matches the one in the CLI\n' "$trust" >&2
-            exit 1
-        }
-    done
     for trust in cli bench installer; do
         # shellcheck disable=SC2016
         bash -c '. "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
@@ -1191,6 +1191,10 @@ awk '/^(info|warn)\(\) \{.*\}$/; /^(enable_service|finish_install)\(\) \{$/,/^}$
 for installer_fn in 'enable_service()' 'finish_install()'; do
     assert_contains "$installer_fn" "$(<"$installer_finish")" "install.sh no longer has $installer_fn"
 done
+[[ "$(awk '/^main\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" | tail -n 2 | head -n 1)" == '    finish_install' ]] || {
+    printf 'FAIL: install.sh main no longer ends on the status of finish_install\n' >&2
+    exit 1
+}
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\n[[ "$1" != enable ]] || exit "${FAKE_ENABLE_RC:-0}"\n' > "$TMP/installer-cli"
 chmod +x "$TMP/installer-cli"

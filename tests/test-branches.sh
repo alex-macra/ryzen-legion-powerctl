@@ -1054,6 +1054,14 @@ case_status_names_a_failed_boot_apply_that_left_no_record() {
     json="$(run_cli status --json)"
     assert_contains '"active":"failed"' "$json" 'status --json lost the failed service state'
 
+    printf 'PROFILE=balanced-plus\nRESULT=partial\n' > "$STATE/last-apply.env"
+    LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE=failed)
+    text="$(run_cli status 2>&1)"
+    assert_contains 'INCOMPLETE (RESULT=partial)' "$text" \
+        'status hid a partial apply record behind the failed service'
+    refute_contains 'no runtime record' "$text" 'status denied a record that exists'
+    rm -f "$STATE/last-apply.env"
+
     local state
     for state in inactive activating active; do
         LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE="$state")
@@ -1061,6 +1069,47 @@ case_status_names_a_failed_boot_apply_that_left_no_record() {
         assert_contains 'normal immediately after reboot' "$text" \
             "status blamed a service that is $state, not failed"
     done
+}
+
+case_enable_succeeds_once_the_restart_put_the_limits_in_force() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RESTART_APPLIES="$FAKE_CLI")
+    local output rc=0
+    printf 'stapm=45000\nslow=50000\nfast=55000\ntctl=95\n' > "$RYZENADJ_STATE"
+    output="$(run_cli enable 2>&1)" || rc=$?
+    assert_eq '0' "$rc" "enable failed although the restart applied the limits: $output"
+    assert_doctor_line WARN Limits 'enabling the service applies them' "$output" \
+        'enable did not warn about the limits it was about to apply'
+    assert_contains 'is enabled and the active profile was applied' "$output" \
+        'enable did not report the apply'
+}
+
+case_enable_does_not_fail_on_limits_it_cannot_read_back() {
+    local knob output rc
+    for knob in LEGION_FAKE_RYZENADJ_EMPTY_TABLE=1 LEGION_FAKE_RYZENADJ_NO_INFO=1 \
+                LEGION_FAKE_RYZENADJ_OMIT=tctl-temp; do
+        local -a LEGION_TEST_ENV=("$knob")
+        rc=0
+        output="$(run_cli enable 2>&1)" || rc=$?
+        assert_eq '0' "$rc" "enable failed on an unreadable readback ($knob): $output"
+        assert_contains 'is enabled and the active profile was applied' "$output" \
+            "enable did not finish with $knob"
+    done
+}
+
+case_enable_force_reads_back_the_boot_profile_not_the_default() {
+    local output rc=0
+    cp "$ROOT_DIR/profiles/balanced.conf" "$PROFILES/balanced.conf"
+    grep -q '^ACTIVE_PROFILE=balanced-plus$' "$ETC/config.conf" \
+        || { printf 'FAIL: the fixture no longer boots balanced-plus\n' >&2; exit 1; }
+    output="$(run_cli enable --force 2>&1)" || rc=$?
+    assert_eq '0' "$rc" "enable --force compared the limits with the wrong profile: $output"
+
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_TCTL=95)
+    rc=0
+    output="$(run_cli enable --force 2>&1)" || rc=$?
+    assert_eq '1' "$rc" 'enable --force missed limits that are not in force'
+    assert_contains 'Tctl wanted 72, reads 95' "$output" \
+        'enable --force did not compare against the boot profile'
 }
 
 case_enable_names_a_boot_service_that_failed_to_start() {
@@ -2200,6 +2249,12 @@ run_case case_the_wizard_takes_the_lock_before_it_writes_the_profile \
     'the wizard takes the power lock before it writes a profile it will select or apply'
 run_case case_enable_is_not_refused_for_limits_it_is_about_to_apply \
     'enable is not refused for limits it is about to apply, and checks them afterwards'
+run_case case_enable_succeeds_once_the_restart_put_the_limits_in_force \
+    'enable succeeds once the restart put the limits in force'
+run_case case_enable_does_not_fail_on_limits_it_cannot_read_back \
+    'enable does not fail on limits it cannot read back'
+run_case case_enable_force_reads_back_the_boot_profile_not_the_default \
+    'enable --force reads back the boot profile, not the default'
 run_case case_enable_names_a_boot_service_that_failed_to_start \
     'enable names a boot service that failed to start'
 run_case case_status_names_a_failed_boot_apply_that_left_no_record \
