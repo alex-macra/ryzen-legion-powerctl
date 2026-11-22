@@ -7,6 +7,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_RYZENADJ=0
 INSTALL_RYZEN_SMU=0
 ENABLE_SERVICE=1
+ENABLE_FAILED=0
 FORCE_CONFIG=0
 MIGRATE_LEGACY=0
 SCRIPT_INSTALL=0
@@ -132,7 +133,7 @@ ensure_ryzenadj_package() {
 root_controlled_path() {
     local path="$1" owner mode
     while true; do
-        read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
+        IFS=' ' read -r owner mode < <(stat -c '%u %a' -- "$path" 2>/dev/null) || return 1
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
@@ -439,8 +440,9 @@ enable_service() {
     }
     info "Enabling the boot service (doctor runs first; use 'legion-powerctl enable --force' to override)..."
     if ! "${SUDO[@]}" "$CLI_BIN" enable; then
-        warn "The files are installed, but the service was not enabled."
-        warn "Fix the doctor failures above, then run: sudo legion-powerctl enable"
+        ENABLE_FAILED=1
+        warn "The files are installed, but the boot service did not start cleanly."
+        warn "Fix what enable reported above, then run: sudo legion-powerctl enable"
         return 1
     fi
 }
@@ -589,7 +591,12 @@ main() {
     fi
 
     printf '\n'
-    info "Installation complete."
+    if (( ENABLE_FAILED == 1 )); then
+        warn "Installed, but NOT working yet: the boot service did not start cleanly."
+        warn "Check 'systemctl status legion-powerctl.service', then rerun: sudo legion-powerctl enable"
+    else
+        info "Installation complete."
+    fi
     "$CLI_BIN" doctor || true
     printf '\nUseful commands:\n'
     printf '  legion-powerctl status\n'
@@ -598,6 +605,7 @@ main() {
     printf '  sudo legion-powerctl select balanced --apply\n'
     printf '  legion-powerbench doctor\n'
     printf '  systemctl status legion-powerctl.service\n'
+    (( ENABLE_FAILED == 0 )) || exit 1
 }
 
 main "$@"

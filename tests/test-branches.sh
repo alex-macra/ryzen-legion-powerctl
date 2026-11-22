@@ -1040,6 +1040,18 @@ case_doctor_reports_limits_that_drifted_from_the_profile() {
     assert_eq '1' "$rc" 'doctor exited 0 with the limits not in force'
 }
 
+case_enable_is_not_refused_for_limits_it_is_about_to_apply() {
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_TCTL=95)
+    local output rc=0
+    : > "$LOG"
+    output="$(run_cli enable 2>&1)" || rc=$?
+    assert_eq '0' "$rc" "enable refused because the limits are not in force yet: $output"
+    assert_doctor_line WARN Limits 'Tctl wanted 72, reads 95' "$output" \
+        'enable did not report the limits it is about to apply as a warning'
+    assert_file_contains 'systemctl restart legion-powerctl.service' "$LOG" \
+        'enable did not restart the service'
+}
+
 case_an_unreadable_ryzenadj_table_is_unverified_not_fatal() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_EMPTY_TABLE=1 LEGION_FAKE_RYZENADJ_NO_SMU=1)
     local out rc=0
@@ -2142,6 +2154,8 @@ case_the_wizard_takes_the_lock_before_it_writes_the_profile() {
 }
 run_case case_the_wizard_takes_the_lock_before_it_writes_the_profile \
     'the wizard takes the power lock before it writes a profile it will select or apply'
+run_case case_enable_is_not_refused_for_limits_it_is_about_to_apply \
+    'enable is not refused for limits it is about to apply'
 
 registered="$CASE_NUMBER"
 defined="$(declare -F | sed -n 's/^declare -f \(case_.*\)$/\1/p' | wc -l)"

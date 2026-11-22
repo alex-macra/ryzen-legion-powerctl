@@ -1136,6 +1136,36 @@ else
     chmod 0755 "$unsafe_dir"
 fi
 
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-walk.sh"
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/tools/legion-powerbench" > "$TMP/bench-walk.sh"
+awk '/^root_controlled_path\(\) \{$/,/^}$/' "$ROOT_DIR/install.sh" > "$TMP/installer-walk.sh"
+printf 'Test 65b: outside the test harness the real lookup still finds a root-owned ryzenadj\n'
+awk '/^(root_controlled_path|trusted_executable|ryzenadj_candidates)\(\) \{$/,/^}$/' "$ROOT_DIR/bin/legion-powerctl" > "$TMP/cli-lookup.sh"
+lookup_bash="$(readlink -f -- "$(command -v bash)")"
+lookup_dir="$TMP/lookup-bin"
+mkdir -p "$lookup_dir"
+ln -s "$lookup_bash" "$lookup_dir/ryzenadj"
+# shellcheck disable=SC2016
+lookup_check='TESTING=0; . "$1"; RYZENADJ_DIRS=("$2"); ryzenadj_candidates'
+if bash -c 'TESTING=0; . "$1"; root_controlled_path "$2"' _ "$TMP/cli-lookup.sh" "$lookup_bash"; then
+    assert_eq "$lookup_bash" "$(bash -c "$lookup_check" _ "$TMP/cli-lookup.sh" "$lookup_dir")" \
+        'the real ryzenadj lookup rejects a binary that is root-owned all the way up'
+    for trust in cli bench installer; do
+        # shellcheck disable=SC2016
+        bash -c '. "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
+            printf 'FAIL: the %s ownership walk rejects a root-owned path\n' "$trust" >&2
+            exit 1
+        }
+        # shellcheck disable=SC2016
+        bash -c 'IFS=:; . "$1"; root_controlled_path "$2"' _ "$TMP/$trust-walk.sh" "$lookup_bash" || {
+            printf 'FAIL: the %s ownership walk depends on the IFS of its caller\n' "$trust" >&2
+            exit 1
+        }
+    done
+else
+    printf '  (skipped: %s is not root-owned all the way up on this machine)\n' "$lookup_bash"
+fi
+
 printf 'Test 66: a system command found through a symlink runs the target the trust walk checked\n'
 plant_dir="$TMP/user-bin"
 mkdir -p "$plant_dir"

@@ -31,7 +31,7 @@ root_controlled_path() {
     local path="$1" owner mode stat_out
     while true; do
         stat_out="$(stat -c '%u %a' -- "$path" 2>/dev/null)" || return 1
-        read -r owner mode <<<"$stat_out"
+        IFS=' ' read -r owner mode <<<"$stat_out"
         [[ "$owner" == 0 ]] && (( (8#$mode & 8#022) == 0 )) || return 1
         [[ "$path" != / ]] || return 0
         path="${path%/*}"
