@@ -1677,6 +1677,86 @@ class MainWindowTest(OffscreenGuiTest):
         self.assertEqual(self.window.statusBar().currentMessage(), "Applied.")
         self.assertTrue(self.window.reports.details_button.isHidden())
 
+    def enable_message(self) -> str:
+        bar = self.window.statusBar()
+        bar.clearMessage()
+        self.window.profile_actions.set_service(True)
+        self.assertTrue(
+            wait_until(self.app, lambda: bar.currentMessage().startswith("Boot service on")),
+            f"enable never reported; errors: {list(self.window.errors)}",
+        )
+        self.assertTrue(wait_until(self.app, lambda: not self.window.profile_actions.busy))
+        return bar.currentMessage()
+
+    def test_enabling_says_the_profile_was_applied_only_when_the_cli_confirmed_it(self):
+        unit = "legion-powerctl.service"
+        doctor = "OK    CPU    AMD processor detected\n\nDoctor result: 0 failure(s), 0 warning(s).\n"
+        for outcome, expected in (
+            (
+                f"{doctor}{unit} is enabled and the active profile was applied.",
+                "Boot service on; the boot profile was applied.",
+            ),
+            (
+                f"{doctor}{unit} is enabled and reported success; not read back: Tctl.",
+                "Boot service on. The service reported success; not read back: Tctl.",
+            ),
+        ):
+            with self.subTest(outcome=outcome), unittest.mock.patch.dict(
+                os.environ, {"FAKE_CLI_EXIT": "enable:0", "FAKE_CLI_EXIT_STDOUT": outcome}
+            ):
+                self.assertEqual(self.enable_message(), expected)
+        self.assertEqual([line for line in self.read_log() if "enable" in line], ["enable"] * 2)
+        self.assertFalse(self.window.errors)
+
+    def test_an_enable_the_gui_cannot_read_claims_nothing_and_keeps_its_warning(self):
+        with unittest.mock.patch.dict(
+            os.environ, {"FAKE_CLI_WARNING": "WARNING: the service took a while."}
+        ):
+            shown = self.enable_message()
+        self.assertEqual(shown, "Boot service on. WARNING: the service took a while.")
+        self.assertFalse(self.window.reports.details_button.isHidden())
+        self.assertIn("took a while", self.window.reports.last_warning)
+        self.assertFalse(self.window.errors, "a warning is not an error modal")
+
+    def test_a_doctor_refusal_offers_force_and_the_forced_run_says_what_it_confirmed(self):
+        from legion_powerctl_gui import dialogs
+
+        refusal = (
+            "ERROR: doctor reported failures. Fix them first, or rerun with "
+            "'legion-powerctl enable --force'."
+        )
+        forced = (
+            "legion-powerctl.service is enabled and reported success; "
+            "the limits could not be read back."
+        )
+        offered = []
+
+        def enable_anyway(_parent, detail):
+            offered.append(detail)
+            os.environ.update({"FAKE_CLI_EXIT": "enable:0", "FAKE_CLI_EXIT_STDOUT": forced})
+            return True
+
+        self.window.dialogs = True
+        self.addCleanup(setattr, self.window, "dialogs", False)
+        with unittest.mock.patch.dict(
+            os.environ, {"FAKE_CLI_EXIT": "enable:1", "FAKE_CLI_EXIT_STDOUT": refusal}
+        ), unittest.mock.patch.object(
+            dialogs, "confirm_enable", return_value=True
+        ) as confirm, unittest.mock.patch.object(
+            dialogs, "offer_force_enable", side_effect=enable_anyway
+        ):
+            shown = self.enable_message()
+        confirm.assert_called_once()
+        self.assertEqual(offered, [refusal], "the refusal did not reach the force offer")
+        self.assertEqual(
+            [line for line in self.read_log() if "enable" in line], ["enable", "enable --force"]
+        )
+        self.assertEqual(
+            shown,
+            "Boot service on. The service reported success; the limits could not be read back.",
+        )
+        self.assertFalse(self.window.errors, "the refusal the user overrode was shown as an error")
+
     def test_the_error_log_is_bounded(self):
         for index in range(120):
             self.window._show_error(f"failure {index}")

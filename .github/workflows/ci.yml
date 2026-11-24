@@ -20,6 +20,16 @@ jobs:
       - name: ShellCheck
         # One file list, so CI cannot drift from what `make check` runs locally.
         run: shellcheck $(make -s print-shell-sources)
+      - name: Allow unprivileged user namespaces
+        # Ubuntu's AppArmor default denies them, and Test 65, B85, B86 and B99 become
+        # root in one to check which binaries the CLI trusts. With CI set those tests
+        # fail instead of skipping, so this step turns the restriction off for this
+        # job's runner and then runs the two probes the tests use: an image where the
+        # sysctl is missing or no longer enough fails here, by name.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare --map-root-user true
+          unshare -rm true
       - name: Integration tests
         run: make test
       - name: Version consistency

@@ -1106,6 +1106,10 @@ assert_file_contains 'ACTIVE_PROFILE=balanced-plus' "$ETC/config.conf" \
 
 printf 'Test 65: a root-owned binary in a directory others control is never trusted\n'
 if ! unshare --map-root-user true >/dev/null 2>&1; then
+    if [[ -n "${CI:-}" ]]; then
+        printf 'FAIL: no unprivileged user namespace to become root in, so CI cannot run the trust check on a root-owned binary\n' >&2
+        exit 1
+    fi
     printf '  (skipped: no unprivileged user namespace to become root in)\n'
 else
     unsafe_dir="$TMP/unsafe-dir"

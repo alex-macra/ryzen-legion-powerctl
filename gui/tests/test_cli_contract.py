@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from legion_powerctl_gui import model
+from legion_powerctl_gui import model, runstate
 
 REPO = Path(__file__).resolve().parents[2]
 CLI = REPO / "bin" / "legion-powerctl"
@@ -283,6 +283,38 @@ class CliContractTest(unittest.TestCase):
         status = model.parse_status(self.run_cli("status", "--json").stdout)
         self.assertIn("verified", status.last_apply)
         self.assertIn(status.last_apply["verified"], ("yes", "no", "partial", "unknown"))
+
+
+class EnableOutcomeContractTest(unittest.TestCase):
+    def outcomes(self):
+        block = re.search(r"^cmd_enable\(\) \{\n(.*?)^\}", CLI.read_text(), re.M | re.S)
+        self.assertIsNotNone(block, "cmd_enable is no longer a plain block")
+        lines = re.findall(r'success "(\$SERVICE_NAME is enabled[^"]*)"', block.group(1))
+        return [
+            line.replace("$SERVICE_NAME", "legion-powerctl.service").replace("$drift_detail", "Tctl")
+            for line in lines
+        ]
+
+    def test_enable_ends_on_one_of_three_lines_and_only_the_first_confirms_the_apply(self):
+        outcomes = self.outcomes()
+        self.assertEqual(
+            len(outcomes), 3,
+            f"cmd_enable no longer has three success endings; the GUI reads them: {outcomes}",
+        )
+        for outcome in outcomes:
+            self.assertNotIn("$", outcome, "an ending expands a variable this test does not fill in")
+        confirmed, *unconfirmed = outcomes
+        self.assertEqual(
+            runstate.service_on_message(f"{confirmed}\n"),
+            "Boot service on; the boot profile was applied.",
+        )
+        for outcome in unconfirmed:
+            with self.subTest(outcome=outcome):
+                tail = outcome.partition("reported success; ")[2]
+                self.assertTrue(tail, "the ending no longer says what was not read back")
+                message = runstate.service_on_message(f"{outcome}\n")
+                self.assertEqual(message, f"Boot service on. The service reported success; {tail}")
+                self.assertNotIn("applied", message)
 
 
 class DesktopEntryContractTest(unittest.TestCase):

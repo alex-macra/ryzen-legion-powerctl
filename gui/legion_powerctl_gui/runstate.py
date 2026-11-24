@@ -132,3 +132,18 @@ def service_badge(enabled: str | None, active: str | None) -> tuple[str, str]:
     if enabled == "disabled" and active in (None, "", "inactive", "dead"):
         return (text, "NEUTRAL")
     return (text, "WARN")
+
+
+ENABLE_APPLIED = "is enabled and the active profile was applied."
+ENABLE_REPORTED = "is enabled and reported success; "
+
+
+def service_on_message(stdout: str) -> str:
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+    outcome = lines[-1] if lines else ""
+    if outcome.endswith(ENABLE_APPLIED):
+        return "Boot service on; the boot profile was applied."
+    _unit, reported, tail = outcome.partition(ENABLE_REPORTED)
+    if reported:
+        return f"Boot service on. The service reported success; {tail}"
+    return "Boot service on."

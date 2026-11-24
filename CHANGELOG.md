@@ -82,6 +82,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   back equal to the boot profile. When they cannot be read back it says the service
   reported success and names what was not read; when the service is not active after
   the restart, it fails and names the service state.
+- The GUI's boot switch no longer says "the boot profile was applied" after every
+  successful `enable`. It says so only when the CLI confirmed the limits; otherwise it
+  says the service reported success and what was not read back, or only that the boot
+  service is on.
 - `status` no longer calls a missing runtime record "normal immediately after reboot"
   when the boot service failed: it says no apply is recorded for this boot and names the
   `journalctl` command that shows why.

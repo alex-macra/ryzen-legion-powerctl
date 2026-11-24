@@ -195,5 +195,74 @@ class ServiceBadgeTest(unittest.TestCase):
         self.assertEqual(runstate.service_badge("", "active")[1], "NEUTRAL")
 
 
+class ServiceOnMessageTest(unittest.TestCase):
+    UNIT = "legion-powerctl.service"
+    APPLIED = "Boot service on; the boot profile was applied."
+    PLAIN = "Boot service on."
+    DOCTOR = (
+        "OK    CPU                      AMD processor detected\n"
+        "WARN  Limits                   Tctl wanted 72, reads 95; enabling the service applies them\n"
+        "\nDoctor result: 0 failure(s), 1 warning(s).\n"
+    )
+
+    def test_only_the_confirmed_ending_says_the_profile_was_applied(self):
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.UNIT} is enabled and the active profile was applied.\n"
+            ),
+            self.APPLIED,
+        )
+
+    def test_a_readback_that_missed_a_limit_names_what_was_not_read(self):
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.UNIT} is enabled and reported success; not read back: Tctl.\n"
+            ),
+            "Boot service on. The service reported success; not read back: Tctl.",
+        )
+
+    def test_an_unreadable_readback_says_the_limits_could_not_be_read(self):
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.UNIT} is enabled and reported success; the limits could not be read back.\n"
+            ),
+            "Boot service on. The service reported success; the limits could not be read back.",
+        )
+
+    def test_the_doctor_report_before_the_outcome_line_is_not_the_outcome(self):
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.DOCTOR}{self.UNIT} is enabled and the active profile was applied.\n\n"
+            ),
+            self.APPLIED,
+        )
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.DOCTOR}{self.UNIT} is enabled and reported success; not read back: Tctl.\n"
+            ),
+            "Boot service on. The service reported success; not read back: Tctl.",
+        )
+        self.assertEqual(runstate.service_on_message(self.DOCTOR), self.PLAIN)
+
+    def test_a_confirmation_that_is_not_the_last_line_is_not_trusted(self):
+        self.assertEqual(
+            runstate.service_on_message(
+                f"{self.UNIT} is enabled and the active profile was applied.\nsomething later\n"
+            ),
+            self.PLAIN,
+        )
+
+    def test_empty_or_unknown_output_never_says_applied(self):
+        for stdout in (
+            "", "\n", "   \n\n", "ok: enable\n",
+            f"{self.UNIT} is enabled.\n",
+            f"{self.UNIT} is enabled and the active profile was applied\n",
+            f"{self.UNIT} is enabled and the active profile was applied. Maybe.\n",
+            f"{self.UNIT} is enabled and reported success;\n",
+        ):
+            with self.subTest(stdout=stdout):
+                self.assertEqual(runstate.service_on_message(stdout), self.PLAIN)
+
+
 if __name__ == "__main__":
     unittest.main()

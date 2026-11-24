@@ -53,6 +53,15 @@ hold_power_lock_file() {
     (umask 077 && : >> "$STATE/power-v2.lock")
 }
 
+skip_without_namespaces() {
+    local reason="$1"
+    if [[ -n "${CI:-}" ]]; then
+        printf 'FAIL: %s, so CI cannot run this case\n' "$reason" >&2
+        exit 1
+    fi
+    printf '  (skipped: %s)\n' "$reason"
+}
+
 case_config_rejects_malformed_and_unknown_and_traversing_values() {
     printf 'ACTIVE_PROFILE\n' > "$ETC/config.conf"
     assert_fails 'a config.conf line with no = was accepted' run_cli list
@@ -1715,7 +1724,7 @@ case_doctor_and_status_never_run_a_ryzenadj_planted_on_path() {
 
 case_root_ignores_testing_and_every_test_override() {
     if ! unshare --map-root-user true >/dev/null 2>&1; then
-        printf '  (skipped: no unprivileged user namespace to become root in)\n'
+        skip_without_namespaces 'no unprivileged user namespace to become root in'
         return 0
     fi
     local marker="$FAKE_ROOT/planted.log" out
@@ -1735,7 +1744,7 @@ case_root_ignores_testing_and_every_test_override() {
 
 case_root_never_takes_powerprofilesctl_or_systemctl_from_path() {
     if ! unshare --map-root-user true >/dev/null 2>&1; then
-        printf '  (skipped: no unprivileged user namespace to become root in)\n'
+        skip_without_namespaces 'no unprivileged user namespace to become root in'
         return 0
     fi
     local marker="$FAKE_ROOT/planted.log" name command
@@ -2203,7 +2212,7 @@ run_case case_two_concurrent_applies_exclude_each_other \
 
 case_power_operations_work_without_proc() {
     if ! unshare -rm true 2>/dev/null; then
-        printf '  (skipped: unprivileged user and mount namespaces are unavailable)\n'
+        skip_without_namespaces 'unprivileged user and mount namespaces are unavailable'
         return 0
     fi
     local cand="$FAKE_ROOT_DIR/cand" hide="$FAKE_ROOT_DIR/without-proc" out rc=0
