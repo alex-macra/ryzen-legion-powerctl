@@ -78,8 +78,12 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   limits.
 - `install.sh` no longer ends with "Installation complete." after the boot service
   could not be enabled: it says the install is not working yet and exits non-zero.
+- `enable` no longer ends with "the active profile was applied" unless the limits read
+  back equal to the boot profile. When they cannot be read back it says the service
+  reported success and names what was not read; when the service is not active after
+  the restart, it fails and names the service state.
 - `status` no longer calls a missing runtime record "normal immediately after reboot"
-  when the boot service failed: it says nothing was applied this boot and names the
+  when the boot service failed: it says no apply is recorded for this boot and names the
   `journalctl` command that shows why.
 - The unit comments no longer imply `/dev/mem` is reachable from the boot service:
   `ProtectClock=yes` turns the device filter on. No directive changed, and whether a

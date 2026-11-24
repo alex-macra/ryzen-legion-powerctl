@@ -1045,7 +1045,7 @@ case_status_names_a_failed_boot_apply_that_left_no_record() {
     local -a LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE=failed)
     rm -f "$STATE/last-apply.env"
     text="$(run_cli status 2>&1)"
-    assert_contains 'the boot service failed: nothing was applied this boot' "$text" \
+    assert_contains 'the boot service failed, and no apply is recorded for this boot' "$text" \
         'status called a failed boot apply normal'
     assert_contains "journalctl -b -u legion-powerctl.service" "$text" \
         'status did not say where the failure is recorded'
@@ -1091,8 +1091,42 @@ case_enable_does_not_fail_on_limits_it_cannot_read_back() {
         rc=0
         output="$(run_cli enable 2>&1)" || rc=$?
         assert_eq '0' "$rc" "enable failed on an unreadable readback ($knob): $output"
-        assert_contains 'is enabled and the active profile was applied' "$output" \
+        assert_contains 'is enabled and reported success; ' "$output" \
             "enable did not finish with $knob"
+        refute_contains 'the active profile was applied' "$output" \
+            "enable claimed an apply it could not read back ($knob)"
+    done
+    for knob in LEGION_FAKE_RYZENADJ_EMPTY_TABLE=1 LEGION_FAKE_RYZENADJ_NO_INFO=1; do
+        local -a LEGION_TEST_ENV=("$knob")
+        output="$(run_cli enable --force 2>&1)"
+        assert_contains 'the limits could not be read back' "$output" \
+            "enable did not say the limits were unread ($knob)"
+    done
+    LEGION_TEST_RYZENADJ_BIN=/nonexistent/ryzenadj
+    local -a LEGION_TEST_ENV=()
+    output="$(run_cli enable --force 2>&1)"
+    assert_contains 'the limits could not be read back' "$output" \
+        'enable claimed an apply although it found no ryzenadj to read the limits with'
+    unset LEGION_TEST_RYZENADJ_BIN
+    local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT=tctl-temp)
+    output="$(run_cli enable --force 2>&1)"
+    assert_contains 'not read back: Tctl.' "$output" 'enable did not name the limit it could not read back'
+}
+
+case_enable_fails_when_the_restart_did_not_run_the_service() {
+    local state output rc
+    for state in inactive failed activating; do
+        local -a LEGION_TEST_ENV=(LEGION_FAKE_SERVICE_ACTIVE="$state")
+        rc=0
+        : > "$LOG"
+        output="$(run_cli enable --force 2>&1)" || rc=$?
+        assert_eq '1' "$rc" "enable reported success with the service $state: $output"
+        assert_contains "is enabled, but it is not active: its state is '$state'" "$output" \
+            "enable did not name the $state service"
+        refute_contains 'the active profile was applied' "$output" \
+            "enable claimed an apply with the service $state"
+        assert_file_contains 'systemctl restart legion-powerctl.service' "$LOG" \
+            'enable did not restart the service before checking it'
     done
 }
 
@@ -2252,7 +2286,9 @@ run_case case_enable_is_not_refused_for_limits_it_is_about_to_apply \
 run_case case_enable_succeeds_once_the_restart_put_the_limits_in_force \
     'enable succeeds once the restart put the limits in force'
 run_case case_enable_does_not_fail_on_limits_it_cannot_read_back \
-    'enable does not fail on limits it cannot read back'
+    'enable does not fail on limits it cannot read back, and does not claim them'
+run_case case_enable_fails_when_the_restart_did_not_run_the_service \
+    'enable fails when the restart did not run the service'
 run_case case_enable_force_reads_back_the_boot_profile_not_the_default \
     'enable --force reads back the boot profile, not the default'
 run_case case_enable_names_a_boot_service_that_failed_to_start \
