@@ -1102,6 +1102,12 @@ case_enable_does_not_fail_on_limits_it_cannot_read_back() {
         assert_contains 'the limits could not be read back' "$output" \
             "enable did not say the limits were unread ($knob)"
     done
+    LEGION_TEST_RYZENADJ_BIN=/nonexistent/ryzenadj
+    local -a LEGION_TEST_ENV=()
+    output="$(run_cli enable --force 2>&1)"
+    assert_contains 'the limits could not be read back' "$output" \
+        'enable claimed an apply although it found no ryzenadj to read the limits with'
+    unset LEGION_TEST_RYZENADJ_BIN
     local -a LEGION_TEST_ENV=(LEGION_FAKE_RYZENADJ_OMIT=tctl-temp)
     output="$(run_cli enable --force 2>&1)"
     assert_contains 'not read back: Tctl.' "$output" 'enable did not name the limit it could not read back'
@@ -1115,7 +1121,7 @@ case_enable_fails_when_the_restart_did_not_run_the_service() {
         : > "$LOG"
         output="$(run_cli enable --force 2>&1)" || rc=$?
         assert_eq '1' "$rc" "enable reported success with the service $state: $output"
-        assert_contains "is enabled, but it did not run: its state is '$state'" "$output" \
+        assert_contains "is enabled, but it is not active: its state is '$state'" "$output" \
             "enable did not name the $state service"
         refute_contains 'the active profile was applied' "$output" \
             "enable claimed an apply with the service $state"

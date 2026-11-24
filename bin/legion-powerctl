@@ -2169,7 +2169,7 @@ cmd_enable() {
     local unit_state
     unit_state="$("$systemctl_bin" is-active "$SERVICE_NAME" 2>/dev/null || true)"
     [[ "$unit_state" == active ]] \
-        || die "$SERVICE_NAME is enabled, but it did not run: its state is '${unit_state:-unknown}'. See why: systemctl status $SERVICE_NAME"
+        || die "$SERVICE_NAME is enabled, but it is not active: its state is '${unit_state:-unknown}'. See why: systemctl status $SERVICE_NAME"
 
     local ryzenadj drift_detail="" drift_rc=5
     load_global_config
