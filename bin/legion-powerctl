@@ -1829,7 +1829,7 @@ cmd_status() {
         printf '\n%s\n' "$(last_apply_heading "$last_apply")"
         [[ -z "$last_apply" ]] || printf '  %s\n' "${last_apply//$'\n'/$'\n'  }"
     elif [[ "$STATUS_SERVICE_ACTIVE" == failed ]]; then
-        printf '\nLast successful apply: no runtime record, and the boot service failed: nothing was applied this boot.\n'
+        printf '\nLast successful apply: the boot service failed, and no apply is recorded for this boot.\n'
         printf "  See why: journalctl -b -u %s\n" "$SERVICE_NAME"
     else
         printf '\nLast successful apply: no runtime record (normal immediately after reboot if the service has not run).\n'
@@ -2166,15 +2166,24 @@ cmd_enable() {
     run_unlocked "$systemctl_bin" restart "$SERVICE_NAME" \
         || die "$SERVICE_NAME is enabled, but it reported a failure. See why: journalctl -b -u $SERVICE_NAME"
 
-    local ryzenadj drift_detail="" drift_rc=0
+    local unit_state
+    unit_state="$("$systemctl_bin" is-active "$SERVICE_NAME" 2>/dev/null || true)"
+    [[ "$unit_state" == active ]] \
+        || die "$SERVICE_NAME is enabled, but it did not run: its state is '${unit_state:-unknown}'. See why: systemctl status $SERVICE_NAME"
+
+    local ryzenadj drift_detail="" drift_rc=5
     load_global_config
     ryzenadj="$(resolve_ryzenadj)"
     if [[ -n "$ryzenadj" && -x "$ryzenadj" ]] && try_load_profile "$ACTIVE_PROFILE"; then
+        drift_rc=0
         drift_detail="$(verify_ryzenadj_limits "$ryzenadj")" || drift_rc=$?
-        (( drift_rc != 1 )) \
-            || die "$SERVICE_NAME is enabled, but the limits are still not in force: $drift_detail"
     fi
-    success "$SERVICE_NAME is enabled and the active profile was applied."
+    case "$drift_rc" in
+        0) success "$SERVICE_NAME is enabled and the active profile was applied." ;;
+        1) die "$SERVICE_NAME is enabled, but the limits are still not in force: $drift_detail" ;;
+        4) success "$SERVICE_NAME is enabled and reported success; not read back: $drift_detail." ;;
+        *) success "$SERVICE_NAME is enabled and reported success; the limits could not be read back." ;;
+    esac
 }
 
 cmd_disable() {

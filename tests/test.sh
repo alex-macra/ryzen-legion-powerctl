@@ -1181,6 +1181,9 @@ if (( lookup_root_owned == 1 )); then
             exit 1
         }
     done
+elif [[ -n "${CI:-}" ]]; then
+    printf 'FAIL: %s is not root-owned all the way up, so CI cannot run the real ryzenadj lookup\n' "$lookup_bash" >&2
+    exit 1
 else
     printf '  (skipped: %s is not root-owned all the way up on this machine)\n' "$lookup_bash"
 fi
