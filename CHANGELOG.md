@@ -351,6 +351,15 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   which is also the case where selection degenerates to `PATH` order. Candidates at the
   same version are reported as a tie rather than as stale, because that tie is broken by
   `PATH` order and on a default Arch `PATH` the loser is the packaged binary.
+- `make check` and `make check-strict` end with a `Gate summary` block that names the
+  commit, the machine, the tool versions and each gate, test tier or suite case that was
+  skipped, and calls a run with skips `PASSED WITH N SKIPS - not a full pass`. Until now
+  a `make check` without fish and PySide6 ended on ruff's `All checks passed!`, with
+  unittest's `OK` for 300-odd skipped GUI tests on stderr just above it and the fish
+  skip several hundred lines further up. `CONTRIBUTING.md` and the pull request template
+  ask for that block wherever a gate result is stated. To read the skips from one
+  transcript, both targets now send what their gates print on stderr to stdout with the
+  rest, and run their gates one at a time under `make -j` too.
 
 ## 0.3.0 - 2026-08-14
 

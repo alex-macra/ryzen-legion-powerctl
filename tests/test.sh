@@ -1254,4 +1254,348 @@ bench_resolved="$(bash -c 'TESTING=0; TRUSTED_DIRS=("$2"); . "$1"; system_binary
 assert_eq "$system_bash" "$cli_resolved" 'the CLI returned a symlink in a user-owned directory instead of its checked target'
 assert_eq "$system_bash" "$bench_resolved" 'legion-powerbench returned a symlink in a user-owned directory instead of its checked target'
 
+gate_summary() {
+    bash "$ROOT_DIR/tests/gate-summary.sh" "$@"
+}
+gate_skips() {
+    grep '^SKIPPED' <<<"$1" || true
+}
+gate_marker() {
+    sed -n "s/.*printf '\\($1 not installed;[^']*\\)\\\\n'.*/\\1/p" "$ROOT_DIR/Makefile"
+}
+# Under a hook or `rebase --exec` git exports GIT_DIR, and `-C` does not override it:
+# without the scrub these calls would initialise and commit into the repository this
+# suite runs from instead of the fixture.
+gate_git() {
+    local var
+    local -a scrubbed=(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE)
+    for var in $(git rev-parse --local-env-vars); do
+        scrubbed+=(-u "$var")
+    done
+    "${scrubbed[@]}" git -C "$1" -c user.name=gate -c user.email=gate@example.invalid \
+        -c commit.gpgsign=false "${@:2}"
+}
+gate_stub() {
+    printf '#!/bin/sh\n%s\n' "$2" > "$1"
+    chmod +x "$1"
+}
+
+printf 'Test 67: the gate summary names the commit, the machine, the tools and every skip\n'
+fish_marker="$(gate_marker fish)"
+ruff_marker="$(gate_marker ruff)"
+shellcheck_marker="$(gate_marker shellcheck)"
+for gate_tool in fish ruff shellcheck; do
+    assert_eq '1' "$(gate_marker "$gate_tool" | grep -c .)" \
+        "the Makefile no longer prints one skip line for $gate_tool in the shape the summary reads"
+done
+{
+    printf 'bash -n bin/legion-powerctl\n%s\n' "$fish_marker"
+    printf 'Test 1: configure, select, and apply a profile\n'
+    printf 'test_a (test_theme.ThemeTest.test_a) ... ok\n'
+    printf 'test_b (test_theme.ThemeTest.test_b) ... skipped %s\n' "'PySide6 is not installed'"
+    printf 'test_c (test_theme.ThemeTest.test_c) ... skipped %s\n' "'PySide6 is not installed'"
+    printf '\n%s\n' '----------------------------------------------------------------------'
+    printf 'Ran 419 tests in 7.950s\n\nOK (skipped=309)\n'
+    printf 'All checks passed!\n'
+} > "$TMP/gate-box.log"
+gate_out="$(gate_summary check "$TMP/gate-box.log" 0)"
+mapfile -t gate_lines <<<"$gate_out"
+assert_eq '10' "${#gate_lines[@]}" 'the summary is not the ten lines this transcript should give'
+assert_eq '' "${gate_lines[0]}" 'the summary does not start on its own paragraph'
+assert_eq '== Gate summary ==' "${gate_lines[1]}" 'the summary has no heading'
+assert_eq 'target:  make check' "${gate_lines[2]}" 'the summary does not name the target'
+[[ "${gate_lines[3]}" =~ ^commit:\ \ ([0-9a-f]{12,}(-dirty)?|not\ a\ git\ checkout)$ ]] || {
+    printf 'FAIL: the commit line is neither a hash nor "not a git checkout": %s\n' "${gate_lines[3]}" >&2
+    exit 1
+}
+assert_match "${gate_lines[4]}" 'machine: ?*; ?*; ?*' 'the machine line is not OS; kernel; hardware'
+IFS=';' read -r _ gate_kernel _ <<<"${gate_lines[4]}"
+assert_eq " $(uname -srm)" "$gate_kernel" \
+    'the machine line carries more of uname than the system, the release and the architecture'
+refute_contains '"' "${gate_lines[4]}" 'the machine line kept the quotes os-release puts around the name'
+assert_match "${gate_lines[5]}" 'tools:   bash [0-9]*' 'the tools line does not start with the bash version'
+assert_eq "$(printf 'SKIPPED: %s\n' 'fish completion syntax - fish not installed' \
+    '309 of 419 GUI tests - PySide6 is not installed' 'end-to-end tier - not part of make check')" \
+    "$(gate_skips "$gate_out")" 'the summary did not list exactly the three skips of this transcript'
+assert_eq 'result:  PASSED WITH 3 SKIPS - not a full pass' "${gate_lines[9]}" \
+    'the result does not count the skipped gates, or is not the last line'
+gate_tools="$TMP/gate-tools"
+gate_bare="$TMP/gate-bare"
+mkdir -p "$gate_tools" "$gate_bare"
+# shellcheck disable=SC2016
+gate_stub "$gate_tools/python3" 'case "$*" in *PySide6*) echo 6.99.2 ;; *) echo "Python 3.99.1" ;; esac'
+gate_stub "$gate_tools/shellcheck" 'printf "%s\n" "ShellCheck - shell script analysis tool" "version: 0.99.3" "license: none"'
+gate_stub "$gate_tools/ruff" 'echo "ruff 0.99.4"'
+gate_stub "$gate_tools/fish" 'echo "fish, version 3.99.5"'
+for gate_tool in bash sed head cat uname dirname; do
+    ln -s "$(command -v "$gate_tool")" "$gate_bare/$gate_tool"
+done
+# shellcheck disable=SC2016
+gate_bash="$(bash -c 'printf %s "${BASH_VERSION%%(*}"')"
+gate_out="$(PATH="$gate_tools:$PATH" gate_summary check "$TMP/gate-box.log" 0)"
+assert_eq "tools:   bash $gate_bash, python 3.99.1, shellcheck 0.99.3, ruff 0.99.4, fish 3.99.5, PySide6 6.99.2" \
+    "$(grep '^tools: ' <<<"$gate_out")" 'the tools line does not name every installed tool with its version'
+gate_out="$(PATH="$gate_bare" gate_summary check "$TMP/gate-box.log" 0)"
+assert_eq "tools:   bash $gate_bash" "$(grep '^tools: ' <<<"$gate_out")" \
+    'the tools line names a tool that is not installed'
+assert_contains 'commit:  not a git checkout' "$gate_out" 'a machine without git was given a commit'
+
+printf 'Test 68: a strict run with nothing skipped says so, and a second unittest footer is the end-to-end tier\n'
+{
+    printf 'test_a (test_theme.ThemeTest.test_a) ... ok\n\n'
+    printf 'Ran 419 tests in 31.204s\n\nOK\n'
+    printf 'All checks passed!\n'
+    printf 'test_window (test_desktop_session.SessionTest.test_window) ... ok\n\n'
+    printf 'Ran 23 tests in 41.730s\n\nOK\n'
+} > "$TMP/gate-strict.log"
+gate_out="$(gate_summary check-strict "$TMP/gate-strict.log" 0)"
+assert_contains 'target:  make check-strict' "$gate_out" 'the summary does not name the strict target'
+assert_eq 'SKIPPED: none' "$(gate_skips "$gate_out")" 'a strict run with no skip did not say none'
+assert_eq 'result:  PASSED - nothing skipped' "$(tail -n 1 <<<"$gate_out")" \
+    'a strict run with no skip is not reported as a full pass'
+{
+    printf 'Ran 419 tests in 31.204s\n\nOK\n'
+    printf 'test_window (test_desktop_session.SessionTest.test_window) ... skipped %s\n' "'no window manager'"
+    printf 'test_tree (test_atspi_tree.TreeTest.test_tree) ... skipped %s\n' '"the bus is not up"'
+    printf '\nRan 23 tests in 41.730s\n\nOK (skipped=2, expected failures=1)\n'
+} > "$TMP/gate-strict-skips.log"
+gate_out="$(gate_summary check-strict "$TMP/gate-strict-skips.log" 0)"
+assert_eq 'SKIPPED: 2 of 23 end-to-end tests - no window manager; the bus is not up' "$(gate_skips "$gate_out")" \
+    'skips in the second unittest footer were not reported as end-to-end tests with their reasons'
+assert_eq 'result:  PASSED WITH 1 SKIP - not a full pass' "$(tail -n 1 <<<"$gate_out")" \
+    'one skipped tier did not stop the result from being a full pass'
+{
+    printf 'test_a (test_theme.ThemeTest.test_a) ... skipped %s\n' "'/home/gatefixture/venv has no PySide6'"
+    printf '\nRan 419 tests in 31.204s\r\n\r\nOK (skipped=1)\r\n'
+    printf 'Ran 23 tests in 41.730s\n\nOK (skipped=3)'
+} > "$TMP/gate-strict-bare.log"
+gate_out="$(gate_summary check-strict "$TMP/gate-strict-bare.log" 0)"
+assert_eq "$(printf 'SKIPPED: %s\n' '1 of 419 GUI tests - <path> has no PySide6' \
+    '3 of 23 end-to-end tests - the transcript gives no reason')" "$(gate_skips "$gate_out")" \
+    'carriage returns, a last line without a newline, a path in a reason or the reason of the tier before was misread'
+refute_contains 'gatefixture' "$gate_out" 'a home directory from a skip reason reached the summary'
+
+printf 'Test 69: a lint that did not run for a missing tool is a skip\n'
+printf '%s\n' "$ruff_marker" "$shellcheck_marker" > "$TMP/gate-not-run.log"
+gate_out="$(gate_summary check "$TMP/gate-not-run.log" 0)"
+assert_eq "$(printf 'SKIPPED: %s\n' 'Python lint - ruff not installed' 'ShellCheck - shellcheck not installed' \
+    'end-to-end tier - not part of make check')" "$(gate_skips "$gate_out")" \
+    'the two lints that did not run are not both in the summary'
+assert_eq 'result:  PASSED WITH 3 SKIPS - not a full pass' "$(tail -n 1 <<<"$gate_out")" \
+    'the result does not count the lints that did not run'
+
+printf 'Test 70: each case a suite skipped is quoted, and a path in it never reaches the summary\n'
+{
+    printf 'Test 16: last_apply keys survive a locale where [A-Z] excludes I\n'
+    printf '  (tr_TR.utf8 locale unavailable; skipped)\n'
+    printf 'Test B31: a read-only state file refuses the write\n'
+    printf '  (skipped: running as root, where a read-only file cannot refuse a write)\n'
+    printf 'Test 65b: outside the test harness the real lookup still finds a root-owned ryzenadj\n'
+    printf '  (skipped: /home/gatefixture/.local/bin/bash is not root-owned all the way up on this machine)\n'
+    printf 'Test 93: a path inside quotes and brackets\n'
+    # shellcheck disable=SC2016
+    printf '  (skipped: `/home/gatefixture/a`, [/home/gatefixture/b], </home/gatefixture/c>, {/home/gatefixture/d}, x|/home/gatefixture/e)\n'
+    printf 'Test 94: a path with a bracket in it, beside text that is not a path\n'
+    printf '  (skipped: "/home/gatefixture/f(g)h/i" is gone, and/or tests/test.sh is; HOME=/home/gatefixture)\n'
+} > "$TMP/gate-suite.log"
+gate_out="$(gate_summary check-strict "$TMP/gate-suite.log" 0)"
+# shellcheck disable=SC2016
+assert_eq "$(printf 'SKIPPED: %s\n' 'Test 16 - (tr_TR.utf8 locale unavailable; skipped)' \
+    'Test B31 - (skipped: running as root, where a read-only file cannot refuse a write)' \
+    'Test 65b - (skipped: <path> is not root-owned all the way up on this machine)' \
+    'Test 93 - (skipped: `<path>`, [<path>], <<path>>, {<path>}, x|<path>)' \
+    'Test 94 - (skipped: "<path>" is gone, and/or tests/test.sh is; HOME=<path>)')" \
+    "$(gate_skips "$gate_out")" 'the suite skips are not quoted one per line with every path hidden'
+refute_contains 'gatefixture' "$gate_out" 'a home directory from a skip line reached the summary'
+assert_eq 'result:  PASSED WITH 5 SKIPS - not a full pass' "$(tail -n 1 <<<"$gate_out")" \
+    'the result does not count the cases the suites skipped'
+
+printf 'Test 71: a title or a warning that only mentions a skip adds nothing to the summary\n'
+{
+    printf 'Test B7: a policy that does not advertise the EPP is skipped, not fatal\n'
+    printf 'Test 35: a --to off the step grid is refused, not silently skipped\n'
+    printf 'Test 90: %s\n' "$fish_marker" "$ruff_marker" "$shellcheck_marker"
+    printf 'Test 91: Ran 419 tests in 7.950s\n'
+    printf 'Test 92: OK (skipped=309)\n'
+    printf 'WARNING: boost control is unavailable, so BOOST=on was skipped.\n'
+    printf 'WARNING: %s\n' "$fish_marker" "$ruff_marker" "$shellcheck_marker"
+    printf 'WARNING: Ran 419 tests in 7.950s\n\nOK (skipped=309)\n'
+    printf 'Ran 5 tests in 0.100s\n\nWARNING: OK (skipped=5)\n'
+    printf '(skipped: not indented, so not a line a suite prints)\n'
+    printf '    (skipped: indented deeper than a suite prints it)\n'
+} > "$TMP/gate-titles.log"
+gate_out="$(gate_summary check-strict "$TMP/gate-titles.log" 0)"
+assert_eq 'SKIPPED: none' "$(gate_skips "$gate_out")" 'text that only mentions a skip was counted as one'
+assert_eq 'result:  PASSED - nothing skipped' "$(tail -n 1 <<<"$gate_out")" \
+    'text that only mentions a skip changed the result'
+
+printf 'Test 72: a failing exit status is a failed result, whatever the transcript says\n'
+gate_out="$(gate_summary check "$TMP/gate-box.log" 2)"
+assert_eq 'result:  FAILED (exit 2)' "$(tail -n 1 <<<"$gate_out")" 'a failed run was not reported as failed'
+refute_contains 'PASSED' "$gate_out" 'a failed run was called passed'
+assert_contains 'SKIPPED: fish completion syntax - fish not installed' "$gate_out" \
+    'a failed run dropped the skips it had seen'
+assert_exit 2 'an exit status that is not a number was accepted' gate_summary check "$TMP/gate-box.log" passed
+assert_exit 2 'an unknown target was accepted' gate_summary test "$TMP/gate-box.log" 0
+assert_exit 2 'a transcript that does not exist was accepted' gate_summary check "$TMP/no-such-transcript" 0
+assert_exit 2 'a call without an exit status was accepted' gate_summary check "$TMP/gate-box.log"
+assert_exit 2 'a run without a command was accepted' gate_summary run check
+assert_exit 2 'a run for an unknown target was accepted' gate_summary run test true
+
+printf 'Test 73: the commit is a hash only for a tree that is its own git checkout\n'
+gate_copy="$TMP/gate-copy"
+gate_enclosing="$TMP/gate-enclosing"
+gate_repo="$TMP/gate-repo"
+for gate_tree in "$gate_copy" "$gate_enclosing/tree" "$gate_repo"; do
+    mkdir -p "$gate_tree/tests"
+    cp "$ROOT_DIR/tests/gate-summary.sh" "$gate_tree/tests/"
+done
+gate_git "$gate_enclosing" init -q
+gate_git "$gate_enclosing" commit -q --no-verify --allow-empty -m 'enclosing repository'
+gate_git "$gate_enclosing/tree" rev-parse --verify -q HEAD >/dev/null || {
+    printf 'FAIL: the enclosing repository has no commit for the copy to inherit\n' >&2
+    exit 1
+}
+for gate_tree in "$gate_copy" "$gate_enclosing/tree"; do
+    assert_contains 'commit:  not a git checkout' \
+        "$(bash "$gate_tree/tests/gate-summary.sh" check "$TMP/gate-box.log" 0)" \
+        "the copy at ${gate_tree#"$TMP"/} was reported as a git checkout"
+done
+gate_git "$gate_repo" init -q
+gate_git "$gate_repo" commit -q --no-verify --allow-empty -m 'empty tree'
+gate_out="$(bash "$gate_repo/tests/gate-summary.sh" check "$TMP/gate-box.log" 0)"
+assert_contains "commit:  $(gate_git "$gate_repo" rev-parse --short=12 HEAD)-dirty" "$gate_out" \
+    'a checkout with an uncommitted file was not marked dirty'
+gate_git "$gate_repo" add tests/gate-summary.sh
+gate_git "$gate_repo" commit -q --no-verify -m 'track the summary'
+gate_head="$(gate_git "$gate_repo" rev-parse --short=12 HEAD)"
+gate_out="$(bash "$gate_repo/tests/gate-summary.sh" check "$TMP/gate-box.log" 0)"
+assert_eq "commit:  $gate_head" "$(grep '^commit: ' <<<"$gate_out")" \
+    'a clean checkout was not reported by its commit alone'
+gate_out="$(GIT_DIR="$gate_enclosing/.git" bash "$gate_repo/tests/gate-summary.sh" check "$TMP/gate-box.log" 0)"
+assert_eq "commit:  $gate_head" "$(grep '^commit: ' <<<"$gate_out")" \
+    'a GIT_DIR left by a hook made the summary report the commit of another repository'
+assert_contains 'commit:  not a git checkout' \
+    "$(GIT_DIR="$gate_repo/.git" bash "$gate_copy/tests/gate-summary.sh" check "$TMP/gate-box.log" 0)" \
+    'a GIT_DIR left by a hook made a copy without git look like a checkout'
+
+printf 'Test 74: the machine line names the model before the machine-type code, and unknown without DMI\n'
+gate_dmi="$TMP/gate-dmi"
+mkdir -p "$gate_dmi"
+printf 'LENOVO\n' > "$gate_dmi/sys_vendor"
+printf '83RU\n' > "$gate_dmi/product_name"
+printf 'Legion Pro 7 16ARX10\n' > "$gate_dmi/product_version"
+gate_out="$(GATE_SUMMARY_DMI_ROOT="$gate_dmi" gate_summary check "$TMP/gate-box.log" 0)"
+assert_match "$(grep '^machine: ' <<<"$gate_out")" '*; LENOVO Legion Pro 7 16ARX10' \
+    'the machine line does not end with the vendor and the model'
+printf 'To Be Filled By O.E.M.\n' > "$gate_dmi/product_version"
+printf 'Legion Pro 7\n' > "$gate_dmi/product_family"
+gate_out="$(GATE_SUMMARY_DMI_ROOT="$gate_dmi" gate_summary check "$TMP/gate-box.log" 0)"
+assert_match "$(grep '^machine: ' <<<"$gate_out")" '*; LENOVO Legion Pro 7' \
+    'a placeholder model did not fall back to the product family'
+rm -f "$gate_dmi/product_family"
+gate_out="$(GATE_SUMMARY_DMI_ROOT="$gate_dmi" gate_summary check "$TMP/gate-box.log" 0)"
+assert_match "$(grep '^machine: ' <<<"$gate_out")" '*; LENOVO 83RU' \
+    'a placeholder model without a family did not fall back to the product name'
+gate_out="$(GATE_SUMMARY_DMI_ROOT="$TMP/gate-no-dmi" gate_summary check "$TMP/gate-box.log" 0)"
+assert_match "$(grep '^machine: ' <<<"$gate_out")" '*; unknown' \
+    'an unreadable DMI root was not reported as unknown hardware'
+
+printf 'Test 75: a failing gate run through make check ends in a failed summary and removes its transcript\n'
+gate_tmpdir="$TMP/gate-tmpdir"
+mkdir -p "$gate_tmpdir"
+gate_rc=0
+gate_out="$(MAKEFLAGS='' TMPDIR="$gate_tmpdir" make -C "$ROOT_DIR" check \
+    SHELL_SOURCES="$TMP/no-such-gate-file" 2>&1)" || gate_rc=$?
+assert_eq '2' "$gate_rc" 'make check did not exit 2 when a gate failed'
+assert_contains '== Gate summary ==' "$gate_out" 'a failed make check printed no summary'
+assert_eq '1' "$(grep -c '^result:  FAILED (exit [1-9][0-9]*)$' <<<"$gate_out" || true)" \
+    'a failed make check did not print one failed result'
+refute_contains 'PASSED' "$gate_out" 'a failed make check was called passed'
+assert_eq '' "$(find "$gate_tmpdir" -mindepth 1)" 'make check left its transcript behind'
+
+printf 'Test 76: a refused strict run prints its two refusal lines and no summary\n'
+gate_path="$TMP/gate-path"
+mkdir -p "$gate_path"
+for gate_tool in make sed; do
+    ln -s "$(command -v "$gate_tool")" "$gate_path/$gate_tool"
+done
+gate_rc=0
+gate_out="$(MAKEFLAGS='' PATH="$gate_path" make -C "$ROOT_DIR" check-strict 2>&1)" || gate_rc=$?
+assert_eq '2' "$gate_rc" 'a refused make check-strict did not exit 2'
+# shellcheck disable=SC2016
+assert_eq "$(printf '%s\n' 'check-strict cannot run; not installed: shellcheck fish ruff PySide6' \
+    'Install them, or run `make check` and accept that those gates are skipped.')" \
+    "$(grep -v '^make' <<<"$gate_out")" 'the refusal of make check-strict changed, or something ran after it'
+
+printf 'Test 77: both targets hand the summary what their gates print, on either stream\n'
+assert_contains 'tests/gate-summary.sh' "$(make -s -C "$ROOT_DIR" print-shell-sources)" \
+    'the summary script is not syntax-checked and linted with the other shell sources'
+gate_stand="$TMP/gate-stand"
+mkdir -p "$gate_stand"
+# shellcheck disable=SC2016
+gate_stub "$gate_stand/gate-stand-in" 'printf "stand-in gates: %s\n" "$*"; printf "%s\n" "$GATE_STAND_IN_ARG" >&2'
+gate_make() {
+    MAKEFLAGS='' TMPDIR="$gate_tmpdir" PATH="$gate_stand:$1" \
+        make -C "$ROOT_DIR" "${@:2}" SHELL_SOURCES="$TMP/no-such-gate-file" 2>&1
+}
+gate_rc=0
+gate_out="$(GATE_STAND_IN_ARG="$fish_marker" gate_make "$PATH" check GATE_MAKE=gate-stand-in)" || gate_rc=$?
+assert_eq '0' "$gate_rc" 'make check did not exit with the status of its gates'
+assert_contains 'stand-in gates: check-gates' "$gate_out" 'make check does not run the check-gates target'
+assert_contains 'target:  make check' "$gate_out" 'make check does not name itself in the summary'
+assert_eq "$(printf 'SKIPPED: %s\n' 'fish completion syntax - fish not installed' \
+    'end-to-end tier - not part of make check')" "$(gate_skips "$gate_out")" \
+    'a skip the gates printed on stderr did not reach the summary of make check'
+assert_eq 'result:  PASSED WITH 2 SKIPS - not a full pass' "$(grep -v '^make' <<<"$gate_out" | tail -n 1)" \
+    'make check did not end on a result that counts the skips of its own run'
+gate_rc=0
+gate_out="$(GATE_STAND_IN_ARG="$fish_marker" gate_make "$gate_tools:$PATH" check-strict GATE_MAKE=gate-stand-in)" || gate_rc=$?
+assert_eq '0' "$gate_rc" 'make check-strict did not exit with the status of its gates'
+assert_contains 'stand-in gates: check-strict-gates' "$gate_out" \
+    'make check-strict does not run the check-strict-gates target'
+assert_contains 'target:  make check-strict' "$gate_out" 'make check-strict does not name itself in the summary'
+assert_eq 'SKIPPED: fish completion syntax - fish not installed' "$(gate_skips "$gate_out")" \
+    'the summary of make check-strict is not exactly the skips its gates printed'
+assert_eq 'result:  PASSED WITH 1 SKIP - not a full pass' "$(grep -v '^make' <<<"$gate_out" | tail -n 1)" \
+    'make check-strict did not end on a result that counts the skips of its own run'
+assert_eq '' "$(find "$gate_tmpdir" -mindepth 1)" 'a passing run left its transcript behind'
+assert_eq "$(printf '%s\n' 'bash tests/test.sh' 'bash tests/e2e/run.sh')" \
+    "$(gate_make "$PATH" -n check-strict-gates | grep -o -e '^bash tests/test\.sh$' -e 'bash tests/e2e/run\.sh')" \
+    'the strict gates are not the gates of make check followed by the end-to-end tier'
+gate_out="$(gate_make "$PATH" -n check)"
+assert_contains 'tests/gate-summary.sh run check ' "$gate_out" 'a dry run of make check does not print its recipe'
+refute_contains 'Gate summary' "$gate_out" 'a dry run of make check ran the gates and printed a result'
+
+printf 'Test 78: a make check that is told to stop takes its gates with it and prints no summary\n'
+# shellcheck disable=SC2016
+gate_stub "$gate_stand/gate-slow" 'printf "%s\n" "$$" > "$GATE_STAND_IN_ARG"; exec sleep 120'
+GATE_STAND_IN_ARG="$TMP/gate-slow.pid" MAKEFLAGS='' TMPDIR="$gate_tmpdir" PATH="$gate_stand:$PATH" \
+    make -C "$ROOT_DIR" check GATE_MAKE=gate-slow SHELL_SOURCES="$TMP/no-such-gate-file" \
+    > "$TMP/gate-slow.out" 2>&1 &
+gate_make_pid=$!
+for _ in $(seq 300); do [[ -s "$TMP/gate-slow.pid" ]] && break; sleep 0.1; done
+[[ -s "$TMP/gate-slow.pid" ]] || {
+    kill "$gate_make_pid" 2>/dev/null || true
+    printf 'FAIL: the stand-in gates never started\n%s\n' "$(<"$TMP/gate-slow.out")" >&2
+    exit 1
+}
+gate_slow_pid="$(<"$TMP/gate-slow.pid")"
+gate_started="$SECONDS"
+kill -TERM "$gate_make_pid"
+gate_rc=0
+wait "$gate_make_pid" || gate_rc=$?
+if kill -0 "$gate_slow_pid" 2>/dev/null; then
+    kill "$gate_slow_pid" 2>/dev/null || true
+    printf 'FAIL: make check was terminated and its gates kept running\n' >&2
+    exit 1
+fi
+assert_eq '143' "$gate_rc" 'a terminated make check did not die of the signal'
+(( SECONDS - gate_started < 60 )) || {
+    printf 'FAIL: a terminated make check waited for its gates to finish by themselves\n' >&2
+    exit 1
+}
+refute_contains 'Gate summary' "$(<"$TMP/gate-slow.out")" 'a make check that was cut short printed a summary'
+assert_eq '' "$(find "$gate_tmpdir" -mindepth 1)" 'a terminated make check left its transcript behind'
+
 printf 'All tests passed.\n'

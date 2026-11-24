@@ -18,6 +18,14 @@ needs an X server, a session bus, an accessibility bus and a window manager.
 you work but will not tell you whether CI passes: without PySide6 the offscreen
 GUI tests skip themselves, report `OK` and exit 0.
 
+Both targets end with a `Gate summary` block: the commit, the machine, the tool
+versions, one `SKIPPED:` line for each gate, test tier or suite case that did
+not run, and the result. A refused `make check-strict` runs nothing and prints
+none, and neither does a run that was interrupted. Wherever you state a gate
+result - a pull request, an issue, a review - paste that block with it. A
+skipped gate is not a pass: `PASSED WITH 3 SKIPS` means three things were not
+checked on that machine.
+
 On Arch/CachyOS: `sudo pacman -S shellcheck fish ruff pyside6`, and for the
 end-to-end tier `sudo pacman -S xorg-server-xvfb xorg-xprop xorg-xdpyinfo xdotool
 openbox at-spi2-core python-atspi`.

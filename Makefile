@@ -2,7 +2,7 @@
 SHELL_SOURCES := bin/legion-powerctl bin/legion-powerctl-gui install.sh uninstall.sh \
 	tools/legion-powerbench \
 	tests/test.sh tests/test-branches.sh tests/test-bench.sh tests/test-repair.sh tests/lib.sh \
-	tests/fixtures/make-fake-root.sh \
+	tests/gate-summary.sh tests/fixtures/make-fake-root.sh \
 	tests/e2e/run.sh tests/e2e/podman.sh packaging/arch/legion-powerctl.install \
 	gui/tests/fake-legion-powerctl gui/tests/fixtures/regenerate-doctor.sh \
 	gui/tests/fixtures/regenerate-status.sh \
@@ -20,7 +20,8 @@ FORCE_CONFIG ?= 0
 VERSION := $(shell sed -n 's/^readonly VERSION="\([^"]*\)".*/\1/p' bin/legion-powerctl)
 
 .PHONY: all install install-files install-config uninstall uninstall-files \
-	check check-strict lint-py syntax test test-gui test-e2e test-e2e-podman \
+	check check-gates check-strict check-strict-gates lint-py syntax test test-gui test-e2e \
+	test-e2e-podman \
 	dist dev-gui verify-versions print-shell-sources print-version
 
 print-shell-sources:
@@ -169,12 +170,27 @@ lint-py:
 		printf 'ruff not installed; the Python lint DID NOT RUN. Use make check-strict.\n'; \
 	fi
 
-check: test test-gui verify-versions lint-py
+check-gates: test test-gui verify-versions lint-py
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		shellcheck $(SHELL_SOURCES); \
 	else \
 		printf 'shellcheck not installed; ShellCheck DID NOT RUN. Use make check-strict.\n'; \
 	fi
+
+# The Gate summary is read from what the gates print, and a skip is told from a line
+# that only mentions one by the lines around it. So no two gates may print at once:
+# under `make -j` the targets of this file still run one at a time.
+.NOTPARALLEL:
+
+# `tests/gate-summary.sh run` runs the gates in a sub-make that it can signal, copies
+# their stdout and stderr to a transcript, prints the Gate summary from it and exits
+# with the gates' own status. The sub-make is named through a variable on purpose: a
+# recipe that spells out the MAKE variable runs even under `make -n`, and would print
+# a result for a dry run.
+GATE_MAKE = $(MAKE) --no-print-directory
+
+check:
+	@bash tests/gate-summary.sh run check $(GATE_MAKE) check-gates
 
 check-strict:
 	@missing=''; \
@@ -187,8 +203,10 @@ check-strict:
 		printf 'Install them, or run `make check` and accept that those gates are skipped.\n' >&2; \
 		exit 1; \
 	}
-	$(MAKE) check
-	@# CI runs the end-to-end tier, and this target's whole claim is that a green run
-	@# here means what CI will do. tests/e2e/run.sh does its own preflight and names
-	@# what is missing, including the container that has all of it.
-	$(MAKE) test-e2e
+	@bash tests/gate-summary.sh run check-strict $(GATE_MAKE) check-strict-gates
+
+# CI runs the end-to-end tier, and the whole claim of check-strict is that a green run
+# here means what CI will do. tests/e2e/run.sh does its own preflight and names what
+# is missing, including the container that has all of it.
+check-strict-gates: check-gates
+	@$(MAKE) --no-print-directory test-e2e
