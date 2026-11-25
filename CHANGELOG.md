@@ -288,6 +288,14 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Validate trial arguments before changing limits, preserve existing CSV files, and
   make dry runs leave no profiles or CSV files behind.
 - Fix the three Python lint errors in the profile-derived desktop test.
+- `make verify-versions` also compares the version of `legion-powerbench`, which
+  carries its own version string and is installed beside the CLI, so the harness can no
+  longer fall behind a version bump without failing the gate.
+- The man page no longer loses the line that names five of the seven polkit actions and
+  says each is pinned with `exec.argv1`: it began with `.select,`, which troff read as
+  an unknown macro and dropped. A new MEASUREMENT HARNESS section describes the
+  installed `legion-powerbench`, and a test fails on any line that starts with a dot or
+  an apostrophe and is neither a comment nor one of the man macros the test lists.
 
 ### Added
 

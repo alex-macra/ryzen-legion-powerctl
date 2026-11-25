@@ -1598,4 +1598,20 @@ assert_eq '143' "$gate_rc" 'a terminated make check did not die of the signal'
 refute_contains 'Gate summary' "$(<"$TMP/gate-slow.out")" 'a make check that was cut short printed a summary'
 assert_eq '' "$(find "$gate_tmpdir" -mindepth 1)" 'a terminated make check left its transcript behind'
 
+printf 'Test 79: every man page line that starts with a dot or an apostrophe is a listed man macro or a comment\n'
+man_unknown_requests() {
+    grep -n "^[.']" "$1" \
+        | grep -vE "^[0-9]+:[.'](TH|SH|SS|TP|B|BR|I|IR|RI|RB|PP|P|IP|RS|RE)( |\$)" \
+        | grep -v '^[0-9]*:\.\\"' || true
+}
+printf '%s\n' '.SH NAME' '.select, .delete, .enable' '.\" a comment' "'br" \
+    'A sentence. Then .apply, in the middle of a line.' '.B' '.RE), each pinned' > "$TMP/man-sample"
+assert_eq "$(printf '%s\n' '2:.select, .delete, .enable' "4:'br" '7:.RE), each pinned')" \
+    "$(man_unknown_requests "$TMP/man-sample")" \
+    'the check does not report exactly the lines that are neither a listed man macro nor a comment'
+man_page="$ROOT_DIR/man/legion-powerctl.8"
+assert_file_contains '.TH LEGION-POWERCTL 8 ' "$man_page" 'the man page could not be read'
+assert_eq '' "$(man_unknown_requests "$man_page")" \
+    'these man page lines start with a dot or an apostrophe and are not a listed man macro; troff drops the text of an unknown one'
+
 printf 'All tests passed.\n'
