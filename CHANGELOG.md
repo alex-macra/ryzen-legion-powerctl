@@ -82,6 +82,10 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   back equal to the boot profile. When they cannot be read back it says the service
   reported success and names what was not read; when the service is not active after
   the restart, it fails and names the service state.
+- The GUI's boot switch no longer says "the boot profile was applied" after every
+  successful `enable`. It says so only when the CLI confirmed the limits; otherwise it
+  says the service reported success and what was not read back, or only that the boot
+  service is on.
 - `status` no longer calls a missing runtime record "normal immediately after reboot"
   when the boot service failed: it says no apply is recorded for this boot and names the
   `journalctl` command that shows why.
@@ -284,6 +288,14 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - Validate trial arguments before changing limits, preserve existing CSV files, and
   make dry runs leave no profiles or CSV files behind.
 - Fix the three Python lint errors in the profile-derived desktop test.
+- `make verify-versions` also compares the version of `legion-powerbench`, which
+  carries its own version string and is installed beside the CLI, so the harness can no
+  longer fall behind a version bump without failing the gate.
+- The man page no longer loses the line that names five of the seven polkit actions and
+  says each is pinned with `exec.argv1`: it began with `.select,`, which troff read as
+  an unknown macro and dropped. A new MEASUREMENT HARNESS section describes the
+  installed `legion-powerbench`, and a test fails on any line that starts with a dot or
+  an apostrophe and is neither a comment nor one of the man macros the test lists.
 
 ### Added
 
@@ -347,6 +359,15 @@ project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   which is also the case where selection degenerates to `PATH` order. Candidates at the
   same version are reported as a tie rather than as stale, because that tie is broken by
   `PATH` order and on a default Arch `PATH` the loser is the packaged binary.
+- `make check` and `make check-strict` end with a `Gate summary` block that names the
+  commit, the machine, the tool versions and each gate, test tier or suite case that was
+  skipped, and calls a run with skips `PASSED WITH N SKIPS - not a full pass`. Until now
+  a `make check` without fish and PySide6 ended on ruff's `All checks passed!`, with
+  unittest's `OK` for 300-odd skipped GUI tests on stderr just above it and the fish
+  skip several hundred lines further up. `CONTRIBUTING.md` and the pull request template
+  ask for that block wherever a gate result is stated. To read the skips from one
+  transcript, both targets now send what their gates print on stderr to stdout with the
+  rest, and run their gates one at a time under `make -j` too.
 
 ## 0.3.0 - 2026-08-14
 

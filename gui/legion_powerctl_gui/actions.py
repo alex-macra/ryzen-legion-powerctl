@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 PKEXEC_DISMISSED = 126
 PKEXEC_NOT_RUN = 127
 
-SERVICE_ON = "Boot service on; the boot profile was applied."
 BUSY = "Still working on the previous action; nothing else was started."
 
 
@@ -195,7 +194,7 @@ class ProfileActions(QObject):
         if self._window.dialogs and not dialogs.confirm_enable(self._window, boot):
             self._window.header.set_service_checked(False)
             return
-        self._run(["enable"], SERVICE_ON, steps=Steps(on_fail=self._offer_force))
+        self._run(["enable"], runstate.service_on_message, steps=Steps(on_fail=self._offer_force))
 
     def _offer_force(self, stdout: str, stderr: str) -> bool:
         detail = stderr.strip() or stdout.strip()
@@ -204,7 +203,7 @@ class ProfileActions(QObject):
         if not self._window.dialogs or not dialogs.offer_force_enable(self._window, detail):
             self._window.header.set_service_checked(False)
             return True
-        self._run(["enable", "--force"], SERVICE_ON)
+        self._run(["enable", "--force"], runstate.service_on_message)
         return True
 
     def _guard_editor(self) -> model.Profile | None:
@@ -228,8 +227,8 @@ class ProfileActions(QObject):
         return name
 
     def _run(
-        self, args: list[str], message: str, saved: model.Profile | None = None,
-        steps: Steps = NO_STEPS,
+        self, args: list[str], message: str | Callable[[str], str],
+        saved: model.Profile | None = None, steps: Steps = NO_STEPS,
     ) -> None:
         if self._busy:
             self.refused.emit(BUSY)
@@ -243,9 +242,8 @@ class ProfileActions(QObject):
                 self.offer = steps.offer
             elif steps.withdraw and not cancelled:
                 self.offer = NO_OFFER
-            report = partial(
-                self.handle_result, saved=saved, message=message, on_fail=steps.on_fail
-            )
+            text = message(stdout) if callable(message) else message
+            report = partial(self.handle_result, saved=saved, message=text, on_fail=steps.on_fail)
             steps.finish(code, stdout, stderr, cancelled, report)
 
         self._runner.run(

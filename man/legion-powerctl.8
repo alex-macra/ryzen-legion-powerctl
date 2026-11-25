@@ -140,8 +140,9 @@ opens an unprivileged Qt control panel (requires the optional pyside6
 package). It reads state through 'status --json' and performs privileged
 actions through pkexec. The GUI runs seven subcommands: configure, select,
 apply (Go back), delete, enable, disable and repair. The shipped policy defines
-one action for each (io.github.alexmacra.legion-powerctl.configure, .apply,
-.select, .delete, .enable, .disable, .repair), each pinned with exec.argv1.
+one action for each
+(io.github.alexmacra.legion-powerctl.configure, .apply, .select, .delete, .enable, .disable, .repair),
+each pinned with exec.argv1.
 Editing, applying, and selecting profiles use auth_admin_keep, which polkit
 retains for a few minutes; treat those three as one trust tier, because
 .B configure
@@ -149,6 +150,15 @@ accepts --select and --apply and so reaches what the other two do. Deleting a
 profile, enabling or disabling the boot service, and repair always prompt, so a
 retained profile-editing authorization cannot be reused to remove a profile,
 to install boot persistence, or to unload a module and rewrite a profile.
+.SH MEASUREMENT HARNESS
+.B legion-powerbench
+is a separate unprivileged binary. Its subcommands are doctor, sample, run,
+report and version. It changes limits only by running legion-powerctl through
+sudo: during a run, configure --apply on a powerbench-* scratch profile; then,
+on exit, apply of the profile that was running and delete of the scratch
+profile. It never writes GPU state.
+.B legion-powerbench help
+lists the options, and docs/TUNING.md is the protocol.
 .SH NOTES
 This project is not affiliated with Lenovo, AMD, or CachyOS. Legion is a
 trademark of Lenovo. Fire Range and other HX-series CPUs require RyzenAdj
